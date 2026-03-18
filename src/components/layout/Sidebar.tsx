@@ -15,6 +15,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useQueueStore } from "@/store/queue.store";
 import { useUIStore, type ActiveScreen } from "@/store/ui.store";
 
 type NavItem = {
@@ -111,6 +112,9 @@ export function Sidebar() {
   const activeScreen = useUIStore((state) => state.activeScreen);
   const setActiveScreen = useUIStore((state) => state.setActiveScreen);
   const sidebarExpanded = useUIStore((state) => state.sidebarExpanded);
+  const activeJobCount = useQueueStore(
+    (state) => state.jobs.filter((job) => job.status === "active").length,
+  );
 
   useEffect(() => {
     const nextItem = NAV_ITEMS.find((item) => location.pathname.startsWith(item.path));
@@ -149,6 +153,43 @@ export function Sidebar() {
                 <span className="sidebar-label">{item.label}</span>
                 <span className="sidebar-meta">{item.description}</span>
               </span>
+              {item.path === "/job-queue" && activeJobCount > 0 ? (
+                <span
+                  style={
+                    sidebarExpanded
+                      ? {
+                          marginLeft: "auto",
+                          display: "inline-flex",
+                          width: 18,
+                          height: 18,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          borderRadius: 999,
+                          background: "var(--accent)",
+                          color: "#140b00",
+                          fontSize: 10,
+                          fontWeight: 800,
+                        }
+                      : {
+                          position: "absolute",
+                          top: 6,
+                          right: 6,
+                          display: "inline-flex",
+                          width: 18,
+                          height: 18,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          borderRadius: 999,
+                          background: "var(--accent)",
+                          color: "#140b00",
+                          fontSize: 10,
+                          fontWeight: 800,
+                        }
+                  }
+                >
+                  {Math.min(activeJobCount, 99)}
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -157,10 +198,9 @@ export function Sidebar() {
       {sidebarExpanded ? (
         <div className="sidebar-footer">
           <div className="sidebar-footer-card">
-            <span className="sidebar-footer-title">Foundation v0.1</span>
+            <span className="sidebar-footer-title">Production Suite</span>
             <span className="sidebar-footer-copy">
-              Tema, routing, store ve migration tabani hazir. Sonraki fazda ekranlar
-              islevsel hale gelecek.
+              Storyboard, image-video queue, asset library, prompt workspace ve cost surfaces canli.
             </span>
           </div>
         </div>

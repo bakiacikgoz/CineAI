@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS shots (
   image_status     TEXT DEFAULT 'pending',
   video_status     TEXT DEFAULT 'pending',
   upscale_status   TEXT DEFAULT 'none',
+  is_archived      INTEGER NOT NULL DEFAULT 0,
+  requires_external_reference INTEGER NOT NULL DEFAULT 0,
+  external_reference_name  TEXT,
+  external_reference_notes TEXT,
+  external_reference_path  TEXT,
   source_file      TEXT,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL

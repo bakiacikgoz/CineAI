@@ -7,6 +7,30 @@ export type ApiKeyName =
   | "TENSORPIX_API_KEY"
   | "OPENROUTER_API_KEY";
 
+export type AppSettingName =
+  | "DEFAULT_IMAGE_MODEL"
+  | "DEFAULT_VIDEO_MODEL"
+  | "DEFAULT_TENSORPIX_FILTER"
+  | "DEFAULT_UPSCALE_FACTOR"
+  | "PARALLEL_LIMIT"
+  | "QUEUE_PARALLEL_LIMIT";
+
+export type SettingsKey = ApiKeyName | AppSettingName;
+
+export interface AppSettings {
+  defaultImageModel: string;
+  defaultVideoModel: string;
+  defaultUpscaleFactor: 2 | 4;
+  queueParallelLimit: number;
+}
+
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  defaultImageModel: "fal-ai/nano-banana-2",
+  defaultVideoModel: "fal-ai/kling-video/v3/pro/image-to-video",
+  defaultUpscaleFactor: 4,
+  queueParallelLimit: 3,
+};
+
 async function getStore(): Promise<Store> {
   if (!storeInstance) {
     storeInstance = await Store.load("settings.dat");
@@ -23,5 +47,92 @@ export async function getApiKey(key: ApiKeyName): Promise<string | null> {
 export async function setApiKey(key: ApiKeyName, value: string): Promise<void> {
   const store = await getStore();
   await store.set(key, value);
+  await store.save();
+}
+
+export async function getAppSetting<T = string>(
+  key: AppSettingName,
+): Promise<T | null> {
+  const store = await getStore();
+  return (await store.get<T>(key)) ?? null;
+}
+
+export async function setAppSetting<T>(
+  key: AppSettingName,
+  value: T,
+): Promise<void> {
+  const store = await getStore();
+  await store.set(key, value);
+  await store.save();
+}
+
+export async function getSetting<T>(key: SettingsKey, fallback: T): Promise<T> {
+  const store = await getStore();
+  return ((await store.get<T>(key)) ?? fallback) as T;
+}
+
+export async function setSetting<T>(key: SettingsKey, value: T): Promise<void> {
+  const store = await getStore();
+  await store.set(key, value);
+  await store.save();
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const [
+    defaultImageModel,
+    defaultVideoModel,
+    defaultUpscaleFactor,
+    queueParallelLimit,
+    legacyParallelLimit,
+  ] = await Promise.all([
+    getSetting("DEFAULT_IMAGE_MODEL", DEFAULT_APP_SETTINGS.defaultImageModel),
+    getSetting("DEFAULT_VIDEO_MODEL", DEFAULT_APP_SETTINGS.defaultVideoModel),
+    getSetting(
+      "DEFAULT_UPSCALE_FACTOR",
+      DEFAULT_APP_SETTINGS.defaultUpscaleFactor,
+    ),
+    getAppSetting<number>("QUEUE_PARALLEL_LIMIT"),
+    getAppSetting<number>("PARALLEL_LIMIT"),
+  ]);
+
+  const resolvedParallelLimit =
+    queueParallelLimit ?? legacyParallelLimit ?? DEFAULT_APP_SETTINGS.queueParallelLimit;
+
+  return {
+    defaultImageModel,
+    defaultVideoModel,
+    defaultUpscaleFactor:
+      defaultUpscaleFactor === 2 || defaultUpscaleFactor === 4
+        ? defaultUpscaleFactor
+        : DEFAULT_APP_SETTINGS.defaultUpscaleFactor,
+    queueParallelLimit: Math.min(
+      5,
+      Math.max(1, Number(resolvedParallelLimit) || 3),
+    ),
+  };
+}
+
+export async function setAppSettings(settings: Partial<AppSettings>): Promise<void> {
+  const store = await getStore();
+  const entries = Object.entries(settings) as Array<
+    [keyof AppSettings, AppSettings[keyof AppSettings]]
+  >;
+
+  for (const [key, value] of entries) {
+    const storageKey =
+      key === "defaultImageModel"
+        ? "DEFAULT_IMAGE_MODEL"
+        : key === "defaultVideoModel"
+          ? "DEFAULT_VIDEO_MODEL"
+          : key === "defaultUpscaleFactor"
+            ? "DEFAULT_UPSCALE_FACTOR"
+            : "QUEUE_PARALLEL_LIMIT";
+    await store.set(storageKey, value);
+
+    if (key === "queueParallelLimit") {
+      await store.set("PARALLEL_LIMIT", value);
+    }
+  }
+
   await store.save();
 }

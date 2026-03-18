@@ -14,6 +14,7 @@ interface ProjectStore {
   activeProject: Project | null;
   recentProjects: Project[];
   setActiveProject: (project: Project | null) => void;
+  clearActiveProject: () => void;
   setRecentProjects: (projects: Project[]) => void;
 }
 
@@ -21,5 +22,6 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   activeProject: null,
   recentProjects: [],
   setActiveProject: (project) => set({ activeProject: project }),
+  clearActiveProject: () => set({ activeProject: null }),
   setRecentProjects: (projects) => set({ recentProjects: projects }),
 }));

@@ -36,6 +36,7 @@ export interface Job {
 interface QueueStore {
   jobs: Job[];
   parallelLimit: number;
+  setJobs: (jobs: Job[]) => void;
   addJob: (job: Job) => void;
   updateJob: (id: string, updates: Partial<Job>) => void;
   removeJob: (id: string) => void;
@@ -47,6 +48,7 @@ interface QueueStore {
 export const useQueueStore = create<QueueStore>((set, get) => ({
   jobs: [],
   parallelLimit: 3,
+  setJobs: (jobs) => set({ jobs }),
   addJob: (job) => set((state) => ({ jobs: [...state.jobs, job] })),
   updateJob: (id, updates) =>
     set((state) => ({

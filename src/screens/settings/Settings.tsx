@@ -1,5 +1,15 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { KeyRound, Save, ShieldCheck } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LoaderCircle,
+  Save,
+  ShieldCheck,
+} from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { message } from "@tauri-apps/plugin-dialog";
 import {
   IMAGE_MODELS,
@@ -12,6 +22,7 @@ import {
   getApiKey,
   getAppSetting,
   getAppSettings,
+  persistQueueParallelLimit,
   setApiKey,
   setAppSetting,
   setAppSettings,
@@ -19,6 +30,10 @@ import {
 } from "@/lib/store";
 import { getTensorPixModels, type TensorPixModel } from "@/services/tensorpix.service";
 import { useQueueStore } from "@/store/queue.store";
+
+/* ═══════════════════════════════════════════════════════════════
+   Constants
+   ═══════════════════════════════════════════════════════════════ */
 
 const API_KEYS: Array<{
   key: ApiKeyName;
@@ -42,6 +57,60 @@ const API_KEYS: Array<{
   },
 ];
 
+/* ═══════════════════════════════════════════════════════════════
+   Collapsible Section Component
+   ═══════════════════════════════════════════════════════════════ */
+
+function SettingsSection({
+  title,
+  children,
+  defaultOpen = true,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <section style={sectionWrapStyle}>
+      <button
+        onClick={() => setOpen((prev) => !prev)}
+        style={sectionHeaderBtnStyle}
+        type="button"
+      >
+        <span style={sectionTitleStyle}>{title}</span>
+        <motion.span
+          animate={{ rotate: open ? 0 : -90 }}
+          transition={{ duration: 0.2 }}
+          style={{ display: "inline-flex", color: "var(--text-muted)" }}
+        >
+          <ChevronDown size={14} />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ display: "grid", gap: 14, paddingTop: 16 }}>
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </section>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Main Component
+   ═══════════════════════════════════════════════════════════════ */
+
 export function Settings() {
   const setParallelLimit = useQueueStore((state) => state.setParallelLimit);
   const [values, setValues] = useState<Record<ApiKeyName, string>>({
@@ -58,6 +127,16 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  /* ── Visibility toggles for API key fields ── */
+  const [visibleKeys, setVisibleKeys] = useState<Record<ApiKeyName, boolean>>({
+    FAL_API_KEY: false,
+    TENSORPIX_API_KEY: false,
+    OPENROUTER_API_KEY: false,
+  });
+
+  /* ── Saved indicator ── */
+  const [showSavedCheck, setShowSavedCheck] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,16 +211,19 @@ export function Settings() {
       await Promise.all(
         API_KEYS.map(({ key }) => setApiKey(key, values[key].trim())),
       );
+      const normalizedQueueLimit = await persistQueueParallelLimit(queueParallelLimit);
       await setAppSettings({
         defaultImageModel,
         defaultVideoModel,
         defaultUpscaleFactor,
-        queueParallelLimit,
       });
       await setAppSetting("DEFAULT_TENSORPIX_FILTER", defaultTensorPixFilter);
       await initFal();
-      setParallelLimit(queueParallelLimit);
+      setQueueParallelLimit(normalizedQueueLimit);
+      setParallelLimit(normalizedQueueLimit);
       setSavedAt(Date.now());
+      setShowSavedCheck(true);
+      setTimeout(() => setShowSavedCheck(false), 2400);
       await message("Ayarlar kaydedildi.", {
         title: "Settings",
         kind: "info",
@@ -162,130 +244,81 @@ export function Settings() {
 
   return (
     <section className="screen-shell">
-      <section
-        style={{
-          display: "grid",
-          gap: 18,
-          maxWidth: 920,
-        }}
+      <motion.section
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+        style={containerStyle}
       >
-        <header
-          style={{
-            display: "grid",
-            gap: 10,
-            padding: 22,
-            borderRadius: 26,
-            border: "1px solid var(--border-subtle)",
-            background:
-              "linear-gradient(140deg, rgba(245, 158, 11, 0.08), transparent 28%), var(--bg-surface)",
-          }}
-        >
-          <span
-            style={{
-              display: "inline-flex",
-              width: "fit-content",
-              alignItems: "center",
-              gap: 8,
-              borderRadius: 999,
-              border: "1px solid rgba(34, 197, 94, 0.18)",
-              background: "rgba(34, 197, 94, 0.08)",
-              padding: "6px 10px",
-              fontSize: 11,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--status-success)",
-            }}
-          >
+        {/* ── Header Banner ─────────────────────────────── */}
+        <header style={headerStyle}>
+          <span style={badgeStyle}>
             <ShieldCheck size={13} />
             Local Secret Storage
           </span>
-          <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-            Settings
-          </div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+          <div style={headerTitleStyle}>Settings</div>
+          <p style={headerDescStyle}>
             API anahtarlari Tauri Store uzerinden yerel olarak saklanir. fal.ai
             kaydi guncellendiginde istemci yeniden konfigure edilir.
           </p>
         </header>
 
-        <section
-          style={{
-            display: "grid",
-            gap: 14,
-            padding: 20,
-            borderRadius: 24,
-            border: "1px solid var(--border-subtle)",
-            background: "var(--bg-surface)",
-          }}
-        >
-          {API_KEYS.map(({ key, title, description }) => (
-            <label
-              key={key}
-              style={{
-                display: "grid",
-                gap: 10,
-                padding: 16,
-                borderRadius: 18,
-                border: "1px solid var(--border-subtle)",
-                background: "var(--bg-elevated)",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    width: 36,
-                    height: 36,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 12,
-                    border: "1px solid rgba(245, 158, 11, 0.22)",
-                    background: "rgba(245, 158, 11, 0.08)",
-                    color: "var(--accent)",
-                  }}
-                >
-                  <KeyRound size={16} />
-                </span>
-                <div style={{ display: "grid", gap: 3 }}>
-                  <span style={{ fontSize: 15, fontWeight: 600 }}>{title}</span>
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                    {description}
-                  </span>
-                </div>
-              </div>
-              <input
-                autoComplete="off"
-                onChange={(event) =>
-                  setValues((current) => ({ ...current, [key]: event.target.value }))
-                }
-                placeholder={`${title} anahtarini yapistir`}
-                style={{
-                  width: "100%",
-                  padding: "12px 14px",
-                  borderRadius: 14,
-                  border: "1px solid var(--border-default)",
-                  background: "var(--bg-base)",
-                  color: "var(--text-primary)",
-                  outline: "none",
-                  fontFamily: "monospace",
-                  fontSize: 13,
-                }}
-                type="password"
-                value={values[key]}
-              />
-            </label>
-          ))}
+        {/* ── API Keys Section ──────────────────────────── */}
+        <SettingsSection title="API Keys" defaultOpen>
+          {API_KEYS.map(({ key, title, description }) => {
+            const isVisible = visibleKeys[key];
+            const hasValue = values[key].trim().length > 0;
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              paddingTop: 6,
-            }}
-          >
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            return (
+              <label
+                key={key}
+                style={apiKeyCardStyle}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={keyIconWrapStyle}>
+                    <KeyRound size={16} />
+                  </span>
+                  <div style={{ display: "grid", gap: 3, flex: 1 }}>
+                    <span style={keyTitleStyle}>
+                      {title}
+                      {hasValue && (
+                        <span style={filledDotStyle} />
+                      )}
+                    </span>
+                    <span style={keyDescStyle}>{description}</span>
+                  </div>
+                </div>
+                <div style={inputWrapStyle}>
+                  <input
+                    autoComplete="off"
+                    className="studio-field"
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [key]: event.target.value }))
+                    }
+                    placeholder={`${title} anahtarini yapistir`}
+                    style={apiKeyInputStyle}
+                    type={isVisible ? "text" : "password"}
+                    value={values[key]}
+                  />
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setVisibleKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+                    }}
+                    style={visibilityToggleBtnStyle}
+                    title={isVisible ? "Gizle" : "Goster"}
+                    type="button"
+                  >
+                    {isVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </label>
+            );
+          })}
+
+          {/* ── Status + Save Button ── */}
+          <div style={saveRowStyle}>
+            <div style={statusTextStyle}>
               {loading
                 ? "Anahtarlar yukleniyor..."
                 : savedAt
@@ -293,39 +326,56 @@ export function Settings() {
                   : "Heniz yeni kayit yapilmadi."}
             </div>
 
-            <button
-              className="btn-primary"
-              disabled={loading || saving}
-              onClick={() => void handleSave()}
-              style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-              type="button"
-            >
-              <Save size={14} />
-              {saving ? "Kaydediliyor..." : "Kaydet"}
-            </button>
-          </div>
-        </section>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <AnimatePresence>
+                {showSavedCheck && (
+                  <motion.span
+                    initial={{ opacity: 0, scale: 0.6 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.6 }}
+                    transition={{ duration: 0.3 }}
+                    style={savedCheckStyle}
+                  >
+                    <Check size={14} />
+                    Saved
+                  </motion.span>
+                )}
+              </AnimatePresence>
 
-        <section
-          style={{
-            display: "grid",
-            gap: 14,
-            padding: 20,
-            borderRadius: 24,
-            border: "1px solid var(--border-subtle)",
-            background: "var(--bg-surface)",
-          }}
-        >
-          <div style={{ display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>Runtime defaults</div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              Generator ve queue ekranlarinin varsayilan davranisini belirler.
+              <button
+                className="btn-primary"
+                disabled={loading || saving}
+                onClick={() => void handleSave()}
+                style={saveBtnStyle}
+                type="button"
+              >
+                {saving ? (
+                  <motion.span
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    style={{ display: "inline-flex" }}
+                  >
+                    <LoaderCircle size={14} />
+                  </motion.span>
+                ) : (
+                  <Save size={14} />
+                )}
+                {saving ? "Kaydediliyor..." : "Kaydet"}
+              </button>
             </div>
           </div>
+        </SettingsSection>
 
-          <label style={fieldStyle}>
-            <span>Varsayilan image model</span>
+        {/* ── Runtime Defaults Section ──────────────────── */}
+        <SettingsSection title="Runtime Defaults" defaultOpen>
+          <div style={sectionIntroStyle}>
+            Generator ve queue ekranlarinin varsayilan davranisini belirler.
+          </div>
+
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>Varsayilan Image Model</span>
             <select
+              className="studio-field"
               onChange={(event) => setDefaultImageModel(event.target.value as ImageModelId)}
               style={selectStyle}
               value={defaultImageModel}
@@ -340,9 +390,10 @@ export function Settings() {
             </select>
           </label>
 
-          <label style={fieldStyle}>
-            <span>Varsayilan video model</span>
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>Varsayilan Video Model</span>
             <select
+              className="studio-field"
               onChange={(event) => setDefaultVideoModel(event.target.value as VideoModelId)}
               style={selectStyle}
               value={defaultVideoModel}
@@ -357,9 +408,10 @@ export function Settings() {
             </select>
           </label>
 
-          <label style={fieldStyle}>
-            <span>Varsayilan upscale</span>
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>Varsayilan Upscale</span>
             <select
+              className="studio-field"
               onChange={(event) => setDefaultUpscaleFactor(Number(event.target.value) as 2 | 4)}
               style={selectStyle}
               value={defaultUpscaleFactor}
@@ -369,9 +421,10 @@ export function Settings() {
             </select>
           </label>
 
-          <label style={fieldStyle}>
-            <span>Varsayilan TensorPix filtre/modeli</span>
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>Varsayilan TensorPix Filtre/Modeli</span>
             <select
+              className="studio-field"
               onChange={(event) => setDefaultTensorPixFilter(event.target.value)}
               style={selectStyle}
               value={defaultTensorPixFilter}
@@ -385,9 +438,10 @@ export function Settings() {
             </select>
           </label>
 
-          <label style={fieldStyle}>
-            <span>Varsayilan paralel limit</span>
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>Varsayilan Paralel Limit</span>
             <select
+              className="studio-field"
               onChange={(event) => setQueueParallelLimit(Number(event.target.value))}
               style={selectStyle}
               value={queueParallelLimit}
@@ -399,17 +453,221 @@ export function Settings() {
               ))}
             </select>
           </label>
-        </section>
-      </section>
+        </SettingsSection>
+      </motion.section>
     </section>
   );
 }
 
-const fieldStyle = {
+/* ═══════════════════════════════════════════════════════════════
+   Styles
+   ═══════════════════════════════════════════════════════════════ */
+
+const containerStyle = {
   display: "grid",
+  gap: 18,
+  maxWidth: 920,
+} satisfies CSSProperties;
+
+/* ── Header ──────────────────────────────────────────────── */
+
+const headerStyle = {
+  display: "grid",
+  gap: 10,
+  padding: 22,
+  borderRadius: 26,
+  border: "1px solid var(--border-subtle)",
+  background:
+    "linear-gradient(140deg, rgba(245, 158, 11, 0.08), transparent 28%), var(--bg-surface)",
+} satisfies CSSProperties;
+
+const badgeStyle = {
+  display: "inline-flex",
+  width: "fit-content",
+  alignItems: "center",
   gap: 8,
+  borderRadius: 999,
+  border: "1px solid rgba(34, 197, 94, 0.18)",
+  background: "rgba(34, 197, 94, 0.08)",
+  padding: "6px 10px",
+  fontSize: 11,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--status-success)",
+} satisfies CSSProperties;
+
+const headerTitleStyle = {
+  fontSize: 28,
+  fontWeight: 600,
+  letterSpacing: "-0.03em",
+} satisfies CSSProperties;
+
+const headerDescStyle = {
+  margin: 0,
+  color: "var(--text-secondary)",
+  lineHeight: 1.7,
+} satisfies CSSProperties;
+
+/* ── Collapsible Section ────────────────────────────────── */
+
+const sectionWrapStyle = {
+  padding: "20px 22px",
+  borderRadius: 24,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--bg-surface)",
+} satisfies CSSProperties;
+
+const sectionHeaderBtnStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  width: "100%",
+  padding: 0,
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: "var(--text-secondary)",
+} satisfies CSSProperties;
+
+const sectionTitleStyle = {
+  fontSize: 13,
+  fontWeight: 700,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--text-muted)",
+} satisfies CSSProperties;
+
+const sectionIntroStyle = {
   fontSize: 12,
   color: "var(--text-secondary)",
+  lineHeight: 1.6,
+} satisfies CSSProperties;
+
+/* ── API Key Cards ──────────────────────────────────────── */
+
+const apiKeyCardStyle = {
+  display: "grid",
+  gap: 10,
+  padding: 16,
+  borderRadius: 18,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--bg-elevated)",
+} satisfies CSSProperties;
+
+const keyIconWrapStyle = {
+  display: "inline-flex",
+  width: 36,
+  height: 36,
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 12,
+  border: "1px solid rgba(245, 158, 11, 0.22)",
+  background: "rgba(245, 158, 11, 0.08)",
+  color: "var(--accent)",
+  flexShrink: 0,
+} satisfies CSSProperties;
+
+const keyTitleStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 15,
+  fontWeight: 600,
+} satisfies CSSProperties;
+
+const keyDescStyle = {
+  fontSize: 12,
+  color: "var(--text-secondary)",
+} satisfies CSSProperties;
+
+const filledDotStyle = {
+  display: "inline-block",
+  width: 6,
+  height: 6,
+  borderRadius: "50%",
+  background: "var(--status-success)",
+} satisfies CSSProperties;
+
+/* ── Input with visibility toggle ────────────────────────── */
+
+const inputWrapStyle = {
+  position: "relative",
+  display: "flex",
+  alignItems: "center",
+} satisfies CSSProperties;
+
+const apiKeyInputStyle = {
+  width: "100%",
+  padding: "12px 44px 12px 14px",
+  borderRadius: 14,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-primary)",
+  outline: "none",
+  fontFamily: "monospace",
+  fontSize: 13,
+} satisfies CSSProperties;
+
+const visibilityToggleBtnStyle = {
+  position: "absolute",
+  right: 8,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  borderRadius: 10,
+  border: "none",
+  background: "transparent",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+  transition: "color 150ms ease, background 150ms ease",
+} satisfies CSSProperties;
+
+/* ── Save Row ────────────────────────────────────────────── */
+
+const saveRowStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  paddingTop: 6,
+} satisfies CSSProperties;
+
+const statusTextStyle = {
+  fontSize: 12,
+  color: "var(--text-muted)",
+} satisfies CSSProperties;
+
+const saveBtnStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+} satisfies CSSProperties;
+
+const savedCheckStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  fontSize: 12,
+  fontWeight: 600,
+  color: "var(--status-success)",
+  letterSpacing: "0.02em",
+} satisfies CSSProperties;
+
+/* ── Field Labels & Selects ──────────────────────────────── */
+
+const fieldWrapStyle = {
+  display: "grid",
+  gap: 8,
+} satisfies CSSProperties;
+
+const fieldLabelStyle = {
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-muted)",
 } satisfies CSSProperties;
 
 const selectStyle = {
@@ -421,4 +679,5 @@ const selectStyle = {
   color: "var(--text-primary)",
   outline: "none",
   fontSize: 13,
+  cursor: "pointer",
 } satisfies CSSProperties;

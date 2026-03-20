@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS shots (
   external_reference_name  TEXT,
   external_reference_notes TEXT,
   external_reference_path  TEXT,
+  character_id     TEXT,
+  character_look_id TEXT,
+  include_character_prompt INTEGER NOT NULL DEFAULT 1,
   source_file      TEXT,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
@@ -74,7 +77,26 @@ CREATE TABLE IF NOT EXISTS characters (
   ref_images       TEXT,
   primary_image    TEXT,
   style_notes      TEXT,
-  created_at       INTEGER NOT NULL
+  profile_json     TEXT,
+  prompt_hint      TEXT,
+  default_look_id  TEXT,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_looks (
+  id                TEXT PRIMARY KEY,
+  character_id      TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  attributes_json   TEXT,
+  generation_prompt TEXT,
+  prompt_hint       TEXT,
+  prompt_locked     INTEGER NOT NULL DEFAULT 0,
+  ref_images        TEXT,
+  primary_image     TEXT,
+  is_default        INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS job_queue (

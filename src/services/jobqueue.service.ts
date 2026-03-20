@@ -1,8 +1,12 @@
 import { dirname, join } from "@tauri-apps/api/path";
 import { exists, mkdir } from "@tauri-apps/plugin-fs";
 import { v4 as uuidv4 } from "uuid";
+import { getCoveragePrompt, resolveBulkScope } from "@/lib/bulk-production";
+import { composeShotCharacterPrompt } from "@/lib/character-studio";
+import { getBulkVideoJobType } from "@/lib/job-queue-types";
 import { saveAsset } from "@/services/asset.service";
 import { resolveStartImage, waitForJob } from "@/services/chain.service";
+import { resolveShotCharacterContext } from "@/services/character.service";
 import { logCost } from "@/services/cost.service";
 import {
   clampKlingDuration,
@@ -232,8 +236,10 @@ export interface EnqueueImageJobParams {
   steps: number;
   quantity: number;
   refImagePath?: string;
+  referenceImagePaths?: string[];
   shotId?: string;
   jobType?: JobType;
+  assetTags?: string[];
 }
 
 export interface EnqueueStoryboardFrameJobParams {
@@ -269,6 +275,7 @@ export interface EnqueueVideoJobParams {
   assetTags?: string[];
   persistToShotPath?: boolean;
   completeStatus?: string;
+  jobType?: "video" | "coverage_video";
 }
 
 export interface EnqueueUpscaleJobParams {
@@ -435,9 +442,14 @@ async function resolveStartReferenceForShot(
 
   if (chainResult.status === "ready" && chainResult.refImagePath) {
     const externalReferencePath = await resolveShotExternalReferencePath(shot);
+    const characterReferencePaths =
+      (await resolveShotCharacterContext({
+        characterId: shot.characterId,
+        characterLookId: shot.characterLookId,
+      }))?.referencePaths ?? [];
     return Array.from(
       new Set(
-        [chainResult.refImagePath, externalReferencePath].filter(
+        [chainResult.refImagePath, externalReferencePath, ...characterReferencePaths].filter(
           (value): value is string => Boolean(value),
         ),
       ),
@@ -484,20 +496,44 @@ async function resolveStartReferenceForShot(
   }
 
   const externalReferencePath = await resolveShotExternalReferencePath(shot);
-  return externalReferencePath ? [externalReferencePath] : [];
+  const characterReferencePaths =
+    (await resolveShotCharacterContext({
+      characterId: shot.characterId,
+      characterLookId: shot.characterLookId,
+    }))?.referencePaths ?? [];
+  return Array.from(
+    new Set(
+      [externalReferencePath, ...characterReferencePaths].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  );
 }
 
 async function resolveDirectReferenceForShot(
   shot: ShotRow,
   mode: "end" | "coverage",
-): Promise<string | undefined> {
+): Promise<string[]> {
   const missingReferenceMessage = getShotMissingExternalReferenceMessage(shot, mode);
 
   if (missingReferenceMessage) {
     throw new Error(missingReferenceMessage);
   }
 
-  return resolveShotExternalReferencePath(shot);
+  const externalReferencePath = await resolveShotExternalReferencePath(shot);
+  const characterReferencePaths =
+    (await resolveShotCharacterContext({
+      characterId: shot.characterId,
+      characterLookId: shot.characterLookId,
+    }))?.referencePaths ?? [];
+
+  return Array.from(
+    new Set(
+      [externalReferencePath, ...characterReferencePaths].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  );
 }
 
 async function resolveEndReferenceForShot(
@@ -506,11 +542,11 @@ async function resolveEndReferenceForShot(
   priority: number,
 ): Promise<string[]> {
   const startReferencePath = await ensureVideoInputPath(shot, "start", jobId, priority);
-  const externalReferencePath = await resolveDirectReferenceForShot(shot, "end");
+  const externalReferencePaths = await resolveDirectReferenceForShot(shot, "end");
 
   return Array.from(
     new Set(
-      [startReferencePath, externalReferencePath].filter(
+      [startReferencePath, ...externalReferencePaths].filter(
         (value): value is string => Boolean(value),
       ),
     ),
@@ -599,12 +635,17 @@ export async function enqueueImageJobs(
     steps,
     quantity,
     refImagePath,
+    referenceImagePaths,
     shotId,
     jobType = "image_start",
+    assetTags,
   } = params;
 
   const costPerImage = calcImageCost(model, 1);
   const jobIds: string[] = [];
+  const mergedReferenceImagePaths = Array.from(
+    new Set([...(referenceImagePaths ?? []), ...(refImagePath ? [refImagePath] : [])]),
+  );
 
   for (let index = 0; index < quantity; index += 1) {
     const jobId = uuidv4();
@@ -617,8 +658,8 @@ export async function enqueueImageJobs(
       shotId,
       model,
       prompt,
-      params: { aspectRatio, cfg, steps },
-      refImagePath,
+      params: { aspectRatio, cfg, steps, referenceImagePaths: mergedReferenceImagePaths, assetTags },
+      refImagePath: mergedReferenceImagePaths[0],
       progress: 0,
       costUsd: costPerImage,
       queuedAt: Date.now(),
@@ -642,7 +683,8 @@ export async function enqueueImageJobs(
         aspectRatio,
         cfg,
         steps,
-        refImagePath,
+        refImagePath: mergedReferenceImagePaths[0],
+        referenceImagePaths: mergedReferenceImagePaths,
         abortSignal,
         onProgress: updateProgress,
       });
@@ -679,6 +721,7 @@ export async function enqueueImageJobs(
         costUsd: costPerImage,
         falJobId: result.requestId ?? jobId,
         shotId,
+        tags: assetTags,
       });
 
       await logCost({
@@ -736,6 +779,15 @@ export async function enqueueStoryboardFrameJob(
   const costPerImage = calcImageCost(model, 1);
   const persistToShotPath = params.persistToShotPath ?? true;
   const completeStatus = params.completeStatus ?? "done";
+  const characterContext = await resolveShotCharacterContext({
+    characterId: shot.characterId,
+    characterLookId: shot.characterLookId,
+  });
+  const effectivePrompt = composeShotCharacterPrompt(
+    params.prompt.trim(),
+    characterContext?.promptHint,
+    Boolean(shot.includeCharacterPrompt),
+  );
   const jobId = uuidv4();
 
   const job: Job = {
@@ -746,7 +798,7 @@ export async function enqueueStoryboardFrameJob(
     priority: params.priority ?? 120,
     shotId: shot.id,
     model,
-    prompt: params.prompt.trim(),
+    prompt: effectivePrompt,
     params: { aspectRatio, cfg, steps, mode },
     progress: 0,
     costUsd: costPerImage,
@@ -777,8 +829,7 @@ export async function enqueueStoryboardFrameJob(
           params.priority ?? 120,
         );
       } else {
-        const directReferencePath = await resolveDirectReferenceForShot(shot, mode);
-        referenceImagePaths = directReferencePath ? [directReferencePath] : [];
+        referenceImagePaths = await resolveDirectReferenceForShot(shot, mode);
       }
 
       updateProgress(10);
@@ -786,7 +837,7 @@ export async function enqueueStoryboardFrameJob(
       const result = await generateImage({
         jobId,
         model,
-        prompt: params.prompt.trim(),
+        prompt: effectivePrompt,
         aspectRatio,
         cfg,
         steps,
@@ -831,7 +882,7 @@ export async function enqueueStoryboardFrameJob(
         width: result.width,
         height: result.height,
         modelUsed: model,
-        prompt: params.prompt.trim(),
+        prompt: effectivePrompt,
         costUsd: costPerImage,
         falJobId: result.requestId ?? jobId,
         shotId: shot.id,
@@ -890,17 +941,28 @@ export async function enqueueVideoJobs(
 
   for (let index = 0; index < params.quantity; index += 1) {
     const shot = params.shotId ? await getShotById(params.shotId) : null;
+    const characterContext = shot
+      ? await resolveShotCharacterContext({
+          characterId: shot.characterId,
+          characterLookId: shot.characterLookId,
+        })
+      : null;
+    const effectivePrompt = composeShotCharacterPrompt(
+      params.prompt.trim(),
+      characterContext?.promptHint,
+      Boolean(shot?.includeCharacterPrompt ?? false),
+    );
     const jobId = uuidv4();
 
     const job: Job = {
       id: jobId,
       projectId: project.id,
-      type: "video",
+      type: params.jobType ?? "video",
       status: "queued",
       priority: (params.priority ?? 90) - index,
       shotId: shot?.id,
       model,
-      prompt: params.prompt.trim(),
+      prompt: effectivePrompt,
       params: {
         duration,
         aspectRatio,
@@ -945,7 +1007,7 @@ export async function enqueueVideoJobs(
         const result = await generateVideo({
           jobId,
           model,
-          prompt: params.prompt.trim(),
+          prompt: effectivePrompt,
           imageStartPath: startPath,
           imageEndPath: endPath,
           duration,
@@ -992,7 +1054,7 @@ export async function enqueueVideoJobs(
           durationS: duration,
           resolution: "HD",
           modelUsed: model,
-          prompt: params.prompt.trim(),
+          prompt: effectivePrompt,
           costUsd: costPerVideo,
           falJobId: result.requestId ?? jobId,
           shotId: shot?.id,
@@ -1164,34 +1226,7 @@ export async function enqueueBulkProduction(
   }
 
   const allShots = await getShots(project.id);
-  let mainShots = allShots.filter((shot) => !shot.parentShotId);
-
-  if (options.filter === "missing") {
-    mainShots = mainShots.filter(
-      (shot) =>
-        (options.produceStartFrames && !shot.imageStartPath) ||
-        (options.produceEndFrames && !shot.imageEndPath) ||
-        (options.produceVideos && !shot.videoPath),
-    );
-  }
-
-  if (options.filter === "selected" && options.selectedShotIds?.length) {
-    const selectedIds = new Set(options.selectedShotIds);
-    mainShots = mainShots.filter((shot) => selectedIds.has(shot.id));
-  }
-
-  let coverageShots = options.produceCoverageImages
-    ? allShots.filter((shot) => Boolean(shot.parentShotId))
-    : [];
-
-  if (options.filter === "missing") {
-    coverageShots = coverageShots.filter((shot) => !shot.imageStartPath);
-  }
-
-  if (options.filter === "selected" && options.selectedShotIds?.length) {
-    const selectedIds = new Set(options.selectedShotIds);
-    coverageShots = coverageShots.filter((shot) => selectedIds.has(shot.parentShotId ?? ""));
-  }
+  const { mainShots, coverageShots } = resolveBulkScope(allShots, options);
 
   const missingReferenceShots = new Set<string>();
 
@@ -1212,14 +1247,22 @@ export async function enqueueBulkProduction(
   }
 
   for (const shot of coverageShots) {
-    const prompt = shot.promptStart ?? shot.promptEnd ?? shot.promptVideo;
-    if (!prompt) {
-      continue;
+    if (options.produceCoverageImages) {
+      const prompt = getCoveragePrompt(shot);
+
+      if (prompt) {
+        const missingReference = getShotMissingExternalReferenceMessage(shot, "coverage");
+        if (missingReference) {
+          missingReferenceShots.add(`${shot.shotNumber} COVERAGE`);
+        }
+      }
     }
 
-    const missingReference = getShotMissingExternalReferenceMessage(shot, "coverage");
-    if (missingReference) {
-      missingReferenceShots.add(`${shot.shotNumber} COVERAGE`);
+    if (options.produceVideos && shot.promptVideo) {
+      const missingReference = getShotMissingExternalReferenceMessage(shot, "coverage");
+      if (missingReference) {
+        missingReferenceShots.add(`${shot.shotNumber} COVERAGE VIDEO`);
+      }
     }
   }
 
@@ -1287,6 +1330,7 @@ export async function enqueueBulkProduction(
           quantity: 1,
           shotId: shot.id,
           priority: videoPriority,
+          jobType: getBulkVideoJobType(shot.parentShotId),
         });
         jobCount += 1;
         estimatedCost += calcVideoCost(selectedVideoModel, 1);
@@ -1295,28 +1339,46 @@ export async function enqueueBulkProduction(
   }
 
   for (const [index, shot] of coverageShots.entries()) {
-    const prompt = shot.promptStart ?? shot.promptEnd ?? shot.promptVideo;
-
-    if (!prompt) {
-      continue;
-    }
-
     const imageModel =
       options.imageModel && options.imageModel !== "shot-default"
         ? options.imageModel
         : resolveImageModel(shot.model);
-    await enqueueStoryboardFrameJob({
-      shotId: shot.id,
-      prompt,
-      mode: "coverage",
-      model: imageModel,
-      cfg: shot.cfg ?? 7,
-      steps: DEFAULT_IMAGE_STEPS,
-      aspectRatio: DEFAULT_ASPECT_RATIO,
-      priority: 70 - index,
-    });
-    jobCount += 1;
-    estimatedCost += calcImageCost(imageModel, 1);
+    const coveragePrompt = getCoveragePrompt(shot);
+
+    if (options.produceCoverageImages && coveragePrompt) {
+      if (options.filter !== "missing" || !shot.imageStartPath) {
+        await enqueueStoryboardFrameJob({
+          shotId: shot.id,
+          prompt: coveragePrompt,
+          mode: "coverage",
+          model: imageModel,
+          cfg: shot.cfg ?? 7,
+          steps: DEFAULT_IMAGE_STEPS,
+          aspectRatio: DEFAULT_ASPECT_RATIO,
+          priority: 70 - index * 2,
+        });
+        jobCount += 1;
+        estimatedCost += calcImageCost(imageModel, 1);
+      }
+    }
+
+    if (options.produceVideos && shot.promptVideo) {
+      if (options.filter !== "missing" || !shot.videoPath) {
+        await enqueueVideoJobs({
+          model: selectedVideoModel,
+          prompt: shot.promptVideo,
+          duration: clampKlingDuration(shot.durationS),
+          aspectRatio: DEFAULT_ASPECT_RATIO,
+          cfg: 0.45,
+          quantity: 1,
+          shotId: shot.id,
+          priority: 69 - index * 2,
+          jobType: getBulkVideoJobType(shot.parentShotId),
+        });
+        jobCount += 1;
+        estimatedCost += calcVideoCost(selectedVideoModel, 1);
+      }
+    }
   }
 
   return {

@@ -1,55 +1,174 @@
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { join } from "@tauri-apps/api/path";
 import { confirm, message, open } from "@tauri-apps/plugin-dialog";
-import { Images, Link2, Pencil, Plus, Trash2, UserRound } from "lucide-react";
 import {
+  Link2,
+  Pencil,
+  Plus,
+  Trash2,
+  UserRound,
+} from "lucide-react";
+import {
+  EMPTY_CHARACTER_LOOK_ATTRIBUTES,
+  EMPTY_CHARACTER_PROFILE,
+  buildCharacterGenerationPrompt,
+  summarizeCharacterProfile,
+  type CharacterLookAttributes,
+  type CharacterProfile,
+} from "@/lib/character-studio";
+import {
+  CharacterStudioModal,
+  toProjectAssetUrl,
+  CANDIDATE_ASPECT_RATIOS,
+  type StudioLookDraft,
+  type CharacterStudioDraft,
+  type CandidateAsset,
+} from "./CharacterStudioModal";
+import { enqueueImageJobs } from "@/services/jobqueue.service";
+import {
+  appendCharacterLookReference,
+  assignCharacterLookToShot,
+  buildCharacterCandidateTags,
   createCharacter,
   deleteCharacter,
+  getCharacterDeletionImpact,
   importCharacterReferenceFiles,
+  listCharacterCandidateAssets,
   listCharacters,
+  removeLookReference,
+  reorderLookReference,
+  setCharacterLookPrimaryImage,
   updateCharacter,
+  type CharacterLookInput,
   type CharacterRecord,
+  type CharacterStudioInput,
 } from "@/services/character.service";
-import {
-  assignShotExternalReferencePath,
-  getShots,
-  type ShotRow,
-} from "@/services/import.service";
+import { getShots, type ShotRow } from "@/services/import.service";
+import { deleteAssetRecord } from "@/services/asset.service";
+import { Portal } from "@/components/Portal";
 import { useProjectStore } from "@/store/project.store";
+import { useQueueStore } from "@/store/queue.store";
 
-type CharacterEditorState = {
-  id: string | null;
-  name: string;
-  description: string;
-  klingElementId: string;
-  styleNotes: string;
-  refImages: string[];
-  primaryImage: string | null;
-};
 
-const EMPTY_EDITOR: CharacterEditorState = {
-  id: null,
-  name: "",
-  description: "",
-  klingElementId: "",
-  styleNotes: "",
-  refImages: [],
-  primaryImage: null,
-};
+function createEmptyLook(name = "Default Look"): StudioLookDraft {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    attributes: { ...EMPTY_CHARACTER_LOOK_ATTRIBUTES },
+    generationPrompt: "",
+    promptLocked: false,
+    refImages: [],
+    primaryImage: null,
+  };
+}
+
+function createEmptyDraft(): CharacterStudioDraft {
+  const firstLook = createEmptyLook();
+  return {
+    id: null,
+    name: "",
+    description: "",
+    klingElementId: "",
+    profile: { ...EMPTY_CHARACTER_PROFILE },
+    looks: [firstLook],
+    defaultLookId: firstLook.id,
+  };
+}
+
+function toStudioDraft(character: CharacterRecord): CharacterStudioDraft {
+  return {
+    id: character.id,
+    name: character.name,
+    description: character.description ?? "",
+    klingElementId: character.klingElementId ?? "",
+    profile: { ...character.profile },
+    looks: character.looks.map((look) => ({
+      id: look.id,
+      name: look.name,
+      attributes: { ...look.attributes },
+      generationPrompt: look.generationPrompt,
+      promptLocked: look.promptLocked,
+      refImages: look.refImages.slice(),
+      primaryImage: look.primaryImage,
+    })),
+    defaultLookId: character.defaultLookId ?? character.looks[0]?.id ?? null,
+  };
+}
+
+function toCharacterStudioInput(draft: CharacterStudioDraft): CharacterStudioInput {
+  return {
+    name: draft.name,
+    description: draft.description,
+    klingElementId: draft.klingElementId,
+    profile: draft.profile,
+    defaultLookId: draft.defaultLookId,
+    looks: draft.looks.map<CharacterLookInput>((look) => ({
+      id: look.id,
+      name: look.name,
+      attributes: look.attributes,
+      generationPrompt: look.generationPrompt,
+      promptLocked: look.promptLocked,
+      refImages: look.refImages,
+      primaryImage: look.primaryImage,
+      isDefault: look.id === draft.defaultLookId,
+    })),
+  };
+}
+
 
 export function Characters() {
   const activeProject = useProjectStore((state) => state.activeProject);
+  const queueJobs = useQueueStore((state) => state.jobs);
   const [characters, setCharacters] = useState<CharacterRecord[]>([]);
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [showEditor, setShowEditor] = useState(false);
+  const [showStudio, setShowStudio] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<CharacterRecord | null>(null);
-  const [editor, setEditor] = useState<CharacterEditorState>(EMPTY_EDITOR);
+  const [draft, setDraft] = useState<CharacterStudioDraft>(createEmptyDraft());
+  const [activeLookId, setActiveLookId] = useState<string | null>(draft.defaultLookId);
   const [assignShotId, setAssignShotId] = useState("");
+  const [assignLookId, setAssignLookId] = useState("");
+  const [assignIncludePrompt, setAssignIncludePrompt] = useState(true);
+  const [candidateAssets, setCandidateAssets] = useState<CandidateAsset[]>([]);
+  const [candidateLoading, setCandidateLoading] = useState(false);
+  const [candidateAspectRatio, setCandidateAspectRatio] = useState<(typeof CANDIDATE_ASPECT_RATIOS)[number]>("3:4");
+  const [candidateQuantity, setCandidateQuantity] = useState(4);
+  const [generatingCandidates, setGeneratingCandidates] = useState(false);
+
+  const activeLook = useMemo(
+    () => draft.looks.find((look) => look.id === activeLookId) ?? draft.looks[0] ?? null,
+    [activeLookId, draft.looks],
+  );
+  const activeCharacterId = draft.id;
+  const activeCandidateJobs = useMemo(
+    () =>
+      queueJobs.filter((job) => {
+        if (job.type !== "character_image" || !activeCharacterId || !activeLook?.id) {
+          return false;
+        }
+
+        const tags = Array.isArray(job.params?.assetTags)
+          ? (job.params?.assetTags as string[])
+          : [];
+
+        return (
+          job.projectId === activeProject?.id &&
+          (job.status === "queued" || job.status === "active") &&
+          tags.includes(`character:${activeCharacterId}`) &&
+          tags.includes(`look:${activeLook.id}`)
+        );
+      }),
+    [activeCharacterId, activeLook?.id, activeProject?.id, queueJobs],
+  );
+  const candidateRefreshMarker = useMemo(
+    () => activeCandidateJobs.map((job) => `${job.id}:${job.status}:${job.assetId ?? ""}`).join("|"),
+    [activeCandidateJobs],
+  );
 
   const filteredCharacters = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -61,8 +180,13 @@ export function Characters() {
 
       return (
         character.name.toLowerCase().includes(needle) ||
-        character.description?.toLowerCase().includes(needle) ||
-        character.styleNotes?.toLowerCase().includes(needle)
+        (character.description ?? "").toLowerCase().includes(needle) ||
+        (character.promptHint ?? "").toLowerCase().includes(needle) ||
+        character.looks.some(
+          (look) =>
+            look.name.toLowerCase().includes(needle) ||
+            (look.promptHint ?? "").toLowerCase().includes(needle),
+        )
       );
     });
   }, [characters, search]);
@@ -113,54 +237,190 @@ export function Characters() {
     };
   }, [activeProject]);
 
-  async function refreshCharacters() {
-    const nextCharacters = await listCharacters();
-    setCharacters(nextCharacters);
-  }
-
-  function openCreateEditor() {
-    setEditor(EMPTY_EDITOR);
-    setShowEditor(true);
-  }
-
-  function openEditEditor(character: CharacterRecord) {
-    setEditor({
-      id: character.id,
-      name: character.name,
-      description: character.description ?? "",
-      klingElementId: character.klingElementId ?? "",
-      styleNotes: character.styleNotes ?? "",
-      refImages: character.refImages,
-      primaryImage: character.primaryImage,
-    });
-    setShowEditor(true);
-  }
-
-  async function handleImportReferences() {
-    const selected = await open({
-      multiple: true,
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
-    });
-
-    if (!selected) {
+  useEffect(() => {
+    if (!showStudio || !activeProject || !activeCharacterId || !activeLook?.id) {
+      setCandidateAssets([]);
+      setCandidateLoading(false);
       return;
     }
 
-    const inputPaths = Array.isArray(selected) ? selected : [selected];
-    const importedPaths = await importCharacterReferenceFiles(editor.name || "character", inputPaths);
+    let cancelled = false;
+    const project = activeProject;
+    const characterId = activeCharacterId;
+    const lookId = activeLook.id;
 
-    setEditor((current) => {
-      const nextRefImages = Array.from(new Set([...current.refImages, ...importedPaths]));
-      return {
-        ...current,
-        refImages: nextRefImages,
-        primaryImage: current.primaryImage ?? nextRefImages[0] ?? null,
-      };
+    async function loadCandidates() {
+      setCandidateLoading(true);
+
+      try {
+        const assets = await listCharacterCandidateAssets(characterId, lookId);
+        const nextAssets = await Promise.all(
+          assets.map(async (asset) => {
+            const absolutePath = await join(project.folderPath, asset.file_path);
+            return {
+              ...asset,
+              assetUrl: convertFileSrc(absolutePath),
+            };
+          }),
+        );
+
+        if (!cancelled) {
+          setCandidateAssets(nextAssets);
+        }
+      } catch (error) {
+        console.error("Failed to load character candidates", error);
+        if (!cancelled) {
+          setCandidateAssets([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCandidateLoading(false);
+        }
+      }
+    }
+
+    void loadCandidates();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showStudio, activeProject, activeCharacterId, activeLook?.id, candidateRefreshMarker]);
+
+  async function refreshCharacters() {
+    const nextCharacters = await listCharacters();
+    setCharacters(nextCharacters);
+    return nextCharacters;
+  }
+
+  function openCreateEditor() {
+    const nextDraft = createEmptyDraft();
+    setDraft(nextDraft);
+    setActiveLookId(nextDraft.defaultLookId);
+    setShowStudio(true);
+  }
+
+  function openEditEditor(character: CharacterRecord) {
+    const nextDraft = toStudioDraft(character);
+    setDraft(nextDraft);
+    setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+    setShowStudio(true);
+  }
+
+  function updateDraft(patch: Partial<CharacterStudioDraft>) {
+    setDraft((current) => ({ ...current, ...patch }));
+  }
+
+  function updateActiveLook(
+    updater: (look: StudioLookDraft) => StudioLookDraft,
+  ) {
+    setDraft((current) => ({
+      ...current,
+      looks: current.looks.map((look) =>
+        look.id === (activeLookId ?? current.defaultLookId) ? updater(look) : look,
+      ),
+    }));
+  }
+
+  function handleProfileFieldChange<K extends keyof CharacterProfile>(
+    key: K,
+    value: CharacterProfile[K],
+  ) {
+    updateDraft({
+      profile: {
+        ...draft.profile,
+        [key]: value,
+      },
     });
   }
 
+  function handleLookFieldChange<K extends keyof CharacterLookAttributes>(
+    key: K,
+    value: CharacterLookAttributes[K],
+  ) {
+    updateActiveLook((look) => ({
+      ...look,
+      attributes: {
+        ...look.attributes,
+        [key]: value,
+      },
+    }));
+  }
+
+  async function ensureSavedDraft(): Promise<CharacterStudioDraft | null> {
+    if (!draft.name.trim()) {
+      await message("Karakter adi zorunludur.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return null;
+    }
+
+    if (draft.id) {
+      return draft;
+    }
+
+    try {
+      const created = await createCharacter(toCharacterStudioInput(draft));
+      const nextDraft = toStudioDraft(created);
+      setDraft(nextDraft);
+      setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+      await refreshCharacters();
+      return nextDraft;
+    } catch (error) {
+      console.error("Failed to persist character draft", error);
+      await message(error instanceof Error ? error.message : "Karakter taslagi kaydedilemedi.", {
+        title: "Characters",
+        kind: "error",
+      });
+      return null;
+    }
+  }
+
+  async function handleImportReferences() {
+    if (!activeLook) {
+      return;
+    }
+
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+
+      if (!selected) {
+        return;
+      }
+
+      const inputPaths = Array.isArray(selected) ? selected : [selected];
+      const importedPaths = await importCharacterReferenceFiles(draft.name || "character", inputPaths);
+
+      updateActiveLook((look) => {
+        const nextRefImages = Array.from(new Set([...look.refImages, ...importedPaths]));
+        return {
+          ...look,
+          refImages: nextRefImages,
+          primaryImage: look.primaryImage ?? nextRefImages[0] ?? null,
+        };
+      });
+
+      if (draft.id && activeLookId) {
+        for (const relativePath of importedPaths) {
+          await appendCharacterLookReference(draft.id, activeLookId, relativePath);
+        }
+
+        await refreshCharacters();
+      }
+    } catch (error) {
+      console.error("Failed to import character references", error);
+      await message(error instanceof Error ? error.message : "Referans gorselleri eklenemedi.", {
+        title: "Characters",
+        kind: "error",
+      });
+    }
+  }
+
   async function handleSave() {
-    if (!editor.name.trim()) {
+    if (!draft.name.trim()) {
       await message("Karakter adi zorunludur.", {
         title: "Characters",
         kind: "warning",
@@ -171,15 +431,25 @@ export function Characters() {
     setSaving(true);
 
     try {
-      if (editor.id) {
-        await updateCharacter(editor.id, editor);
+      if (draft.id) {
+        await updateCharacter(draft.id, toCharacterStudioInput(draft));
       } else {
-        await createCharacter(editor);
+        const created = await createCharacter(toCharacterStudioInput(draft));
+        setDraft(toStudioDraft(created));
       }
 
-      await refreshCharacters();
-      setShowEditor(false);
-      setEditor(EMPTY_EDITOR);
+      const nextCharacters = await refreshCharacters();
+
+      if (draft.id) {
+        const refreshed = nextCharacters.find((character) => character.id === draft.id);
+        if (refreshed) {
+          const nextDraft = toStudioDraft(refreshed);
+          setDraft(nextDraft);
+          setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+        }
+      }
+
+      setShowStudio(false);
     } catch (error) {
       console.error("Failed to save character", error);
       await message(error instanceof Error ? error.message : "Karakter kaydedilemedi.", {
@@ -192,12 +462,18 @@ export function Characters() {
   }
 
   async function handleDelete(characterId: string) {
-    const accepted = await confirm("Bu karakter kaydi silinecek. Devam edilsin mi?", {
-      title: "Karakter sil",
-      kind: "warning",
-      okLabel: "Sil",
-      cancelLabel: "Vazgec",
-    });
+    const impact = await getCharacterDeletionImpact(characterId);
+    const accepted = await confirm(
+      impact.shotCount > 0
+        ? `Bu karakter silinecek ve ${impact.shotCount} shot baglantisi temizlenecek. Devam edilsin mi?`
+        : "Bu karakter kaydi silinecek. Devam edilsin mi?",
+      {
+        title: "Karakter sil",
+        kind: "warning",
+        okLabel: "Sil",
+        cancelLabel: "Vazgec",
+      },
+    );
 
     if (!accepted) {
       return;
@@ -214,22 +490,275 @@ export function Characters() {
     }
   }
 
+  function handleAddLook() {
+    const nextLook = createEmptyLook(`Look ${draft.looks.length + 1}`);
+    setDraft((current) => ({
+      ...current,
+      looks: [...current.looks, nextLook],
+      defaultLookId: current.defaultLookId ?? nextLook.id,
+    }));
+    setActiveLookId(nextLook.id);
+  }
+
+  function handleDuplicateLook() {
+    if (!activeLook) {
+      return;
+    }
+
+    const nextLook: StudioLookDraft = {
+      ...activeLook,
+      id: crypto.randomUUID(),
+      name: `${activeLook.name} Copy`,
+      refImages: activeLook.refImages.slice(),
+      attributes: { ...activeLook.attributes },
+    };
+
+    setDraft((current) => ({
+      ...current,
+      looks: [...current.looks, nextLook],
+    }));
+    setActiveLookId(nextLook.id);
+  }
+
+  async function handleRemoveLook() {
+    if (!activeLook) {
+      return;
+    }
+
+    if (draft.looks.length === 1) {
+      await message("Her karakterde en az bir look bulunmali.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return;
+    }
+
+    const accepted = await confirm(`${activeLook.name} look'u taslaktan kaldirilacak. Devam edilsin mi?`, {
+      title: "Look sil",
+      kind: "warning",
+      okLabel: "Sil",
+      cancelLabel: "Vazgec",
+    });
+
+    if (!accepted) {
+      return;
+    }
+
+    setDraft((current) => {
+      const nextLooks = current.looks.filter((look) => look.id !== activeLook.id);
+      const nextDefaultLookId =
+        current.defaultLookId === activeLook.id
+          ? nextLooks[0]?.id ?? null
+          : current.defaultLookId;
+      return {
+        ...current,
+        looks: nextLooks,
+        defaultLookId: nextDefaultLookId,
+      };
+    });
+    setActiveLookId((current) => (current === activeLook.id ? draft.looks.find((look) => look.id !== activeLook.id)?.id ?? null : current));
+  }
+
+  function handleMoveReference(refImage: string, direction: -1 | 1) {
+    updateActiveLook((look) => ({
+      ...look,
+      refImages: reorderLookReference(look.refImages, refImage, direction),
+    }));
+  }
+
+  function handleRemoveReference(refImage: string) {
+    updateActiveLook((look) => ({
+      ...look,
+      ...removeLookReference(look.refImages, look.primaryImage, refImage),
+    }));
+  }
+
+  async function handleReferencePrimaryChange(relativePath: string) {
+    updateActiveLook((look) => ({
+      ...look,
+      refImages: Array.from(new Set([...look.refImages, relativePath])),
+      primaryImage: relativePath,
+    }));
+
+    if (!draft.id || !activeLookId) {
+      return;
+    }
+
+    try {
+      await setCharacterLookPrimaryImage(draft.id, activeLookId, relativePath);
+      await refreshCharacters();
+    } catch (error) {
+      console.error("Failed to persist character primary image", error);
+      await message(error instanceof Error ? error.message : "Karakter gorseli guncellenemedi.", {
+        title: "Characters",
+        kind: "error",
+      });
+    }
+  }
+
+  async function handleUseCandidate(asset: CandidateAsset, makePrimary: boolean) {
+    updateActiveLook((look) => {
+      const nextRefImages = Array.from(new Set([...look.refImages, asset.file_path]));
+      return {
+        ...look,
+        refImages: nextRefImages,
+        primaryImage: makePrimary ? asset.file_path : look.primaryImage ?? nextRefImages[0] ?? null,
+      };
+    });
+
+    if (!draft.id || !activeLookId) {
+      return;
+    }
+
+    try {
+      if (makePrimary) {
+        await setCharacterLookPrimaryImage(draft.id, activeLookId, asset.file_path);
+      } else {
+        await appendCharacterLookReference(draft.id, activeLookId, asset.file_path);
+      }
+
+      await refreshCharacters();
+    } catch (error) {
+      console.error("Failed to persist character candidate usage", error);
+      await message(error instanceof Error ? error.message : "Candidate gorseli karaktere eklenemedi.", {
+        title: "Characters",
+        kind: "error",
+      });
+    }
+  }
+
+  async function handleDiscardCandidate(asset: CandidateAsset) {
+    if (activeLook?.refImages.includes(asset.file_path)) {
+      await message("Bu candidate su an aktif look referanslari icinde kullaniliyor. Once referans listesinden cikar.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return;
+    }
+
+    const accepted = await confirm("Bu candidate asset silinecek. Devam edilsin mi?", {
+      title: "Candidate sil",
+      kind: "warning",
+      okLabel: "Sil",
+      cancelLabel: "Vazgec",
+    });
+
+    if (!accepted) {
+      return;
+    }
+
+    await deleteAssetRecord(asset.id);
+    setCandidateAssets((current) => current.filter((item) => item.id !== asset.id));
+  }
+
+  async function handleGenerateCandidates() {
+    if (!activeProject || !activeLook) {
+      return;
+    }
+
+    const persistedDraft = await ensureSavedDraft();
+
+    if (!persistedDraft) {
+      return;
+    }
+
+    const persistedLook =
+      persistedDraft.looks.find((look) => look.id === activeLook.id) ??
+      persistedDraft.looks.find((look) => look.id === persistedDraft.defaultLookId) ??
+      persistedDraft.looks[0];
+
+    if (!persistedLook) {
+      return;
+    }
+
+    setGeneratingCandidates(true);
+
+    try {
+      const referenceImagePaths = await Promise.all(
+        persistedLook.refImages.slice(0, 4).map((relativePath) =>
+          join(activeProject.folderPath, ...relativePath.split(/[\\/]+/).filter(Boolean)),
+        ),
+      );
+      const prompt =
+        persistedLook.promptLocked && persistedLook.generationPrompt.trim()
+          ? persistedLook.generationPrompt.trim()
+          : buildCharacterGenerationPrompt(
+              persistedDraft.name,
+              persistedDraft.profile,
+              persistedLook.attributes,
+            );
+      const tags = buildCharacterCandidateTags(persistedDraft.id as string, persistedLook.id);
+
+      await enqueueImageJobs({
+        model: "fal-ai/nano-banana-2",
+        prompt,
+        aspectRatio: candidateAspectRatio,
+        cfg: 7,
+        steps: 28,
+        quantity: candidateQuantity,
+        referenceImagePaths,
+        jobType: "character_image",
+        assetTags: tags,
+      });
+
+      await message(`${candidateQuantity} karakter candidate isi kuyruga eklendi.`, {
+        title: "Characters",
+        kind: "info",
+      });
+    } catch (error) {
+      console.error("Failed to enqueue character candidates", error);
+      await message(error instanceof Error ? error.message : "Character candidate kuyrugu olusturulamadi.", {
+        title: "Characters",
+        kind: "error",
+      });
+    } finally {
+      setGeneratingCandidates(false);
+    }
+  }
+
   async function handleAssignReference() {
-    if (!selectedCharacter?.primaryImage || !assignShotId) {
+    if (!selectedCharacter || !assignLookId) {
+      return;
+    }
+
+    if (!assignShotId) {
+      await message("Referansin atanacagi shot'u sec.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return;
+    }
+
+    const selectedLook =
+      selectedCharacter.looks.find((look) => look.id === assignLookId) ??
+      selectedCharacter.looks[0];
+
+    if (!selectedLook?.primaryImage) {
+      await message("Secilen look icin once bir primary referans gorseli belirle.", {
+        title: "Characters",
+        kind: "warning",
+      });
       return;
     }
 
     setAssigning(true);
 
     try {
-      await assignShotExternalReferencePath(assignShotId, selectedCharacter.primaryImage);
-      await message(`${selectedCharacter.name} referansi shot'a baglandi.`, {
+      await assignCharacterLookToShot(
+        assignShotId,
+        selectedCharacter.id,
+        selectedLook.id,
+        assignIncludePrompt,
+      );
+      await message(`${selectedCharacter.name} / ${selectedLook.name} shot'a baglandi.`, {
         title: "Characters",
         kind: "info",
       });
       setShowAssignModal(false);
       setSelectedCharacter(null);
       setAssignShotId("");
+      setAssignLookId("");
+      setAssignIncludePrompt(true);
     } catch (error) {
       await message(error instanceof Error ? error.message : "Referans atanamadi.", {
         title: "Characters",
@@ -257,13 +786,13 @@ export function Characters() {
               Characters
             </div>
             <p style={copyStyle}>
-              Karakter referanslari, stil notlari ve storyboard referans atamalari bu merkezde yonetilir.
+              Karakter continuity profilleri, look varyantlari ve Nano Banana 2 ile uretilen referanslar burada yonetilir.
             </p>
           </div>
 
           <button className="btn-primary" onClick={openCreateEditor} type="button">
             <Plus size={15} />
-            Yeni Karakter
+            Character Studio
           </button>
         </header>
 
@@ -286,7 +815,7 @@ export function Characters() {
             title={characters.length === 0 ? "Karakter kutuphanesi bos" : "Sonuc bulunamadi"}
             copy={
               characters.length === 0
-                ? "Ilk karakter referanslarini ekleyerek storyboard continuity akisini guclendirebilirsin."
+                ? "Character Studio ile ilk continuity profilini olusturup referans gorseller uretebilirsin."
                 : "Arama sonucunda karakter bulunamadi."
             }
           />
@@ -299,6 +828,8 @@ export function Characters() {
                 onAssign={() => {
                   setSelectedCharacter(character);
                   setAssignShotId(shots[0]?.id ?? "");
+                  setAssignLookId(character.defaultLookId ?? character.looks[0]?.id ?? "");
+                  setAssignIncludePrompt(true);
                   setShowAssignModal(true);
                 }}
                 onDelete={() => void handleDelete(character.id)}
@@ -310,37 +841,79 @@ export function Characters() {
         )}
       </section>
 
-      {showEditor ? (
-        <CharacterEditorModal
-          editor={editor}
-          onChange={setEditor}
+      {showStudio ? (
+        <Portal><CharacterStudioModal
+          activeLook={activeLook}
+          activeLookId={activeLookId}
+          candidateAssets={candidateAssets}
+          candidateAspectRatio={candidateAspectRatio}
+          candidateLoading={candidateLoading}
+          candidateQuantity={candidateQuantity}
+          draft={draft}
+          generatingCandidates={generatingCandidates}
+          onAddLook={handleAddLook}
+          onCandidateAspectRatioChange={setCandidateAspectRatio}
+          onCandidateQuantityChange={setCandidateQuantity}
           onClose={() => {
-            if (!saving) {
-              setShowEditor(false);
+            if (!saving && !generatingCandidates) {
+              setShowStudio(false);
             }
           }}
+          onDefaultLookChange={(lookId) => updateDraft({ defaultLookId: lookId })}
+          onDiscardCandidate={(asset) => void handleDiscardCandidate(asset)}
+          onDuplicateLook={handleDuplicateLook}
+          onGenerateCandidates={() => void handleGenerateCandidates()}
           onImportReferences={() => void handleImportReferences()}
+          onLookFieldChange={handleLookFieldChange}
+          onLookNameChange={(value) => updateActiveLook((look) => ({ ...look, name: value }))}
+          onLookSelect={setActiveLookId}
+          onMoveReference={handleMoveReference}
+          onProfileFieldChange={handleProfileFieldChange}
+          onPromptChange={(value) =>
+            updateActiveLook((look) => ({
+              ...look,
+              generationPrompt: value,
+              promptLocked: true,
+            }))
+          }
+          onPromptReset={() =>
+            updateActiveLook((look) => ({
+              ...look,
+              generationPrompt: "",
+              promptLocked: false,
+            }))
+          }
+          onReferencePrimaryChange={(relativePath) => void handleReferencePrimaryChange(relativePath)}
+          onRemoveLook={() => void handleRemoveLook()}
+          onRemoveReference={handleRemoveReference}
           onSave={() => void handleSave()}
+          onTextChange={(key, value) => updateDraft({ [key]: value } as Partial<CharacterStudioDraft>)}
+          onUseCandidate={(asset, makePrimary) => void handleUseCandidate(asset, makePrimary)}
           projectFolderPath={activeProject.folderPath}
+          queueJobs={activeCandidateJobs.length}
           saving={saving}
-        />
+        /></Portal>
       ) : null}
 
       {showAssignModal && selectedCharacter ? (
-        <AssignReferenceModal
+        <Portal><AssignReferenceModal
           assigning={assigning}
           character={selectedCharacter}
+          includePrompt={assignIncludePrompt}
           onAssign={() => void handleAssignReference()}
           onClose={() => {
             if (!assigning) {
               setShowAssignModal(false);
             }
           }}
+          onIncludePromptChange={setAssignIncludePrompt}
+          onLookChange={setAssignLookId}
           onShotChange={setAssignShotId}
           projectFolderPath={activeProject.folderPath}
+          selectedLookId={assignLookId}
           selectedShotId={assignShotId}
           shots={shots}
-        />
+        /></Portal>
       ) : null}
     </section>
   );
@@ -359,9 +932,22 @@ function CharacterCard({
   onAssign: () => void;
   projectFolderPath: string;
 }) {
-  const primaryUrl = character.primaryImage
-    ? convertFileSrc(`${projectFolderPath.replace(/\\/g, "/").replace(/\/$/, "")}/${character.primaryImage}`)
-    : null;
+  const defaultLook =
+    character.looks.find((look) => look.id === character.defaultLookId) ??
+    character.looks[0] ??
+    null;
+  const previewLook =
+    defaultLook?.primaryImage || defaultLook?.refImages[0]
+      ? defaultLook
+      : character.looks.find((look) => look.primaryImage || look.refImages[0]) ?? defaultLook;
+  const primaryUrl = toProjectAssetUrl(
+    projectFolderPath,
+    previewLook?.primaryImage ??
+      previewLook?.refImages[0] ??
+      character.primaryImage ??
+      character.refImages[0] ??
+      null,
+  );
 
   return (
     <article style={cardStyle}>
@@ -380,7 +966,8 @@ function CharacterCard({
               <strong style={{ fontSize: 18 }}>{character.name}</strong>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {character.klingElementId ? <span style={mutedTagStyle}>{character.klingElementId}</span> : null}
-                <span style={tagStyle}>{character.refImages.length} ref</span>
+                <span style={tagStyle}>{character.looks.length} look</span>
+                <span style={mutedTagStyle}>{defaultLook?.name ?? "Default Look"}</span>
               </div>
             </div>
             <button className="icon-button" onClick={onEdit} type="button">
@@ -388,12 +975,14 @@ function CharacterCard({
             </button>
           </div>
 
-          <div style={textBlockStyle}>{character.description || character.styleNotes || "Karakter notu eklenmedi."}</div>
+          <div style={textBlockStyle}>
+            {character.promptHint || character.description || summarizeCharacterProfile(character.profile, character.styleNotes) || "Karakter notu eklenmedi."}
+          </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="btn-secondary" onClick={onAssign} type="button">
               <Link2 size={14} />
-              Shot referansi ata
+              Shot'a bagla
             </button>
             <button className="btn-secondary" onClick={onDelete} type="button">
               <Trash2 size={14} />
@@ -406,130 +995,15 @@ function CharacterCard({
   );
 }
 
-function CharacterEditorModal({
-  editor,
-  onChange,
-  onClose,
-  onImportReferences,
-  onSave,
-  saving,
-  projectFolderPath,
-}: {
-  editor: CharacterEditorState;
-  onChange: (value: CharacterEditorState) => void;
-  onClose: () => void;
-  onImportReferences: () => void;
-  onSave: () => void;
-  saving: boolean;
-  projectFolderPath: string;
-}) {
-  return (
-    <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(event) => event.stopPropagation()} style={modalPanelStyle}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>
-            {editor.id ? "Karakter duzenle" : "Yeni karakter"}
-          </div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            Referans gorselleri proje klasorundeki `assets/characters` altina kopyalanir.
-          </p>
-        </div>
-
-        <div style={{ display: "grid", gap: 12 }}>
-          <input
-            onChange={(event) => onChange({ ...editor, name: event.target.value })}
-            placeholder="Karakter adi"
-            style={formInputStyle}
-            value={editor.name}
-          />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <input
-              onChange={(event) => onChange({ ...editor, description: event.target.value })}
-              placeholder="Kisa aciklama"
-              style={formInputStyle}
-              value={editor.description}
-            />
-            <input
-              onChange={(event) => onChange({ ...editor, klingElementId: event.target.value })}
-              placeholder="Kling element ID"
-              style={formInputStyle}
-              value={editor.klingElementId}
-            />
-          </div>
-
-          <textarea
-            onChange={(event) => onChange({ ...editor, styleNotes: event.target.value })}
-            placeholder="Stil ve continuity notlari"
-            rows={7}
-            style={textareaStyle}
-            value={editor.styleNotes}
-          />
-
-          <div style={{ display: "grid", gap: 12, padding: 16, borderRadius: 18, border: "1px solid var(--border-subtle)", background: "var(--bg-elevated)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-              <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>Referans gorselleri</div>
-              <button className="btn-secondary" onClick={onImportReferences} type="button">
-                <Images size={14} />
-                Gorsel Ekle
-              </button>
-            </div>
-
-            {editor.refImages.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Henuz referans gorseli eklenmedi.</div>
-            ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 10 }}>
-                {editor.refImages.map((refImage) => {
-                  const absoluteUrl = convertFileSrc(
-                    `${projectFolderPath.replace(/\\/g, "/").replace(/\/$/, "")}/${refImage}`,
-                  );
-                  const isPrimary = editor.primaryImage === refImage;
-
-                  return (
-                    <button
-                      key={refImage}
-                      onClick={() => onChange({ ...editor, primaryImage: refImage })}
-                      style={{
-                        display: "grid",
-                        gap: 8,
-                        padding: 8,
-                        borderRadius: 14,
-                        border: `1px solid ${isPrimary ? "rgba(245,158,11,0.32)" : "var(--border-subtle)"}`,
-                        background: isPrimary ? "rgba(245,158,11,0.08)" : "var(--bg-surface)",
-                        cursor: "pointer",
-                      }}
-                      type="button"
-                    >
-                      <img alt="reference" src={absoluteUrl} style={thumbStyle} />
-                      <span style={{ fontSize: 10, color: isPrimary ? "var(--accent)" : "var(--text-secondary)" }}>
-                        {isPrimary ? "Primary" : "Set primary"}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button className="btn-secondary" disabled={saving} onClick={onClose} type="button">
-            Iptal
-          </button>
-          <button className="btn-primary" disabled={saving} onClick={onSave} type="button">
-            {saving ? "Kaydediliyor..." : "Kaydet"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AssignReferenceModal({
   character,
   shots,
   selectedShotId,
+  selectedLookId,
+  includePrompt,
   onShotChange,
+  onLookChange,
+  onIncludePromptChange,
   onAssign,
   onClose,
   assigning,
@@ -538,29 +1012,44 @@ function AssignReferenceModal({
   character: CharacterRecord;
   shots: ShotRow[];
   selectedShotId: string;
+  selectedLookId: string;
+  includePrompt: boolean;
   onShotChange: (value: string) => void;
+  onLookChange: (value: string) => void;
+  onIncludePromptChange: (value: boolean) => void;
   onAssign: () => void;
   onClose: () => void;
   assigning: boolean;
   projectFolderPath: string;
 }) {
-  const previewUrl = character.primaryImage
-    ? convertFileSrc(`${projectFolderPath.replace(/\\/g, "/").replace(/\/$/, "")}/${character.primaryImage}`)
-    : null;
+  const selectedLook =
+    character.looks.find((look) => look.id === selectedLookId) ??
+    character.looks.find((look) => look.id === character.defaultLookId) ??
+    character.looks[0] ??
+    null;
+  const previewUrl = toProjectAssetUrl(projectFolderPath, selectedLook?.primaryImage ?? null);
 
   return (
     <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(event) => event.stopPropagation()} style={{ ...modalPanelStyle, width: "min(520px, 100%)" }}>
+      <div onClick={(event) => event.stopPropagation()} style={{ ...modalPanelStyle, width: "min(560px, 100%)" }}>
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>Shot referansi ata</div>
+          <div style={{ fontSize: 22, fontWeight: 600 }}>Shot'a karakter bagla</div>
           <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            {character.name} karakterinin primary referansi secilen shot icin harici referans olarak atanacak.
+            Secilen look'un primary referansi shot'a baglanacak. Istersen promptlara continuity hint'i de eklenir.
           </p>
         </div>
 
         {previewUrl ? <img alt={character.name} src={previewUrl} style={{ ...thumbStyle, width: "100%", height: 220 }} /> : null}
 
-        <select onChange={(event) => onShotChange(event.target.value)} style={formInputStyle} value={selectedShotId}>
+        <select onChange={(event) => onLookChange(event.target.value)} style={formInputStyle} value={selectedLookId}>
+          {character.looks.map((look) => (
+            <option key={look.id} value={look.id}>
+              {look.name}
+            </option>
+          ))}
+        </select>
+
+        <select disabled={shots.length === 0} onChange={(event) => onShotChange(event.target.value)} style={formInputStyle} value={selectedShotId}>
           <option value="">Shot sec</option>
           {shots.map((shot) => (
             <option key={shot.id} value={shot.id}>
@@ -569,12 +1058,17 @@ function AssignReferenceModal({
           ))}
         </select>
 
+        <label style={toggleRowStyle}>
+          <input checked={includePrompt} onChange={(event) => onIncludePromptChange(event.target.checked)} type="checkbox" />
+          <span>Karakter continuity hint'ini promptlara ekle</span>
+        </label>
+
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
           <button className="btn-secondary" disabled={assigning} onClick={onClose} type="button">
             Iptal
           </button>
-          <button className="btn-primary" disabled={!selectedShotId || assigning} onClick={onAssign} type="button">
-            {assigning ? "Ataniyor..." : "Ata"}
+          <button className="btn-primary" disabled={!selectedShotId || !selectedLook?.primaryImage || assigning} onClick={onAssign} type="button">
+            {assigning ? "Ataniyor..." : "Bagla"}
           </button>
         </div>
       </div>
@@ -595,6 +1089,7 @@ function CharactersState({ title, copy }: { title: string; copy: string }) {
     </section>
   );
 }
+
 
 const heroStyle = {
   display: "flex",
@@ -745,11 +1240,12 @@ const formInputStyle = {
   outline: "none",
 } satisfies React.CSSProperties;
 
-const textareaStyle = {
-  ...formInputStyle,
-  resize: "vertical",
-  fontFamily: "inherit",
-  lineHeight: 1.7,
+const toggleRowStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  color: "var(--text-secondary)",
+  fontSize: 13,
 } satisfies React.CSSProperties;
 
 const thumbStyle = {

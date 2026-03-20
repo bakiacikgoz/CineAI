@@ -111,14 +111,18 @@ export function ShotCard({
   const [hovered, setHovered] = useState(false);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const accentColor = TYPE_COLORS[shot.shotType] ?? TYPE_COLORS.main;
-  const width = isCoverage ? 136 : 196;
-  const height = isCoverage ? 152 : 244;
+  const width = isCoverage ? 164 : 320;
+  const previewHeight = isCoverage ? 92 : 180;
   const thumbnail = resolveThumbnailPath(shot);
   const imageCardStatus = resolveImageCardStatus(shot);
   const missingExternalReference =
     shot.requiresExternalReference && !shot.externalReferencePath;
   const imageModelLabel = getImageModelLabel(shot);
   const videoModelLabel = getVideoModelLabel(shot);
+  const actSceneLabel = `A${shot.act ?? "-"} · S${shot.scene ?? "-"}`;
+  const durationLabel = shot.durationS ? `${shot.durationS}s` : "--";
+  const tensionLabel = shot.tensionLevel ? `T${shot.tensionLevel}` : "T--";
+  const summaryCopy = shot.summaryTr ?? "Prompt ve continuity detaylari detay modalinda gorunur.";
   const thumbUrl = thumbnail.path
     ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, thumbnail.path))
     : null;
@@ -165,21 +169,22 @@ export function ShotCard({
       onBlur={handleBlur}
       style={{
         width,
-        minHeight: height,
+        minHeight: isCoverage ? 132 : 330,
         display: "grid",
-        gridTemplateRows: "1fr auto",
-        borderRadius: 20,
+        gridTemplateRows: "auto auto",
+        borderRadius: isCoverage ? 20 : 26,
         overflow: "hidden",
-        border: `1px solid ${selected ? accentColor : "var(--border-subtle)"}`,
-        background: "var(--bg-surface)",
+        border: `1px solid ${selected ? accentColor : "rgba(255,255,255,0.08)"}`,
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012) 18%, rgba(12,12,14,0.96) 100%)",
         color: "inherit",
         cursor: "pointer",
         opacity: archived ? 0.58 : 1,
         boxShadow: selected
-          ? `0 0 0 1px ${accentColor}33, 0 26px 60px rgba(0, 0, 0, 0.28)`
+          ? `0 0 0 1px ${accentColor}33, 0 26px 60px rgba(0, 0, 0, 0.34)`
           : hovered
-            ? "0 28px 68px rgba(0, 0, 0, 0.3)"
-            : "0 20px 48px rgba(0, 0, 0, 0.18)",
+            ? "0 30px 72px rgba(0, 0, 0, 0.32)"
+            : "0 18px 44px rgba(0, 0, 0, 0.22)",
         transform: selected ? "translateY(-2px)" : hovered ? "translateY(-3px)" : "translateY(0)",
         transition: "transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease",
         textAlign: "left",
@@ -189,11 +194,11 @@ export function ShotCard({
       <div
         style={{
           position: "relative",
-          minHeight: isCoverage ? 88 : 154,
+          minHeight: previewHeight,
           overflow: "hidden",
           background: resolvedThumbUrl
-            ? "linear-gradient(180deg, transparent 32%, rgba(0, 0, 0, 0.5))"
-            : "linear-gradient(160deg, rgba(245, 158, 11, 0.12), transparent 56%), var(--bg-overlay)",
+            ? "linear-gradient(180deg, transparent 22%, rgba(0, 0, 0, 0.62))"
+            : "linear-gradient(160deg, rgba(245, 158, 11, 0.14), transparent 58%), var(--bg-overlay)",
         }}
       >
         {resolvedThumbUrl ? (
@@ -212,6 +217,15 @@ export function ShotCard({
           />
         ) : null}
 
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background:
+              "linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.08) 34%, rgba(0,0,0,0.58) 100%)",
+          }}
+        />
+
         {!resolvedThumbUrl ? (
           <div
             style={{
@@ -229,260 +243,227 @@ export function ShotCard({
         <div
           style={{
             position: "absolute",
-            inset: 10,
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 8,
+            inset: isCoverage ? 10 : 12,
+            display: "grid",
+            alignContent: "space-between",
+            gap: 10,
           }}
         >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: isCoverage ? "4px 6px" : "5px 8px",
-              borderRadius: 999,
-              background: "rgba(0, 0, 0, 0.58)",
-              color: "#f8f7f2",
-              fontSize: isCoverage ? 8 : 10,
-              fontWeight: 700,
-              letterSpacing: "0.06em",
-            }}
-          >
-            {shot.shotNumber}
-          </span>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              padding: isCoverage ? "4px 6px" : "5px 8px",
-              borderRadius: 999,
-              background: `${accentColor}cc`,
-              color: "#100800",
-              fontSize: isCoverage ? 8 : 9,
-              fontWeight: 800,
-              letterSpacing: "0.08em",
-            }}
-          >
-            {TYPE_LABELS[shot.shotType] ?? shot.shotType.toUpperCase()}
-          </span>
-        </div>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: isCoverage ? "4px 6px" : "6px 9px",
+                  borderRadius: 999,
+                  background: "rgba(0, 0, 0, 0.62)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "#f8f7f2",
+                  fontSize: isCoverage ? 8 : 10,
+                  fontWeight: 800,
+                  letterSpacing: "0.08em",
+                }}
+              >
+                {shot.shotNumber}
+              </span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: isCoverage ? "4px 6px" : "6px 9px",
+                  borderRadius: 999,
+                  background: `${accentColor}d9`,
+                  color: "#100800",
+                  fontSize: isCoverage ? 8 : 9,
+                  fontWeight: 800,
+                  letterSpacing: "0.1em",
+                }}
+              >
+                {TYPE_LABELS[shot.shotType] ?? shot.shotType.toUpperCase()}
+              </span>
+            </div>
 
-        {archived ? (
-          <div
-            style={{
-              position: "absolute",
-              left: 10,
-              top: isCoverage ? 36 : 44,
-              padding: "4px 8px",
-              borderRadius: 999,
-              background: "rgba(0, 0, 0, 0.62)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: "var(--text-secondary)",
-              fontSize: isCoverage ? 8 : 9,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
-          >
-            Archived
+            {thumbnail.source === "end" ? (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: isCoverage ? "4px 6px" : "6px 9px",
+                  borderRadius: 999,
+                  background: "rgba(0, 0, 0, 0.62)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "var(--text-secondary)",
+                  fontSize: isCoverage ? 7 : 9,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}
+              >
+                End preview
+              </span>
+            ) : null}
           </div>
-        ) : null}
 
-        {thumbnail.source === "end" ? (
-          <div
-            style={{
-              position: "absolute",
-              left: 10,
-              top: isCoverage ? 58 : 82,
-              padding: isCoverage ? "3px 6px" : "4px 8px",
-              borderRadius: 999,
-              background: "rgba(0, 0, 0, 0.62)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: "var(--text-secondary)",
-              fontSize: isCoverage ? 7 : 9,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
-          >
-            End preview
+          <div style={{ display: "grid", gap: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                gap: 6,
+                opacity: showToolbar ? 1 : 0,
+                transform: showToolbar ? "translateY(0)" : "translateY(10px)",
+                transition: "opacity 150ms ease, transform 150ms ease",
+                pointerEvents: showToolbar ? "auto" : "none",
+              }}
+            >
+              <HoverActionButton
+                active={Boolean(shot.imageStartPath)}
+                compact={isCoverage}
+                icon={<ImageIcon size={11} />}
+                label="START"
+                onClick={() => handlePreviewClick("start")}
+              />
+              <HoverActionButton
+                active={Boolean(shot.imageEndPath)}
+                compact={isCoverage}
+                icon={<ImageIcon size={11} />}
+                label="END"
+                onClick={() => handlePreviewClick("end")}
+              />
+              <HoverActionButton
+                active={Boolean(shot.videoPath || shot.video4kPath)}
+                compact={isCoverage}
+                icon={<Play size={11} />}
+                label="VIDEO"
+                onClick={() => handlePreviewClick("video")}
+              />
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                {archived ? (
+                  <span
+                    style={{
+                      padding: isCoverage ? "3px 6px" : "4px 8px",
+                      borderRadius: 999,
+                      background: "rgba(0, 0, 0, 0.62)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      color: "var(--text-secondary)",
+                      fontSize: isCoverage ? 7 : 9,
+                      fontWeight: 700,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Archived
+                  </span>
+                ) : null}
+                {missingExternalReference ? (
+                  <span
+                    style={{
+                      padding: isCoverage ? "3px 6px" : "4px 8px",
+                      borderRadius: 999,
+                      background: "rgba(245, 158, 11, 0.16)",
+                      border: "1px solid rgba(245, 158, 11, 0.26)",
+                      color: "var(--accent)",
+                      fontSize: isCoverage ? 7 : 9,
+                      fontWeight: 800,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Ref required
+                  </span>
+                ) : null}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {isCoverage ? (
+                  <>
+                    <CompactStatus icon={<ImageIcon size={10} />} status={imageCardStatus} />
+                    <CompactStatus icon={<Video size={10} />} status={shot.videoStatus} />
+                    {shot.upscaleStatus === "done" ? <CompactStatus label="4K" status="done" /> : null}
+                  </>
+                ) : (
+                  <>
+                    <StatusPill icon={<ImageIcon size={11} />} label="IMG" status={imageCardStatus} />
+                    <StatusPill icon={<Video size={11} />} label="VID" status={shot.videoStatus} />
+                    {shot.upscaleStatus === "done" ? (
+                      <span
+                        style={{
+                          padding: "3px 6px",
+                          borderRadius: 999,
+                          background: "rgba(167, 139, 250, 0.16)",
+                          color: "var(--status-purple)",
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: "0.08em",
+                        }}
+                      >
+                        4K
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-        ) : null}
-
-        {missingExternalReference ? (
-          <div
-            style={{
-              position: "absolute",
-              left: 10,
-              bottom: isCoverage ? 34 : 40,
-              padding: isCoverage ? "3px 6px" : "4px 8px",
-              borderRadius: 999,
-              background: "rgba(245, 158, 11, 0.16)",
-              border: "1px solid rgba(245, 158, 11, 0.26)",
-              color: "var(--accent)",
-              fontSize: isCoverage ? 7 : 9,
-              fontWeight: 800,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
-          >
-            Ref required
-          </div>
-        ) : null}
-
-        <div
-          style={{
-            position: "absolute",
-            left: 10,
-            right: 10,
-            top: isCoverage ? 36 : 56,
-            display: "flex",
-            justifyContent: "center",
-            gap: 6,
-            opacity: showToolbar ? 1 : 0,
-            transform: showToolbar ? "translateY(0)" : "translateY(10px)",
-            transition: "opacity 150ms ease, transform 150ms ease",
-            pointerEvents: showToolbar ? "auto" : "none",
-          }}
-        >
-          <HoverActionButton
-            active={Boolean(shot.imageStartPath)}
-            compact={isCoverage}
-            icon={<ImageIcon size={11} />}
-            label="START"
-            onClick={() => handlePreviewClick("start")}
-          />
-          <HoverActionButton
-            active={Boolean(shot.imageEndPath)}
-            compact={isCoverage}
-            icon={<ImageIcon size={11} />}
-            label="END"
-            onClick={() => handlePreviewClick("end")}
-          />
-          <HoverActionButton
-            active={Boolean(shot.videoPath || shot.video4kPath)}
-            compact={isCoverage}
-            icon={<Play size={11} />}
-            label="VIDEO"
-            onClick={() => handlePreviewClick("video")}
-          />
-        </div>
-
-        <div
-          style={{
-            position: "absolute",
-            left: 10,
-            right: 10,
-            bottom: 10,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
-          {isCoverage ? (
-            <>
-              <CompactStatus icon={<ImageIcon size={10} />} status={imageCardStatus} />
-              <CompactStatus icon={<Video size={10} />} status={shot.videoStatus} />
-              {shot.upscaleStatus === "done" ? (
-                <CompactStatus label="4K" status="done" />
-              ) : null}
-            </>
-          ) : (
-            <>
-              <StatusPill icon={<ImageIcon size={11} />} label="IMG" status={imageCardStatus} />
-              <StatusPill icon={<Video size={11} />} label="VID" status={shot.videoStatus} />
-              {shot.upscaleStatus === "done" ? (
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    padding: "3px 6px",
-                    borderRadius: 999,
-                    background: "rgba(167, 139, 250, 0.16)",
-                    color: "var(--status-purple)",
-                    fontSize: 9,
-                    fontWeight: 700,
-                    letterSpacing: "0.08em",
-                  }}
-                >
-                  4K
-                </span>
-              ) : null}
-            </>
-          )}
         </div>
       </div>
 
       <div
         style={{
           display: "grid",
-          gap: isCoverage ? 6 : 8,
-          padding: isCoverage ? "8px 9px 9px" : "12px 14px 14px",
-          borderTop: "1px solid var(--border-subtle)",
+          gap: isCoverage ? 6 : 10,
+          padding: isCoverage ? "10px 12px 12px" : "14px 16px 16px",
+          borderTop: "1px solid rgba(255,255,255,0.06)",
         }}
       >
         {!isCoverage ? (
           <>
             <div
               style={{
-                minHeight: 34,
+                minHeight: 36,
                 fontSize: 12,
-                lineHeight: 1.5,
+                lineHeight: 1.55,
                 color: "var(--text-secondary)",
                 display: "-webkit-box",
                 overflow: "hidden",
-                WebkitLineClamp: 3,
+                WebkitLineClamp: 2,
                 WebkitBoxOrient: "vertical",
               }}
             >
-              {shot.summaryTr ?? "Prompt ve continuity detaylari detay modalinda gorunur."}
+              {summaryCopy}
             </div>
-            <div
-              style={{
-                display: "grid",
-                gap: 4,
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <span
                 style={{
-                  fontSize: 10,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
                   color: "var(--text-muted)",
-                  letterSpacing: "0.04em",
                 }}
               >
-                IMG / {imageModelLabel}
+                {actSceneLabel}
               </span>
-              {videoModelLabel ? (
-                <span
-                  style={{
-                    fontSize: 10,
-                    color: "var(--text-muted)",
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  VID / {videoModelLabel}
-                </span>
-              ) : null}
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--text-muted)",
+                }}
+              >
+                {durationLabel} / {tensionLabel}
+              </span>
             </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                fontSize: 10,
-                color: "var(--text-muted)",
-                letterSpacing: "0.04em",
-              }}
-            >
-              <span>
-                A{shot.act ?? "-"} S{shot.scene ?? "-"}
-              </span>
-              <span>
-                {shot.durationS ? `${shot.durationS}s` : "--"}
-                {shot.tensionLevel ? ` / T${shot.tensionLevel}` : ""}
-              </span>
+            <div style={{ display: "grid", gap: 6 }}>
+              <MetadataChip label="Image" value={imageModelLabel} />
+              {videoModelLabel ? <MetadataChip label="Video" value={videoModelLabel} /> : null}
             </div>
           </>
         ) : (
@@ -500,17 +481,17 @@ export function ShotCard({
                 gap: 8,
                 fontSize: 10,
                 color: "var(--text-secondary)",
-                letterSpacing: "0.04em",
+                letterSpacing: "0.08em",
                 textTransform: "uppercase",
-                fontWeight: 600,
+                fontWeight: 700,
               }}
             >
               <span>{TYPE_LABELS[shot.shotType] ?? shot.shotType.toUpperCase()}</span>
-              <span>{shot.shotNumber.replace(/^SHOT/i, "")}</span>
+              <span>{durationLabel}</span>
             </div>
             <span
               style={{
-                fontSize: 9,
+                fontSize: 10,
                 color: "var(--text-muted)",
                 letterSpacing: "0.04em",
               }}
@@ -520,6 +501,45 @@ export function ShotCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function MetadataChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        padding: "8px 10px",
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.06)",
+        background: "rgba(255,255,255,0.025)",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "var(--text-muted)",
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontSize: 10,
+          color: "var(--text-secondary)",
+          letterSpacing: "0.02em",
+          textAlign: "right",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }

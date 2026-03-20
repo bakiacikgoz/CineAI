@@ -10,11 +10,11 @@ import {
   Video as VideoIcon,
 } from "lucide-react";
 import { message } from "@tauri-apps/plugin-dialog";
-import { getAppSetting } from "@/lib/store";
+import { resolveVideoGeneratorDefaults } from "@/lib/generator-defaults";
+import { getAppSettings } from "@/lib/store";
 import {
   analyzeKlingVideoPrompt,
   clampKlingDuration,
-  isKlingDuration,
   KLING_V3_DURATION_VALUES,
   VIDEO_MODELS,
   type KlingDuration,
@@ -25,7 +25,7 @@ import {
 import { getAssets, type AssetWithTags } from "@/services/asset.service";
 import { getShots, type ShotRow } from "@/services/import.service";
 import { enqueueVideoJobs } from "@/services/jobqueue.service";
-import { getModelPreset } from "@/services/model-preset.service";
+import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
 
@@ -69,24 +69,6 @@ export function VideoGenerator() {
   const [generating, setGenerating] = useState(false);
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
   const promptAnalysis = useMemo(() => analyzeKlingVideoPrompt(prompt), [prompt]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateDefaults() {
-      const saved = await getAppSetting("DEFAULT_VIDEO_MODEL");
-
-      if (!cancelled && saved && saved in VIDEO_MODELS) {
-        setModel(saved as VideoModelId);
-      }
-    }
-
-    void hydrateDefaults();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!activeProject) {
@@ -175,23 +157,53 @@ export function VideoGenerator() {
     setPrompt(selectedShot.promptVideo ?? "");
     setDuration(clampKlingDuration(selectedShot.durationS));
     setGenerateAudio(analyzeKlingVideoPrompt(selectedShot.promptVideo ?? "").hasAudioDirection);
-    setEndAssetId("");
   }, [selectedShot?.id]);
 
   useEffect(() => {
-    const state = location.state as VideoGeneratorLocationState | null;
-
-    if (!state) {
+    if (mode !== "shot-linked" || !selectedShot) {
       return;
     }
 
-    const inboundState = state;
+    const startMatch = imageAssets.find((asset) => asset.file_path === selectedShot.imageStartPath);
+    const endMatch = imageAssets.find((asset) => asset.file_path === selectedShot.imageEndPath);
+    setStartAssetId(startMatch?.id ?? "");
+    setEndAssetId(endMatch?.id ?? "");
+  }, [mode, selectedShot?.id, selectedShot?.imageStartPath, selectedShot?.imageEndPath, imageAssets]);
+
+  useEffect(() => {
+    const state = location.state as VideoGeneratorLocationState | null;
     let cancelled = false;
 
     async function applyInboundState() {
+      const inboundState = state;
       const notices: string[] = [];
+      const [settings, defaultPreset, inboundPreset] = await Promise.all([
+        getAppSettings(),
+        getDefaultModelPreset(),
+        inboundState?.modelPresetId ? getModelPreset(inboundState.modelPresetId) : Promise.resolve(null),
+      ]);
 
-      if (inboundState.promptTemplateContent) {
+      const resolvedDefaults = resolveVideoGeneratorDefaults({
+        appDefaults: settings,
+        defaultPreset,
+        inboundState: inboundState?.promptTemplateModel
+          ? { model: inboundState.promptTemplateModel }
+          : null,
+        inboundPreset,
+      });
+
+      if (!cancelled && resolvedDefaults.model in VIDEO_MODELS) {
+        setModel(resolvedDefaults.model as VideoModelId);
+        setAspectRatio(resolvedDefaults.aspectRatio);
+        setCfg(resolvedDefaults.cfg);
+        setGenerateAudio(resolvedDefaults.generateAudio);
+        setShotType(resolvedDefaults.shotType);
+        if (!selectedShot || inboundState?.modelPresetId) {
+          setDuration(clampKlingDuration(resolvedDefaults.duration));
+        }
+      }
+
+      if (inboundState?.promptTemplateContent) {
         setPrompt(inboundState.promptTemplateContent);
         notices.push(
           inboundState.promptTemplateName
@@ -200,82 +212,29 @@ export function VideoGenerator() {
         );
       }
 
-      if (inboundState.promptTemplateModel && inboundState.promptTemplateModel in VIDEO_MODELS) {
-        setModel(inboundState.promptTemplateModel as VideoModelId);
-      }
-
-      if (inboundState.startAssetId) {
+      if (inboundState?.startAssetId) {
         setMode("freeform");
         setStartAssetId(inboundState.startAssetId);
         notices.push("START asset linked");
       }
 
-      if (inboundState.endAssetId) {
+      if (inboundState?.endAssetId) {
         setMode("freeform");
         setEndAssetId(inboundState.endAssetId);
         notices.push("END asset linked");
       }
 
-      if (inboundState.shotId) {
+      if (inboundState?.shotId) {
         setMode("shot-linked");
         setSelectedShotId(inboundState.shotId);
         notices.push("Storyboard shot focused");
       }
 
-      if (inboundState.modelPresetId) {
-        const preset = await getModelPreset(inboundState.modelPresetId);
-
-        if (!cancelled && preset) {
-          if (preset.videoModel && preset.videoModel in VIDEO_MODELS) {
-            setModel(preset.videoModel as VideoModelId);
-          }
-
-          if (preset.videoParams) {
-            try {
-              const parsed = JSON.parse(preset.videoParams) as {
-                duration?: number;
-                cfg?: number;
-                aspectRatio?: VideoAspectRatio;
-                generateAudio?: boolean;
-                shotType?: KlingShotType;
-              };
-
-              if (typeof parsed.duration === "number" && isKlingDuration(parsed.duration)) {
-                setDuration(parsed.duration);
-              }
-
-              if (typeof parsed.cfg === "number") {
-                setCfg(parsed.cfg);
-              }
-
-              if (
-                parsed.aspectRatio === "16:9" ||
-                parsed.aspectRatio === "9:16" ||
-                parsed.aspectRatio === "1:1"
-              ) {
-                setAspectRatio(parsed.aspectRatio);
-              }
-
-              if (typeof parsed.generateAudio === "boolean") {
-                setGenerateAudio(parsed.generateAudio);
-              }
-
-              if (
-                parsed.shotType === "customize" ||
-                parsed.shotType === "intelligent"
-              ) {
-                setShotType(parsed.shotType);
-              }
-            } catch {
-              // Preset JSON is validated on write; ignore stale malformed rows.
-            }
-          }
-
-          notices.push(`Preset loaded: ${preset.name}`);
-        }
+      if (inboundState?.modelPresetId && !cancelled && inboundPreset) {
+        notices.push(`Preset loaded: ${inboundPreset.name}`);
       }
 
-      if (!cancelled) {
+      if (!cancelled && inboundState) {
         setInboundNotice(notices.length > 0 ? notices.join(" • ") : null);
         navigate(location.pathname, { replace: true, state: null });
       }
@@ -286,23 +245,7 @@ export function VideoGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [location.pathname, location.state, navigate]);
-
-  const shotStartAsset = useMemo(
-    () =>
-      selectedShot?.imageStartPath
-        ? imageAssets.find((asset) => asset.file_path === selectedShot.imageStartPath) ?? null
-        : null,
-    [imageAssets, selectedShot],
-  );
-
-  const shotEndAsset = useMemo(
-    () =>
-      selectedShot?.imageEndPath
-        ? imageAssets.find((asset) => asset.file_path === selectedShot.imageEndPath) ?? null
-        : null,
-    [imageAssets, selectedShot],
-  );
+  }, [location.pathname, location.state, navigate, selectedShot]);
 
   const selectedStartAsset = imageAssets.find((asset) => asset.id === startAssetId) ?? null;
   const selectedEndAsset = imageAssets.find((asset) => asset.id === endAssetId) ?? null;
@@ -310,7 +253,7 @@ export function VideoGenerator() {
   const activeJobs = queueJobs.filter(
     (job) =>
       job.projectId === activeProject?.id &&
-      (job.type === "video" || job.type === "upscale") &&
+      (job.type === "video" || job.type === "coverage_video" || job.type === "upscale") &&
       (job.status === "queued" || job.status === "active"),
   );
 
@@ -319,14 +262,8 @@ export function VideoGenerator() {
       return;
     }
 
-    const startPath =
-      mode === "shot-linked"
-        ? shotStartAsset?.absolutePath
-        : selectedStartAsset?.absolutePath;
-    const endPath =
-      mode === "shot-linked"
-        ? shotEndAsset?.absolutePath
-        : selectedEndAsset?.absolutePath;
+    const startPath = selectedStartAsset?.absolutePath;
+    const endPath = selectedEndAsset?.absolutePath;
 
     if (!startPath) {
       await message("Video uretimi icin bir START gorseli secilmeli.", {
@@ -447,6 +384,7 @@ export function VideoGenerator() {
             <label style={fieldStyle}>
               <span style={fieldLabelStyle}>Shot</span>
               <select
+                className="studio-field"
                 onChange={(event) => setSelectedShotId(event.target.value)}
                 style={selectStyle}
                 value={selectedShotId}
@@ -458,44 +396,51 @@ export function VideoGenerator() {
                 ))}
               </select>
             </label>
-          ) : (
-            <>
-              <label style={fieldStyle}>
-                <span style={fieldLabelStyle}>START asset</span>
-                <select
-                  onChange={(event) => setStartAssetId(event.target.value)}
-                  style={selectStyle}
-                  value={startAssetId}
-                >
-                  <option value="">Bir gorsel sec</option>
-                  {imageAssets.map((asset) => (
-                    <option key={asset.id} value={asset.id}>
-                      {asset.filename}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={fieldStyle}>
-                <span style={fieldLabelStyle}>END asset (opsiyonel)</span>
-                <select
-                  onChange={(event) => setEndAssetId(event.target.value)}
-                  style={selectStyle}
-                  value={endAssetId}
-                >
-                  <option value="">BOS</option>
-                  {imageAssets.map((asset) => (
-                    <option key={asset.id} value={asset.id}>
-                      {asset.filename}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </>
-          )}
+          ) : null}
+
+          <label style={fieldStyle}>
+            <span style={fieldLabelStyle}>
+              START gorsel
+              {mode === "shot-linked" && selectedShot?.imageStartPath && startAssetId
+                ? " (shot'tan yuklendi)"
+                : ""}
+            </span>
+            <select
+              className="studio-field"
+              onChange={(event) => setStartAssetId(event.target.value)}
+              style={selectStyle}
+              value={startAssetId}
+            >
+              <option value="">Bir gorsel sec</option>
+              {imageAssets.map((asset) => (
+                <option key={asset.id} value={asset.id}>
+                  {asset.filename}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label style={fieldStyle}>
+            <span style={fieldLabelStyle}>END gorsel (opsiyonel)</span>
+            <select
+              className="studio-field"
+              onChange={(event) => setEndAssetId(event.target.value)}
+              style={selectStyle}
+              value={endAssetId}
+            >
+              <option value="">BOS</option>
+              {imageAssets.map((asset) => (
+                <option key={asset.id} value={asset.id}>
+                  {asset.filename}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <label style={fieldStyle}>
             <span style={fieldLabelStyle}>Prompt</span>
             <textarea
+              className="studio-field"
               onChange={(event) => setPrompt(event.target.value)}
               rows={8}
               style={textareaStyle}
@@ -506,6 +451,7 @@ export function VideoGenerator() {
           <label style={fieldStyle}>
             <span style={fieldLabelStyle}>Model</span>
             <select
+              className="studio-field"
               onChange={(event) => setModel(event.target.value as VideoModelId)}
               style={selectStyle}
               value={model}
@@ -669,8 +615,8 @@ export function VideoGenerator() {
           ) : (
             <div style={{ display: "grid", gap: 18 }}>
               <SourcePreviewSection
-                endAsset={mode === "shot-linked" ? shotEndAsset : selectedEndAsset}
-                startAsset={mode === "shot-linked" ? shotStartAsset : selectedStartAsset}
+                endAsset={selectedEndAsset}
+                startAsset={selectedStartAsset}
               />
               <VideoGallery assets={videoAssets} />
             </div>

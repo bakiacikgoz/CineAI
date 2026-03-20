@@ -4,6 +4,7 @@ export type JobStatus = "queued" | "active" | "done" | "error" | "cancelled";
 export type JobType =
   | "image_start"
   | "image_end"
+  | "character_image"
   | "video"
   | "upscale"
   | "coverage_image"

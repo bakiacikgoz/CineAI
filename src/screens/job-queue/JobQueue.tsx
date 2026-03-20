@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { ArrowUpToLine, Film, Image as ImageIcon, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { persistQueueParallelLimit } from "@/lib/store";
 import { cancelJob, resumeJobQueue, retryJob } from "@/services/jobqueue.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore, type Job } from "@/store/queue.store";
@@ -7,6 +8,7 @@ import { useQueueStore, type Job } from "@/store/queue.store";
 const JOB_TYPE_LABELS: Record<string, string> = {
   image_start: "START Frame",
   image_end: "END Frame",
+  character_image: "Character Candidate",
   video: "Video",
   upscale: "4K Upscale",
   coverage_image: "Coverage Gorsel",
@@ -31,8 +33,9 @@ export function JobQueue() {
       job.status === "cancelled",
   );
 
-  function updateParallelLimit(nextLimit: number) {
-    setParallelLimit(nextLimit);
+  async function updateParallelLimit(nextLimit: number) {
+    const normalized = await persistQueueParallelLimit(nextLimit);
+    setParallelLimit(normalized);
     resumeJobQueue();
   }
 
@@ -90,7 +93,8 @@ export function JobQueue() {
           >
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>Paralel limit</span>
             <button
-              onClick={() => updateParallelLimit(Math.max(1, parallelLimit - 1))}
+              className="hover-glow"
+              onClick={() => void updateParallelLimit(Math.max(1, parallelLimit - 1))}
               style={miniButtonStyle}
               type="button"
             >
@@ -98,7 +102,8 @@ export function JobQueue() {
             </button>
             <strong style={{ minWidth: 18, textAlign: "center" }}>{parallelLimit}</strong>
             <button
-              onClick={() => updateParallelLimit(Math.min(5, parallelLimit + 1))}
+              className="hover-glow"
+              onClick={() => void updateParallelLimit(Math.min(5, parallelLimit + 1))}
               style={miniButtonStyle}
               type="button"
             >
@@ -318,6 +323,7 @@ function JobRow({ job }: { job: Job }) {
       <div style={{ display: "flex", gap: 8 }}>
         {job.status === "error" ? (
           <button
+            className="hover-glow"
             onClick={() => void retryJob(job.id)}
             style={miniButtonStyle}
             type="button"
@@ -329,6 +335,7 @@ function JobRow({ job }: { job: Job }) {
 
         {job.status === "queued" || job.status === "active" ? (
           <button
+            className="hover-glow"
             onClick={() => cancelJob(job.id)}
             style={miniButtonStyle}
             type="button"
@@ -353,4 +360,5 @@ const miniButtonStyle: CSSProperties = {
   color: "var(--text-secondary)",
   cursor: "pointer",
   fontSize: 12,
+  transition: "all 150ms ease",
 };

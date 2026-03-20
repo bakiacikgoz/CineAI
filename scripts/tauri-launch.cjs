@@ -31,11 +31,18 @@ function resolveProjectRoot() {
 
 const projectRoot = resolveProjectRoot()
 const forwardedArgs = (() => {
+  const cliArgs = process.argv.slice(2)
+  const rawArgs = process.env.TAURI_LAUNCH_ARGS
+
+  if (!rawArgs) {
+    return cliArgs
+  }
+
   try {
-    const parsed = JSON.parse(process.env.TAURI_LAUNCH_ARGS || '[]')
-    return Array.isArray(parsed) ? parsed : []
+    const parsed = JSON.parse(rawArgs)
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : cliArgs
   } catch {
-    return process.argv.slice(2)
+    return cliArgs
   }
 })()
 

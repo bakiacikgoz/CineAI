@@ -3,6 +3,7 @@ import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getDb } from "./db";
+import { hydrateAppState } from "./services/app-bootstrap.service";
 import { initFal } from "./services/fal.service";
 import { initializeJobQueuePersistence } from "./services/jobqueue-persistence.service";
 import { AppRouter } from "./router";
@@ -28,7 +29,15 @@ async function bootstrapFoundation() {
 function FoundationBootstrap() {
   useEffect(() => {
     initializeJobQueuePersistence();
-    void bootstrapFoundation();
+    void (async () => {
+      try {
+        await hydrateAppState();
+      } catch (error) {
+        console.error("App state hydration failed", error);
+      }
+
+      await bootstrapFoundation();
+    })();
   }, []);
 
   return null;

@@ -1,4 +1,5 @@
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
+import { isVideoQueueJobType } from "@/lib/job-queue-types";
 import {
   IMAGE_MODELS,
   VIDEO_MODELS,
@@ -203,7 +204,7 @@ async function requeuePersistedJob(job: Job): Promise<void> {
     return;
   }
 
-  if (job.type === "video") {
+  if (isVideoQueueJobType(job.type)) {
     await enqueueVideoJobs({
       model: coerceVideoModel(job.model),
       prompt: job.prompt,
@@ -219,6 +220,7 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       quantity: 1,
       shotId: job.shotId,
       priority: job.priority,
+      jobType: job.type,
     });
     return;
   }
@@ -268,8 +270,14 @@ async function requeuePersistedJob(job: Job): Promise<void> {
     steps: Number(params.steps ?? 28),
     quantity: 1,
     refImagePath: job.refImagePath,
+    referenceImagePaths: Array.isArray(params.referenceImagePaths)
+      ? (params.referenceImagePaths as string[])
+      : undefined,
     shotId: job.shotId,
     jobType: job.type,
+    assetTags: Array.isArray(params.assetTags)
+      ? (params.assetTags as string[])
+      : undefined,
   });
 }
 

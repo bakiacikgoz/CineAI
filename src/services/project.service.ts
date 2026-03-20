@@ -2,6 +2,8 @@ import { join } from "@tauri-apps/api/path";
 import { exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import Database from "@tauri-apps/plugin-sql";
 import { v4 as uuidv4 } from "uuid";
+import type { ProjectSummaryMetadata } from "@/lib/project-summary";
+import { useProjectStore } from "@/store/project.store";
 
 const PROJECT_META_FILE = "project.json";
 const REGISTRY_DB_PATH = "sqlite:cineai-registry.db";
@@ -15,6 +17,7 @@ export interface ProjectMeta {
   createdAt: number;
   updatedAt: number;
   thumbnail?: string;
+  metadata?: ProjectSummaryMetadata;
 }
 
 type RegistryProjectRow = {
@@ -25,6 +28,8 @@ type RegistryProjectRow = {
   updatedAt: number;
   thumbnail?: string | null;
 };
+
+type StoredProjectMeta = Partial<ProjectMeta>;
 
 function toFolderSafeName(value: string): string {
   return value
@@ -48,6 +53,23 @@ function normalizeProjectMeta(meta: RegistryProjectRow | ProjectMeta): ProjectMe
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     thumbnail: meta.thumbnail ?? undefined,
+    metadata:
+      "metadata" in meta && meta.metadata
+        ? normalizeProjectMetadata(meta.metadata)
+        : undefined,
+  };
+}
+
+function normalizeProjectMetadata(
+  metadata: Partial<ProjectSummaryMetadata>,
+): ProjectSummaryMetadata {
+  return {
+    mainShotCount: Number(metadata.mainShotCount) || 0,
+    coverageShotCount: Number(metadata.coverageShotCount) || 0,
+    archivedShotCount: Number(metadata.archivedShotCount) || 0,
+    readyStartCount: Number(metadata.readyStartCount) || 0,
+    readyEndCount: Number(metadata.readyEndCount) || 0,
+    readyVideoCount: Number(metadata.readyVideoCount) || 0,
   };
 }
 
@@ -58,6 +80,26 @@ async function getProjectJsonPath(projectFolderPath: string): Promise<string> {
 async function writeProjectMeta(meta: ProjectMeta): Promise<void> {
   const projectJsonPath = await getProjectJsonPath(meta.folderPath);
   await writeTextFile(projectJsonPath, JSON.stringify(meta, null, 2));
+}
+
+async function readProjectMetaFile(projectFolderPath: string): Promise<ProjectMeta> {
+  const raw = await readTextFile(await getProjectJsonPath(projectFolderPath));
+  const parsed = JSON.parse(raw) as StoredProjectMeta;
+
+  if (
+    !parsed.id ||
+    !parsed.name ||
+    typeof parsed.createdAt !== "number" ||
+    typeof parsed.updatedAt !== "number"
+  ) {
+    throw new Error("project.json gecersiz veya eksik alanlar iceriyor.");
+  }
+
+  return normalizeProjectMeta({
+    ...parsed,
+    folderPath: projectFolderPath,
+    metadata: parsed.metadata ? normalizeProjectMetadata(parsed.metadata) : undefined,
+  } as ProjectMeta);
 }
 
 async function ensureProjectFolderAvailable(projectFolderPath: string): Promise<void> {
@@ -162,24 +204,7 @@ export async function openProject(folderPath: string): Promise<ProjectMeta> {
     throw new Error("Secilen klasorde project.json bulunamadi.");
   }
 
-  const raw = await readTextFile(projectJsonPath);
-  const parsed = JSON.parse(raw) as Partial<ProjectMeta>;
-
-  if (
-    !parsed.id ||
-    !parsed.name ||
-    !parsed.folderPath ||
-    typeof parsed.createdAt !== "number" ||
-    typeof parsed.updatedAt !== "number"
-  ) {
-    throw new Error("project.json gecersiz veya eksik alanlar iceriyor.");
-  }
-
-  const meta = normalizeProjectMeta({
-    ...parsed,
-    folderPath,
-  } as ProjectMeta);
-
+  const meta = await readProjectMetaFile(folderPath);
   await upsertRegistryProject(meta);
   return meta;
 }
@@ -205,7 +230,14 @@ export async function getRecentProjects(): Promise<ProjectMeta[]> {
     try {
       const projectJsonPath = await getProjectJsonPath(row.folderPath);
       if (await exists(projectJsonPath)) {
-        validProjects.push(normalizeProjectMeta(row));
+        const storedMeta = await readProjectMetaFile(row.folderPath);
+        validProjects.push(
+          normalizeProjectMeta({
+            ...storedMeta,
+            updatedAt: row.updatedAt,
+            thumbnail: row.thumbnail ?? storedMeta.thumbnail,
+          }),
+        );
       }
     } catch {
       // Ignore paths outside the current scope. They can be re-added via the folder picker.
@@ -223,4 +255,37 @@ export async function deleteProjectFromRegistry(id: string): Promise<void> {
 export async function touchProject(id: string): Promise<void> {
   const db = await getRegistryDb();
   await db.execute("UPDATE projects SET updated_at = $1 WHERE id = $2", [Date.now(), id]);
+}
+
+export async function updateProjectPresentation(
+  project: ProjectMeta,
+  updates: {
+    thumbnail?: string | null;
+    metadata?: ProjectSummaryMetadata;
+  },
+): Promise<ProjectMeta> {
+  const nextMeta: ProjectMeta = normalizeProjectMeta({
+    ...project,
+    updatedAt: Date.now(),
+    thumbnail:
+      updates.thumbnail === undefined ? project.thumbnail : updates.thumbnail ?? undefined,
+    metadata: updates.metadata ?? project.metadata,
+  });
+
+  await writeProjectMeta(nextMeta);
+  await upsertRegistryProject(nextMeta);
+
+  const state = useProjectStore.getState();
+
+  if (state.activeProject?.id === nextMeta.id) {
+    state.setActiveProject(nextMeta);
+  }
+
+  if (state.recentProjects.some((entry) => entry.id === nextMeta.id)) {
+    state.setRecentProjects(
+      state.recentProjects.map((entry) => (entry.id === nextMeta.id ? nextMeta : entry)),
+    );
+  }
+
+  return nextMeta;
 }

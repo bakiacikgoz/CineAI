@@ -2,11 +2,14 @@ import { exists, remove } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { v4 as uuidv4 } from "uuid";
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
+import { buildAssetDetachUpdates } from "@/lib/asset-detach";
+import { splitAssetTags } from "@/lib/asset-tags";
 import {
   getShotById,
-  setShotExternalReferencePath,
+  getShots,
   updateShotPaths,
 } from "@/services/import.service";
+import { syncActiveProjectPresentation } from "@/services/project-presentation.service";
 import { useProjectStore } from "@/store/project.store";
 
 export interface AssetInput {
@@ -48,6 +51,12 @@ export interface AssetRecord {
 export type AssetWithTags = AssetRecord & {
   tagsList: string[];
 };
+
+export interface AssetDeletionImpact {
+  shotCount: number;
+  slotCount: number;
+  slotLabels: string[];
+}
 
 function parseAssetTags(tags: string | null): string[] {
   if (!tags) {
@@ -182,6 +191,20 @@ export async function updateAssetTags(assetId: string, tags: string[]): Promise<
   await syncProjectDbMirror();
 }
 
+export async function updateAssetUserTags(
+  assetId: string,
+  userTags: string[],
+): Promise<void> {
+  const asset = await getAssetById(assetId);
+
+  if (!asset) {
+    throw new Error("Asset bulunamadi.");
+  }
+
+  const { systemTags } = splitAssetTags(asset.tagsList);
+  await updateAssetTags(assetId, [...systemTags, ...userTags]);
+}
+
 export async function setAssetShotId(assetId: string, shotId: string | null): Promise<void> {
   const db = await getProjectDb();
   await db.execute("UPDATE assets SET shot_id = $1 WHERE id = $2", [shotId, assetId]);
@@ -206,7 +229,9 @@ export async function assignAssetToShot(
   await setAssetShotId(assetId, shotId);
 
   if (target === "reference") {
-    await setShotExternalReferencePath(shotId, asset.file_path);
+    await updateShotPaths(shotId, {
+      externalReferencePath: asset.file_path,
+    });
     return;
   }
 
@@ -232,23 +257,73 @@ export async function assignAssetToShot(
   });
 }
 
-export async function deleteAssetRecord(assetId: string): Promise<void> {
+export async function getAssetDeletionImpact(
+  assetId: string,
+): Promise<AssetDeletionImpact | null> {
   const asset = await getAssetById(assetId);
   if (!asset) {
-    return;
+    return null;
+  }
+
+  const project = useProjectStore.getState().activeProject;
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const detachUpdates = buildAssetDetachUpdates(
+    await getShots(project.id, { includeArchived: true }),
+    asset.file_path,
+  );
+
+  return {
+    shotCount: detachUpdates.length,
+    slotCount: detachUpdates.reduce((total, update) => total + update.slots.length, 0),
+    slotLabels: detachUpdates.flatMap((update) =>
+      update.slots.map((slot) => `${update.shotNumber} ${slot.toUpperCase()}`),
+    ),
+  };
+}
+
+export async function deleteAssetRecord(assetId: string): Promise<AssetDeletionImpact | null> {
+  const asset = await getAssetById(assetId);
+  if (!asset) {
+    return null;
+  }
+
+  const project = useProjectStore.getState().activeProject;
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const detachUpdates = buildAssetDetachUpdates(
+    await getShots(project.id, { includeArchived: true }),
+    asset.file_path,
+  );
+
+  for (const detachUpdate of detachUpdates) {
+    await updateShotPaths(detachUpdate.shotId, detachUpdate.updates);
   }
 
   const db = await getProjectDb();
   await db.execute("DELETE FROM assets WHERE id = $1", [assetId]);
   await syncProjectDbMirror();
-
-  const project = useProjectStore.getState().activeProject;
-  if (!project) {
-    return;
-  }
+  await syncActiveProjectPresentation();
+  const siblingRows = await db.select<Array<{ total: number }>>(
+    "SELECT COUNT(*) AS total FROM assets WHERE file_path = $1",
+    [asset.file_path],
+  );
+  const hasSiblingAsset = Number(siblingRows[0]?.total ?? 0) > 0;
 
   const absolutePath = await join(project.folderPath, ...asset.file_path.split(/[\\/]+/).filter(Boolean));
-  if (await exists(absolutePath)) {
+  if (!hasSiblingAsset && (await exists(absolutePath))) {
     await remove(absolutePath);
   }
+
+  return {
+    shotCount: detachUpdates.length,
+    slotCount: detachUpdates.reduce((total, update) => total + update.slots.length, 0),
+    slotLabels: detachUpdates.flatMap((update) =>
+      update.slots.map((slot) => `${update.shotNumber} ${slot.toUpperCase()}`),
+    ),
+  };
 }

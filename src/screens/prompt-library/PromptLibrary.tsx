@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { BookText, Copy, Pencil, Plus, Search, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { Portal } from "@/components/Portal";
 import { useNavigate } from "react-router-dom";
 import { runPromptAssist, type PromptAssistMode } from "@/services/llm.service";
 import {
@@ -319,17 +320,19 @@ export function PromptLibrary() {
       </section>
 
       {showEditor ? (
-        <TemplateEditorModal
-          editor={editor}
-          onChange={setEditor}
-          onClose={() => {
-            if (!saving) {
-              setShowEditor(false);
-            }
-          }}
-          onSave={() => void handleSave()}
-          saving={saving}
-        />
+        <Portal>
+          <TemplateEditorModal
+            editor={editor}
+            onChange={setEditor}
+            onClose={() => {
+              if (!saving) {
+                setShowEditor(false);
+              }
+            }}
+            onSave={() => void handleSave()}
+            saving={saving}
+          />
+        </Portal>
       ) : null}
     </section>
   );

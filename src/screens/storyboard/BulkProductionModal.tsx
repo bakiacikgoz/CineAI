@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { message } from "@tauri-apps/plugin-dialog";
 import { Sparkles } from "lucide-react";
+import { countPlannedBulkJobs, resolveBulkScope } from "@/lib/bulk-production";
 import {
   IMAGE_MODELS,
   VIDEO_MODELS,
@@ -16,12 +17,14 @@ import { bootstrapAutonomousBulk } from "@/services/storyboard-autonomous.servic
 
 interface BulkProductionModalProps {
   shots: ShotRow[];
+  selectedShotId: string | null;
   onClose: () => void;
   onDone: () => void;
 }
 
 export function BulkProductionModal({
   shots,
+  selectedShotId,
   onClose,
   onDone,
 }: BulkProductionModalProps) {
@@ -35,32 +38,48 @@ export function BulkProductionModal({
   const [filter, setFilter] = useState<BulkProductionOptions["filter"]>("all");
   const [queuing, setQueuing] = useState(false);
   const [result, setResult] = useState<{ jobCount: number; estimatedCost: number } | null>(null);
+  const scopePreview = resolveBulkScope(shots, {
+    produceStartFrames: produceStart,
+    produceEndFrames: produceEnd,
+    produceCoverageImages: produceCoverage,
+    produceVideos,
+    filter,
+    selectedShotIds: selectedShotId ? [selectedShotId] : [],
+  });
 
   const roughJobCount =
     autonomousMode
-      ? shots.length * 8
-      : (produceStart ? shots.length : 0) +
-        (produceEnd ? shots.length : 0) +
-        (produceVideos ? shots.filter((shot) => Boolean(shot.promptVideo)).length : 0) +
-        (produceCoverage ? Math.max(0, Math.round(shots.length * 0.4)) : 0);
+      ? scopePreview.mainShots.length * 8
+      : countPlannedBulkJobs(shots, {
+          produceStartFrames: produceStart,
+          produceEndFrames: produceEnd,
+          produceCoverageImages: produceCoverage,
+          produceVideos,
+          filter,
+          selectedShotIds: selectedShotId ? [selectedShotId] : [],
+        });
 
   async function handleQueue() {
     setQueuing(true);
 
     try {
-      const scopedShots =
-        filter === "missing"
-          ? shots.filter(
-              (shot) =>
-                !shot.imageStartPath || !shot.imageEndPath || !shot.videoPath,
-            )
-          : shots;
+      const scope = resolveBulkScope(shots, {
+        produceStartFrames: produceStart,
+        produceEndFrames: produceEnd,
+        produceCoverageImages: produceCoverage,
+        produceVideos,
+        filter,
+        selectedShotIds: selectedShotId ? [selectedShotId] : [],
+      });
       const nextResult = autonomousMode
         ? {
-            ...(await bootstrapAutonomousBulk(scopedShots.map((shot) => shot.id), {
-              imageModel,
-              videoModel,
-            })),
+            ...(await bootstrapAutonomousBulk(
+              scope.mainShots.map((shot) => shot.id),
+              {
+                imageModel,
+                videoModel,
+              },
+            )),
             estimatedCost: 0,
           }
         : await enqueueBulkProduction({
@@ -71,6 +90,7 @@ export function BulkProductionModal({
             imageModel,
             videoModel,
             filter,
+            selectedShotIds: scope.selectedMainShotIds,
           });
       setResult(nextResult);
     } catch (error) {
@@ -85,6 +105,11 @@ export function BulkProductionModal({
       setQueuing(false);
     }
   }
+
+  const selectedLabel =
+    scopePreview.selectedMainShotIds.length > 0
+      ? `Secili ana shot (${scopePreview.selectedMainShotIds.length})`
+      : "Secili ana shot yok";
 
   return (
     <div
@@ -104,6 +129,7 @@ export function BulkProductionModal({
         onClick={(event) => event.stopPropagation()}
         style={{
           width: "min(520px, 100%)",
+          maxHeight: "calc(100vh - 40px)",
           display: "grid",
           gap: 20,
           padding: 26,
@@ -112,6 +138,9 @@ export function BulkProductionModal({
           background:
             "linear-gradient(180deg, rgba(24, 24, 28, 0.98), rgba(13, 13, 16, 0.98))",
           boxShadow: "0 36px 120px rgba(0, 0, 0, 0.52)",
+          overflowY: "auto",
+          overflowX: "hidden",
+          overscrollBehavior: "contain",
         }}
       >
         {result ? (
@@ -266,7 +295,7 @@ export function BulkProductionModal({
               >
                 Filter
               </div>
-              {(["all", "missing"] as const).map((filterValue) => (
+              {(["all", "missing", "selected"] as const).map((filterValue) => (
                 <label
                   key={filterValue}
                   style={{
@@ -288,8 +317,10 @@ export function BulkProductionModal({
                     type="radio"
                   />
                   {filterValue === "all"
-                    ? `Tum shot'lar (${shots.length})`
-                    : "Eksik medyasi olan shot'lar"}
+                    ? `Tum shot'lar (${shots.filter((shot) => !shot.parentShotId).length})`
+                    : filterValue === "missing"
+                      ? "Eksik medyasi olan shot'lar"
+                      : selectedLabel}
                 </label>
               ))}
             </div>
@@ -319,6 +350,7 @@ export function BulkProductionModal({
                 className="btn-primary"
                 disabled={
                   (!produceStart && !produceEnd && !produceCoverage && !produceVideos) ||
+                  (filter === "selected" && scopePreview.selectedMainShotIds.length === 0) ||
                   queuing
                 }
                 onClick={() => void handleQueue()}

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ProjectSummaryMetadata } from "@/lib/project-summary";
 
 export interface Project {
   id: string;
@@ -7,7 +8,7 @@ export interface Project {
   createdAt: number;
   updatedAt: number;
   thumbnail?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: ProjectSummaryMetadata;
 }
 
 interface ProjectStore {

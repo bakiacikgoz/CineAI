@@ -13,7 +13,8 @@ export type AppSettingName =
   | "DEFAULT_TENSORPIX_FILTER"
   | "DEFAULT_UPSCALE_FACTOR"
   | "PARALLEL_LIMIT"
-  | "QUEUE_PARALLEL_LIMIT";
+  | "QUEUE_PARALLEL_LIMIT"
+  | "LAST_ACTIVE_PROJECT_PATH";
 
 export type SettingsKey = ApiKeyName | AppSettingName;
 
@@ -112,6 +113,10 @@ export async function getAppSettings(): Promise<AppSettings> {
   };
 }
 
+export function normalizeQueueParallelLimit(limit: number): number {
+  return Math.min(5, Math.max(1, Number(limit) || DEFAULT_APP_SETTINGS.queueParallelLimit));
+}
+
 export async function setAppSettings(settings: Partial<AppSettings>): Promise<void> {
   const store = await getStore();
   const entries = Object.entries(settings) as Array<
@@ -127,12 +132,38 @@ export async function setAppSettings(settings: Partial<AppSettings>): Promise<vo
           : key === "defaultUpscaleFactor"
             ? "DEFAULT_UPSCALE_FACTOR"
             : "QUEUE_PARALLEL_LIMIT";
-    await store.set(storageKey, value);
+    await store.set(
+      storageKey,
+      key === "queueParallelLimit" ? normalizeQueueParallelLimit(Number(value)) : value,
+    );
 
     if (key === "queueParallelLimit") {
-      await store.set("PARALLEL_LIMIT", value);
+      await store.set("PARALLEL_LIMIT", normalizeQueueParallelLimit(Number(value)));
     }
   }
 
+  await store.save();
+}
+
+export async function persistQueueParallelLimit(limit: number): Promise<number> {
+  const normalized = normalizeQueueParallelLimit(limit);
+  await setAppSettings({ queueParallelLimit: normalized });
+  return normalized;
+}
+
+export async function getLastActiveProjectPath(): Promise<string | null> {
+  const path = await getAppSetting<string>("LAST_ACTIVE_PROJECT_PATH");
+  return path?.trim() ? path : null;
+}
+
+export async function setLastActiveProjectPath(path: string): Promise<void> {
+  const store = await getStore();
+  await store.set("LAST_ACTIVE_PROJECT_PATH", path.trim());
+  await store.save();
+}
+
+export async function clearLastActiveProjectPath(): Promise<void> {
+  const store = await getStore();
+  await store.delete("LAST_ACTIVE_PROJECT_PATH");
   await store.save();
 }

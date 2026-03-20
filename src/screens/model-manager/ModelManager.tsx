@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { Bot, Copy, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { Portal } from "@/components/Portal";
 import { useNavigate } from "react-router-dom";
 import { IMAGE_MODELS, VIDEO_MODELS } from "@/services/fal.service";
 import {
@@ -360,17 +361,19 @@ export function ModelManager() {
       </section>
 
       {showEditor ? (
-        <PresetEditorModal
-          editor={editor}
-          onChange={setEditor}
-          onClose={() => {
-            if (!saving) {
-              setShowEditor(false);
-            }
-          }}
-          onSave={() => void handleSave()}
-          saving={saving}
-        />
+        <Portal>
+          <PresetEditorModal
+            editor={editor}
+            onChange={setEditor}
+            onClose={() => {
+              if (!saving) {
+                setShowEditor(false);
+              }
+            }}
+            onSave={() => void handleSave()}
+            saving={saving}
+          />
+        </Portal>
       ) : null}
     </section>
   );

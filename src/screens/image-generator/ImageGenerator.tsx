@@ -3,12 +3,14 @@ import { ImagePlus, Layers3, SlidersHorizontal, Sparkles, WandSparkles, X } from
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { useLocation, useNavigate } from "react-router-dom";
+import { resolveImageGeneratorDefaults } from "@/lib/generator-defaults";
 import { IMAGE_MODELS, calcImageCost, type ImageModelId } from "@/services/fal.service";
 import { getAppSettings } from "@/lib/store";
 import { enqueueImageJobs } from "@/services/jobqueue.service";
-import { getModelPreset } from "@/services/model-preset.service";
+import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
 import { GeneratedImageGallery } from "@/screens/image-generator/GeneratedImageGallery";
 import { useProjectStore } from "@/store/project.store";
+import { motion } from "framer-motion";
 
 const ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:2"] as const;
 
@@ -41,36 +43,35 @@ export function ImageGenerator() {
   }, [model]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadDefaults() {
-      const settings = await getAppSettings();
-      if (!cancelled && settings.defaultImageModel in IMAGE_MODELS) {
-        setModel(settings.defaultImageModel as ImageModelId);
-      }
-    }
-
-    void loadDefaults();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     const state = location.state as ImageGeneratorLocationState | null;
-
-    if (!state) {
-      return;
-    }
-
-    const inboundState = state;
     let cancelled = false;
 
     async function applyInboundState() {
+      const inboundState = state;
       const notices: string[] = [];
+      const [settings, defaultPreset, inboundPreset] = await Promise.all([
+        getAppSettings(),
+        getDefaultModelPreset(),
+        inboundState?.modelPresetId ? getModelPreset(inboundState.modelPresetId) : Promise.resolve(null),
+      ]);
 
-      if (inboundState.promptTemplateContent) {
+      const resolvedDefaults = resolveImageGeneratorDefaults({
+        appDefaults: settings,
+        defaultPreset,
+        inboundState: inboundState?.promptTemplateModel
+          ? { model: inboundState.promptTemplateModel }
+          : null,
+        inboundPreset,
+      });
+
+      if (!cancelled && resolvedDefaults.model in IMAGE_MODELS) {
+        setModel(resolvedDefaults.model as ImageModelId);
+        setCfg(resolvedDefaults.cfg);
+        setSteps(resolvedDefaults.steps);
+        setAspectRatio(resolvedDefaults.aspectRatio);
+      }
+
+      if (inboundState?.promptTemplateContent) {
         setPrompt(inboundState.promptTemplateContent);
         notices.push(
           inboundState.promptTemplateName
@@ -79,52 +80,16 @@ export function ImageGenerator() {
         );
       }
 
-      if (inboundState.promptTemplateModel && inboundState.promptTemplateModel in IMAGE_MODELS) {
-        setModel(inboundState.promptTemplateModel as ImageModelId);
-      }
-
-      if (inboundState.referenceAssetPath) {
+      if (inboundState?.referenceAssetPath) {
         setRefImage(inboundState.referenceAssetPath);
         notices.push("Reference frame attached");
       }
 
-      if (inboundState.modelPresetId) {
-        const preset = await getModelPreset(inboundState.modelPresetId);
-
-        if (!cancelled && preset) {
-          if (preset.imageModel && preset.imageModel in IMAGE_MODELS) {
-            setModel(preset.imageModel as ImageModelId);
-          }
-
-          if (preset.imageParams) {
-            try {
-              const parsed = JSON.parse(preset.imageParams) as {
-                cfg?: number;
-                steps?: number;
-                aspectRatio?: (typeof ASPECT_RATIOS)[number];
-              };
-
-              if (typeof parsed.cfg === "number") {
-                setCfg(parsed.cfg);
-              }
-
-              if (typeof parsed.steps === "number") {
-                setSteps(parsed.steps);
-              }
-
-              if (parsed.aspectRatio && ASPECT_RATIOS.includes(parsed.aspectRatio)) {
-                setAspectRatio(parsed.aspectRatio);
-              }
-            } catch {
-              // Preset JSON is already validated before save; ignore stale malformed rows.
-            }
-          }
-
-          notices.push(`Preset loaded: ${preset.name}`);
-        }
+      if (inboundState?.modelPresetId && !cancelled && inboundPreset) {
+        notices.push(`Preset loaded: ${inboundPreset.name}`);
       }
 
-      if (!cancelled) {
+      if (!cancelled && inboundState) {
         setInboundNotice(notices.length > 0 ? notices.join(" • ") : null);
         navigate(location.pathname, { replace: true, state: null });
       }
@@ -210,7 +175,12 @@ export function ImageGenerator() {
   }
 
   return (
-    <section className="screen-shell">
+    <motion.section
+      className="screen-shell"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25 }}
+    >
       <section
         style={{
           display: "grid",
@@ -285,6 +255,7 @@ export function ImageGenerator() {
 
           <FieldGroup label="Prompt" icon={<WandSparkles size={14} />}>
             <textarea
+              className="studio-field"
               onChange={(event) => setPrompt(event.target.value)}
               placeholder="Sahneyi, lens dilini, isik ve atmosferi tarif et..."
               rows={7}
@@ -302,6 +273,7 @@ export function ImageGenerator() {
 
                 return (
                   <button
+                    className="hover-glow"
                     key={modelId}
                     onClick={() => setModel(modelId)}
                     style={{
@@ -350,6 +322,7 @@ export function ImageGenerator() {
 
                 return (
                   <button
+                    className="hover-glow"
                     key={ratio}
                     onClick={() => setAspectRatio(ratio)}
                     style={{
@@ -411,6 +384,7 @@ export function ImageGenerator() {
               }}
             >
               <button
+                className="hover-glow"
                 onClick={() => setQuantity((current) => Math.max(1, current - 1))}
                 style={stepperButtonStyle}
                 type="button"
@@ -421,6 +395,7 @@ export function ImageGenerator() {
                 {quantity}
               </span>
               <button
+                className="hover-glow"
                 onClick={() => setQuantity((current) => Math.min(50, current + 1))}
                 style={stepperButtonStyle}
                 type="button"
@@ -499,7 +474,7 @@ export function ImageGenerator() {
 
         <GeneratedImageGallery projectFolderPath={activeProject.folderPath} />
       </section>
-    </section>
+    </motion.section>
   );
 }
 
@@ -562,6 +537,7 @@ function RefImagePicker({
 
   return (
     <button
+      className="hover-glow"
       onClick={() => void handleSelectImage()}
       style={{
         display: "grid",

@@ -1223,3 +1223,94 @@ select {
 .spin-slow {
   animation: spin-slow 1.15s linear infinite;
 }
+
+/* ── Global focus & interaction states ────────────────────── */
+
+.studio-field,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea,
+select {
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.studio-field:focus,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+textarea:focus,
+select:focus {
+  border-color: rgba(245, 158, 11, 0.36);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* ── Interactive element hover polish ────────────────────── */
+
+.hover-lift {
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+.hover-lift:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.hover-lift:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.hover-glow {
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.hover-glow:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.hover-glow:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Page transition ─────────────────────────────────────── */
+
+.page-enter {
+  animation: pageEnter 0.3s ease-out both;
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ── Disabled state ──────────────────────────────────────── */
+
+button:disabled,
+select:disabled,
+input:disabled,
+textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: auto;
+}

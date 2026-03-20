@@ -3,11 +3,12 @@ import {
   useEffect,
   useRef,
   useState,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { open, message } from "@tauri-apps/plugin-dialog";
-import { Archive, Clapperboard, Download, Minus, Plus, Scan, Sparkles } from "lucide-react";
+import { Archive, Download, Minus, Plus, Scan, Sparkles } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ShotCard, type ShotCardPreviewTarget } from "@/components/shot-card";
 import {
@@ -20,22 +21,19 @@ import {
 import { BulkProductionModal } from "@/screens/storyboard/BulkProductionModal";
 import { ImportPreviewModal } from "@/screens/storyboard/ImportPreviewModal";
 import { ShotDetailPanel } from "@/screens/storyboard/ShotDetailPanel";
+import { Portal } from "@/components/Portal";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
 
-const BOARD_PADDING_X = 160;
-const BOARD_MAIN_Y = 128;
-const BOARD_COVERAGE_Y = 452;
-const CLUSTER_WIDTH = 308;
-const MAIN_CARD_WIDTH = 196;
-const COVERAGE_GRID_GAP = 10;
-const COVERAGE_CARD_WIDTH = 136;
-const COVERAGE_GRID_WIDTH = COVERAGE_CARD_WIDTH * 2 + COVERAGE_GRID_GAP;
-const BOARD_HEIGHT = 724;
-const DEFAULT_ZOOM = 0.92;
-const MIN_ZOOM = 0.68;
-const MAX_ZOOM = 1.65;
+const TIMELINE_GROUP_WIDTH = 340;
+const CONNECTOR_WIDTH = 72;
+const BOARD_SIDE_PADDING = 28;
+const COVERAGE_GRID_GAP = 12;
+const DEFAULT_ZOOM = 0.88;
+const MIN_ZOOM = 0.62;
+const MAX_ZOOM = 1.6;
 const ZOOM_STEP = 0.12;
+const FIT_CANVAS_MARGIN = 24;
 
 type PanState = {
   pointerId: number;
@@ -149,11 +147,13 @@ export function Storyboard() {
       setImportFolder(selected);
       const preview = await previewImport(selected);
 
-      console.log("Import preview:", preview);
-
       if (preview.files.length === 0 || preview.parsedShotCount === 0) {
-        window.alert(
+        await message(
           "Bu klasorde parse edilebilir SHOT*.md dosyasi bulunamadi.\nFilm-kit shots/outputs klasorunu sectiginden emin ol.",
+          {
+            title: "Storyboard",
+            kind: "warning",
+          },
         );
         return;
       }
@@ -162,7 +162,13 @@ export function Storyboard() {
       setShowImportModal(true);
     } catch (error) {
       console.error("Import hatasi:", error);
-      window.alert(`Hata: ${error instanceof Error ? error.message : String(error)}`);
+      await message(
+        error instanceof Error ? error.message : String(error),
+        {
+          title: "Storyboard",
+          kind: "error",
+        },
+      );
     }
   }
 
@@ -209,6 +215,13 @@ export function Storyboard() {
     (shot) => shot.requiresExternalReference && !shot.externalReferencePath,
   ).length;
   const mainShots = visibleShots.filter((shot) => !shot.parentShotId);
+  const coverageCount = visibleShots.filter((shot) => Boolean(shot.parentShotId)).length;
+  const linkedShotCount = mainShots.filter(
+    (shot) => shot.chainStatus === "continue" && shot.prevShotId,
+  ).length;
+  const readyMainFrameCount = mainShots.filter(
+    (shot) => Boolean(shot.imageStartPath || shot.imageEndPath),
+  ).length;
   const coverageMap = visibleShots
     .filter((shot) => Boolean(shot.parentShotId))
     .reduce<Record<string, ShotRow[]>>((accumulator, shot) => {
@@ -218,7 +231,17 @@ export function Storyboard() {
       return accumulator;
     }, {});
   const selectedShot = shots.find((shot) => shot.id === selectedShotId) ?? null;
-  const boardWidth = Math.max(1320, BOARD_PADDING_X * 2 + mainShots.length * CLUSTER_WIDTH);
+  const maxCoverageRows = Math.max(
+    1,
+    ...mainShots.map((shot) => Math.max(1, Math.ceil((coverageMap[shot.id]?.length ?? 0) / 2))),
+  );
+  const boardWidth = Math.max(
+    1320,
+    BOARD_SIDE_PADDING * 2 +
+      mainShots.length * TIMELINE_GROUP_WIDTH +
+      Math.max(0, mainShots.length - 1) * CONNECTOR_WIDTH,
+  );
+  const boardHeight = 520 + maxCoverageRows * 170;
 
   function openShotDetail(shotId: string, view: DetailModalView = "start") {
     setDetailModalView(view);
@@ -267,8 +290,8 @@ export function Storyboard() {
       return;
     }
 
-    const widthRatio = (viewport.clientWidth - 72) / boardWidth;
-    const heightRatio = (viewport.clientHeight - 72) / BOARD_HEIGHT;
+    const widthRatio = (viewport.clientWidth - FIT_CANVAS_MARGIN) / boardWidth;
+    const heightRatio = (viewport.clientHeight - FIT_CANVAS_MARGIN) / boardHeight;
     const nextZoom = Math.min(1, widthRatio, heightRatio);
 
     setZoomFromViewport(nextZoom);
@@ -277,7 +300,7 @@ export function Storyboard() {
       viewport.scrollLeft = 0;
       viewport.scrollTop = 0;
     });
-  }, [boardWidth, setZoomFromViewport]);
+  }, [boardHeight, boardWidth, setZoomFromViewport]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -439,118 +462,203 @@ export function Storyboard() {
     <section className="screen-shell">
       <header
         style={{
+          position: "relative",
           display: "grid",
-          gap: 18,
-          padding: 24,
-          borderRadius: 28,
+          gap: 22,
+          overflow: "hidden",
+          padding: 28,
+          borderRadius: 32,
           border: "1px solid var(--border-default)",
           background:
-            "linear-gradient(140deg, rgba(245, 158, 11, 0.1), transparent 34%), var(--bg-surface)",
-          boxShadow: "0 28px 80px rgba(0, 0, 0, 0.26)",
+            "radial-gradient(circle at top left, rgba(245, 158, 11, 0.14), transparent 28%), linear-gradient(135deg, rgba(24, 24, 28, 0.97), rgba(10, 10, 12, 0.98))",
+          boxShadow: "0 30px 100px rgba(0, 0, 0, 0.34)",
         }}
       >
         <div
           style={{
             display: "flex",
-            alignItems: "flex-start",
+            alignItems: "center",
             justifyContent: "space-between",
-            gap: 18,
+            gap: 16,
             flexWrap: "wrap",
           }}
         >
-          <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--text-muted)",
+            }}
+          >
+            <span>{activeProject.name}</span>
+            <span style={{ color: "var(--border-strong)" }}>/</span>
+            <span>Storyboard</span>
+            <span style={{ color: "var(--border-strong)" }}>/</span>
+            <span style={{ color: "var(--accent)" }}>Flow Timeline</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <HeroInfoPill label={showArchived ? "Archive visible" : "Archive filtered"} value={String(archivedShotCount)} />
+            <HeroInfoPill
+              accent
+              label={selectedShot ? "Focus shot" : "Main ready"}
+              value={selectedShot ? selectedShot.shotNumber : `${readyMainFrameCount}/${mainShots.length}`}
+            />
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 22,
+            alignItems: "stretch",
+          }}
+        >
+          <div style={{ display: "grid", alignContent: "start", gap: 10 }}>
             <span
               style={{
                 display: "inline-flex",
                 width: "fit-content",
                 alignItems: "center",
                 gap: 8,
-                padding: "6px 10px",
+                padding: "7px 12px",
                 borderRadius: 999,
-                background: "rgba(245, 158, 11, 0.1)",
                 border: "1px solid rgba(245, 158, 11, 0.24)",
+                background: "rgba(245, 158, 11, 0.08)",
                 color: "var(--accent)",
                 fontSize: 11,
-                letterSpacing: "0.08em",
+                fontWeight: 800,
+                letterSpacing: "0.16em",
                 textTransform: "uppercase",
               }}
             >
               <Sparkles size={13} />
               Story Canvas
             </span>
-            <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.04em" }}>
+            <div style={{ fontSize: "clamp(34px, 5vw, 54px)", fontWeight: 700, letterSpacing: "-0.06em", lineHeight: 0.96 }}>
               Storyboard Flow
             </div>
-            <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-              Timeline artik board mantiginda calisiyor: ana shot'lar ust lane'de, coverage
-              katmanlari alt lane'de. Kart secimi artik detay modalini ve hizli medya preview
-              aksiyonlarini acar.
+            <p
+              style={{
+                margin: 0,
+                maxWidth: 760,
+                color: "var(--text-secondary)",
+                fontSize: 14,
+                lineHeight: 1.8,
+              }}
+            >
+              Ana shot kolonlari ust lane&apos;de, coverage bloklari alt lane&apos;de akiyor.
+              Detail modal, media preview ve bulk production akislari korunuyor; sadece
+              board hiyerarsisi daha sinematik bir ritimle yeniden kuruldu.
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn-secondary" onClick={() => setShowArchived((current) => !current)} type="button">
-              <Archive size={15} />
-              {showArchived ? `Archived on (${archivedShotCount})` : `Archived off (${archivedShotCount})`}
-            </button>
-            <button className="btn-secondary" onClick={() => void handleImportClick()} type="button">
-              <Download size={15} />
-              Film-kit Import
-            </button>
-            <button
-              className="btn-primary"
-              disabled={mainShots.length === 0}
-              onClick={() => setShowBulkModal(true)}
-              type="button"
-            >
-              <Sparkles size={15} />
-              Bulk Production
-            </button>
-          </div>
-        </div>
+          <div
+            style={{
+              display: "grid",
+              alignContent: "space-between",
+              gap: 18,
+              padding: 20,
+              borderRadius: 24,
+              border: "1px solid rgba(255, 255, 255, 0.08)",
+              background:
+                "linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015))",
+            }}
+          >
+            <div style={{ display: "grid", gap: 8 }}>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Production Controls
+              </span>
+              <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.03em" }}>
+                Import, archive ve toplu uretim ayni board yuzeyinde.
+              </div>
+              <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+                Bu panel storyboard akisini daha net okuturken mevcut islevleri aynen
+                korur. Shot secimi yine detail modalini acar.
+              </p>
+            </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-            gap: 12,
-          }}
-        >
-          <MetricCard label="Main Shot" value={mainShots.length} />
-          <MetricCard
-            label="Coverage"
-            value={shots.filter((shot) => Boolean(shot.parentShotId)).length}
-          />
-          <MetricCard
-            label="Chain Link"
-            value={
-              mainShots.filter((shot) => shot.chainStatus === "continue" && shot.prevShotId).length
-            }
-          />
-          <MetricCard label="Missing Ref" value={missingExternalReferenceCount} />
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <SurfaceActionButton onClick={() => setShowArchived((current) => !current)} type="secondary">
+                <Archive size={15} />
+                {showArchived ? `Archived on (${archivedShotCount})` : `Archived off (${archivedShotCount})`}
+              </SurfaceActionButton>
+              <SurfaceActionButton onClick={() => void handleImportClick()} type="secondary">
+                <Download size={15} />
+                Film-kit Import
+              </SurfaceActionButton>
+              <SurfaceActionButton
+                disabled={mainShots.length === 0}
+                onClick={() => setShowBulkModal(true)}
+                type="primary"
+              >
+                <Sparkles size={15} />
+                Bulk Production
+              </SurfaceActionButton>
+            </div>
+          </div>
         </div>
       </header>
 
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr)",
-          gap: 18,
-          height: "calc(100vh - var(--topbar-h) - 260px)",
-          minHeight: 640,
-        }}
-      >
+      <section style={{ display: "grid", gap: 18 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+            gap: 14,
+          }}
+        >
+          <MetricCard
+            caption="Master continuity beats"
+            label="Main Shot"
+            tone="accent"
+            value={mainShots.length}
+          />
+          <MetricCard
+            caption="Auxiliary inserts and reactions"
+            label="Coverage"
+            tone="info"
+            value={coverageCount}
+          />
+          <MetricCard
+            caption="Shots with explicit continue handoff"
+            emphasized
+            label="Chain Link"
+            tone="accent"
+            value={linkedShotCount}
+          />
+          <MetricCard
+            caption={
+              missingExternalReferenceCount === 0
+                ? "Reference gaps closed"
+                : "Needs external handoff"
+            }
+            label="Missing Ref"
+            tone={missingExternalReferenceCount === 0 ? "success" : "danger"}
+            value={missingExternalReferenceCount}
+          />
+        </div>
+
         <div
           style={{
             minWidth: 0,
-            overflow: "hidden",
-            borderRadius: 30,
-            border: "1px solid var(--border-subtle)",
-            background:
-              "linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 12%), var(--bg-surface)",
             display: "grid",
-            gridTemplateRows: "auto minmax(0, 1fr)",
-            boxShadow: "0 24px 80px rgba(0, 0, 0, 0.22)",
+            gap: 14,
           }}
         >
           <div
@@ -558,48 +666,47 @@ export function Storyboard() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: 12,
-              padding: "18px 20px",
-              borderBottom: "1px solid var(--border-subtle)",
+              gap: 14,
+              flexWrap: "wrap",
+              paddingInline: 4,
             }}
           >
-            <div style={{ display: "grid", gap: 4 }}>
-              <span
-                style={{
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--text-muted)",
-                }}
-              >
-                Board canvas
-              </span>
-              <div style={{ fontSize: 22, fontWeight: 600 }}>Timeline</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <BoardMetaPill>Space + drag / +/- / 0 / F</BoardMetaPill>
+              <BoardMetaPill accent>
+                {selectedShot ? `Focused / ${selectedShot.shotNumber}` : `Ready / ${readyMainFrameCount} main`}
+              </BoardMetaPill>
+              <BoardMetaPill>
+                {selectedShot
+                  ? `${selectedShot.parentShotId ? "Coverage" : "Main"} / ${selectedShot.shotNumber}`
+                  : `${mainShots.length} main / ${coverageCount} coverage`}
+              </BoardMetaPill>
+              <BoardMetaPill>{showArchived ? "Archive visible" : "Archive hidden"}</BoardMetaPill>
             </div>
 
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 10,
-                flexWrap: "wrap",
-              }}
-            >
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid var(--border-subtle)",
-                  background: "var(--bg-elevated)",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
                   color: "var(--text-secondary)",
-                  fontSize: 12,
                 }}
               >
-                <Clapperboard size={14} />
-                Space + drag / +/- / 0 / F
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
+                    background: "var(--accent)",
+                    boxShadow: "0 0 16px rgba(245, 158, 11, 0.7)",
+                  }}
+                />
+                Auto-saving storyboard changes
               </div>
               <div
                 style={{
@@ -608,29 +715,31 @@ export function Storyboard() {
                   gap: 6,
                   padding: "6px",
                   borderRadius: 999,
-                  border: "1px solid var(--border-subtle)",
+                  border: "1px solid rgba(255, 255, 255, 0.08)",
                   background: "rgba(255, 255, 255, 0.03)",
                 }}
               >
-                <button className="icon-button" onClick={() => changeZoom(-ZOOM_STEP)} type="button">
+                <ZoomControlButton label="Zoom out" onClick={() => changeZoom(-ZOOM_STEP)}>
                   <Minus size={14} />
-                </button>
+                </ZoomControlButton>
                 <div
                   style={{
-                    minWidth: 56,
+                    minWidth: 62,
                     textAlign: "center",
                     fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
                     color: "var(--text-secondary)",
                   }}
                 >
                   {Math.round(zoom * 100)}%
                 </div>
-                <button className="icon-button" onClick={() => changeZoom(ZOOM_STEP)} type="button">
+                <ZoomControlButton label="Zoom in" onClick={() => changeZoom(ZOOM_STEP)}>
                   <Plus size={14} />
-                </button>
-                <button className="icon-button" onClick={fitCanvas} type="button">
+                </ZoomControlButton>
+                <ZoomControlButton label="Fit canvas" onClick={fitCanvas}>
                   <Scan size={14} />
-                </button>
+                </ZoomControlButton>
               </div>
             </div>
           </div>
@@ -644,13 +753,11 @@ export function Storyboard() {
             onWheel={handleViewportWheel}
             style={{
               minWidth: 0,
-              minHeight: 0,
+              minHeight: "calc(100vh - var(--topbar-h) - 320px)",
               overflow: "auto",
-              padding: 18,
+              padding: "4px 0 16px",
               cursor: isPanning ? "grabbing" : spacePressed ? "grab" : "default",
               userSelect: isPanning || spacePressed ? "none" : "auto",
-              background:
-                "linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent), radial-gradient(circle at top left, rgba(245, 158, 11, 0.05), transparent 26%)",
             }}
           >
             {loading ? (
@@ -662,383 +769,600 @@ export function Storyboard() {
             ) : (
               <div
                 style={{
-                  position: "relative",
                   width: boardWidth * zoom,
-                  minHeight: BOARD_HEIGHT * zoom,
+                  minHeight: boardHeight * zoom,
                 }}
               >
                 <div
                   style={{
-                    position: "absolute",
-                    inset: 0,
                     width: boardWidth,
-                    minHeight: BOARD_HEIGHT,
-                    borderRadius: 26,
-                    border: "1px solid rgba(255, 255, 255, 0.04)",
+                    minHeight: boardHeight,
+                    borderRadius: 30,
+                    border: "1px solid rgba(255, 255, 255, 0.05)",
                     background:
-                      "linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px), linear-gradient(180deg, rgba(17,17,19,0.92), rgba(10,10,11,0.96))",
-                    backgroundSize: "120px 120px, 120px 120px, auto",
+                      "linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px), linear-gradient(180deg, rgba(17,17,19,0.96), rgba(8,8,10,0.98))",
+                    backgroundSize: "108px 108px, 108px 108px, auto",
                     overflow: "hidden",
                     transform: `scale(${zoom})`,
                     transformOrigin: "top left",
                     pointerEvents: spacePressed ? "none" : "auto",
+                    display: "grid",
+                    gap: 28,
+                    padding: `${BOARD_SIDE_PADDING}px`,
                   }}
                 >
-                  <BoardRuler boardWidth={boardWidth} />
-                  <BoardLane
-                    title="Main Frames"
+                  <div
+                    style={{
+                      height: 8,
+                      margin: `-${BOARD_SIDE_PADDING}px -${BOARD_SIDE_PADDING}px 0`,
+                      background:
+                        "linear-gradient(90deg, rgba(245, 158, 11, 0.22), transparent 22%, transparent 78%, rgba(59, 130, 246, 0.14))",
+                    }}
+                  />
+
+                  <TrackHeader
+                    label="Main Shots"
+                    tone="accent"
                     subtitle="Primary continuity arc"
-                    height={286}
-                    top={BOARD_MAIN_Y - 52}
-                  />
-                  <BoardLane
-                    title="Coverage Blocks"
-                    subtitle="Auxiliary inserts and reactions"
-                    height={214}
-                    top={BOARD_COVERAGE_Y - 52}
                   />
 
-                  {mainShots.map((shot, index) => {
-                    const clusterLeft = BOARD_PADDING_X + index * CLUSTER_WIDTH;
-                    const coverageShots = coverageMap[shot.id] ?? [];
-                    const nextShot = mainShots[index + 1];
-                    const isLinked =
-                      nextShot?.chainStatus === "continue" && nextShot.prevShotId === shot.id;
-                    const coverageColumns = coverageShots.length <= 1 ? 1 : 2;
-                    const coverageWidth =
-                      coverageColumns === 1 ? COVERAGE_CARD_WIDTH : COVERAGE_GRID_WIDTH;
-                    const mainCardRight = clusterLeft + (CLUSTER_WIDTH + MAIN_CARD_WIDTH) / 2;
-                    const nextCardLeft =
-                      clusterLeft + CLUSTER_WIDTH + (CLUSTER_WIDTH - MAIN_CARD_WIDTH) / 2;
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 0, width: "max-content" }}>
+                    {mainShots.map((shot, index) => {
+                      const nextShot = mainShots[index + 1];
+                      const isLinked =
+                        nextShot?.chainStatus === "continue" && nextShot.prevShotId === shot.id;
 
-                    return (
-                      <div key={shot.id}>
-                        <div
-                          style={{
-                            position: "absolute",
-                            left: clusterLeft,
-                            top: BOARD_MAIN_Y,
-                            width: CLUSTER_WIDTH,
-                            display: "grid",
-                            justifyItems: "center",
-                          }}
-                        >
-                          <ShotCard
-                            shot={shot}
-                            selected={shot.id === selectedShotId}
-                            archived={shot.isArchived}
-                            onClick={() => openShotDetail(shot.id)}
-                            onPreviewRequest={(view) => openShotDetail(shot.id, view)}
-                            projectFolderPath={activeProject.folderPath}
-                          />
+                      return (
+                        <div key={shot.id} style={{ display: "flex", alignItems: "stretch", gap: 0 }}>
+                          <div
+                            style={{
+                              width: TIMELINE_GROUP_WIDTH,
+                              display: "grid",
+                              alignContent: "start",
+                              gap: 14,
+                            }}
+                          >
+                            <SequenceBadge
+                              index={index}
+                              caption={`A${shot.act ?? "-"} / S${shot.scene ?? "-"}`}
+                            />
+                            <ShotCard
+                              shot={shot}
+                              selected={shot.id === selectedShotId}
+                              archived={shot.isArchived}
+                              onClick={() => openShotDetail(shot.id)}
+                              onPreviewRequest={(view) => openShotDetail(shot.id, view)}
+                              projectFolderPath={activeProject.folderPath}
+                            />
+                          </div>
+
+                          {index < mainShots.length - 1 ? (
+                            <InlineConnector isLinked={Boolean(isLinked)} />
+                          ) : null}
                         </div>
+                      );
+                    })}
+                  </div>
 
-                        {coverageShots.length > 0 ? (
+                  <TrackHeader
+                    label="Coverage & Inserts"
+                    tone="muted"
+                    subtitle="Auxiliary reactions, inserts and alternatives"
+                  />
+
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 0, width: "max-content" }}>
+                    {mainShots.map((shot, index) => {
+                      const coverageShots = coverageMap[shot.id] ?? [];
+
+                      return (
+                        <div key={`${shot.id}:coverage`} style={{ display: "flex", alignItems: "stretch", gap: 0 }}>
                           <div
                             style={{
-                              position: "absolute",
-                              left: clusterLeft,
-                              top: BOARD_COVERAGE_Y,
-                              width: CLUSTER_WIDTH,
+                              width: TIMELINE_GROUP_WIDTH,
                               display: "grid",
-                              justifyItems: "center",
+                              alignContent: "start",
+                              gap: 12,
                             }}
                           >
-                            <div
-                              style={{
-                                width: coverageWidth,
-                                display: "grid",
-                                gridTemplateColumns:
-                                  coverageColumns === 1
-                                    ? "1fr"
-                                    : "repeat(2, minmax(0, 1fr))",
-                                gap: COVERAGE_GRID_GAP,
-                                justifyItems: "center",
-                              }}
-                            >
-                              {coverageShots.map((coverageShot) => (
-                                <ShotCard
-                                  key={coverageShot.id}
-                                  shot={coverageShot}
-                                  selected={coverageShot.id === selectedShotId}
-                                  isCoverage
-                                  archived={coverageShot.isArchived}
-                                  onClick={() => openShotDetail(coverageShot.id)}
-                                  onPreviewRequest={(view) => openShotDetail(coverageShot.id, view)}
-                                  projectFolderPath={activeProject.folderPath}
-                                />
-                              ))}
-                            </div>
+                            {coverageShots.length > 0 ? (
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns:
+                                    coverageShots.length === 1
+                                      ? "minmax(0, 1fr)"
+                                      : "repeat(2, minmax(0, 1fr))",
+                                  gap: COVERAGE_GRID_GAP,
+                                  alignItems: "start",
+                                }}
+                              >
+                                {coverageShots.map((coverageShot) => (
+                                  <ShotCard
+                                    key={coverageShot.id}
+                                    shot={coverageShot}
+                                    selected={coverageShot.id === selectedShotId}
+                                    isCoverage
+                                    archived={coverageShot.isArchived}
+                                    onClick={() => openShotDetail(coverageShot.id)}
+                                    onPreviewRequest={(view) => openShotDetail(coverageShot.id, view)}
+                                    projectFolderPath={activeProject.folderPath}
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <CoverageEmptyState />
+                            )}
                           </div>
-                        ) : (
-                          <div
-                            style={{
-                              position: "absolute",
-                              left: clusterLeft,
-                              top: BOARD_COVERAGE_Y + 26,
-                              width: CLUSTER_WIDTH,
-                              display: "grid",
-                              justifyItems: "center",
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: 170,
-                                padding: "12px 14px",
-                                borderRadius: 16,
-                                border: "1px dashed rgba(255, 255, 255, 0.08)",
-                                color: "var(--text-muted)",
-                                fontSize: 11,
-                                letterSpacing: "0.05em",
-                                textTransform: "uppercase",
-                                textAlign: "center",
-                              }}
-                            >
-                              No coverage
-                            </div>
-                          </div>
-                        )}
 
-                        {index < mainShots.length - 1 ? (
-                          <BoardConnector
-                            fromX={mainCardRight}
-                            isLinked={Boolean(isLinked)}
-                            toX={nextCardLeft}
-                          />
-                        ) : null}
-                      </div>
-                    );
-                  })}
+                          {index < mainShots.length - 1 ? (
+                            <div
+                              aria-hidden="true"
+                              style={{
+                                width: CONNECTOR_WIDTH,
+                                flex: "0 0 auto",
+                              }}
+                            />
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
           </div>
         </div>
-
       </section>
 
       {selectedShot ? (
-        <ShotDetailPanel
-          key={`${selectedShot.id}:${detailModalView}`}
-          shot={selectedShot}
-          initialView={detailModalView}
-          projectFolderPath={activeProject.folderPath}
-          onClose={() => setSelectedShotId(null)}
-          onRefresh={loadShots}
-        />
+        <Portal>
+          <ShotDetailPanel
+            key={`${selectedShot.id}:${detailModalView}`}
+            shot={selectedShot}
+            initialView={detailModalView}
+            projectFolderPath={activeProject.folderPath}
+            onClose={() => setSelectedShotId(null)}
+            onRefresh={loadShots}
+          />
+        </Portal>
       ) : null}
 
       {showImportModal && importPreviewData ? (
-        <ImportPreviewModal
-          importing={importing}
-          preview={importPreviewData}
-          onClose={() => setShowImportModal(false)}
-          onConfirm={() => void handleImportConfirm()}
-        />
+        <Portal>
+          <ImportPreviewModal
+            importing={importing}
+            preview={importPreviewData}
+            onClose={() => setShowImportModal(false)}
+            onConfirm={() => void handleImportConfirm()}
+          />
+        </Portal>
       ) : null}
 
       {showBulkModal ? (
-        <BulkProductionModal
-          shots={mainShots}
-          onClose={() => setShowBulkModal(false)}
-          onDone={() => void loadShots()}
-        />
+        <Portal>
+          <BulkProductionModal
+            shots={visibleShots}
+            selectedShotId={selectedShotId}
+            onClose={() => setShowBulkModal(false)}
+            onDone={() => void loadShots()}
+          />
+        </Portal>
       ) : null}
     </section>
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: number }) {
+function SurfaceActionButton({
+  children,
+  disabled = false,
+  onClick,
+  type,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+  type: "primary" | "secondary";
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        minHeight: 42,
+        padding: type === "primary" ? "0 18px" : "0 16px",
+        borderRadius: 14,
+        border:
+          type === "primary"
+            ? "1px solid rgba(245, 158, 11, 0.28)"
+            : "1px solid rgba(255, 255, 255, 0.08)",
+        background:
+          type === "primary"
+            ? "linear-gradient(135deg, #f59e0b, #f6c453)"
+            : "rgba(255, 255, 255, 0.04)",
+        color: type === "primary" ? "#140b00" : "var(--text-primary)",
+        fontSize: 13,
+        fontWeight: type === "primary" ? 800 : 700,
+        letterSpacing: "0.02em",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.48 : 1,
+        boxShadow:
+          type === "primary" && !disabled ? "0 14px 32px rgba(245, 158, 11, 0.24)" : "none",
+      }}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function HeroInfoPill({
+  label,
+  value,
+  accent = false,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
   return (
     <div
       style={{
-        display: "grid",
-        gap: 6,
-        padding: "14px 16px",
-        borderRadius: 18,
-        border: "1px solid var(--border-subtle)",
-        background: "rgba(255, 255, 255, 0.03)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 12px",
+        borderRadius: 999,
+        border: `1px solid ${
+          accent ? "rgba(245, 158, 11, 0.26)" : "rgba(255, 255, 255, 0.08)"
+        }`,
+        background: accent ? "rgba(245, 158, 11, 0.08)" : "rgba(255, 255, 255, 0.04)",
       }}
     >
       <span
         style={{
-          fontSize: 11,
-          letterSpacing: "0.08em",
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: "0.14em",
           textTransform: "uppercase",
           color: "var(--text-muted)",
         }}
       >
         {label}
       </span>
-      <strong style={{ fontSize: 24, letterSpacing: "-0.03em" }}>{value}</strong>
-    </div>
-  );
-}
-
-function BoardRuler({ boardWidth }: { boardWidth: number }) {
-  const columns = Math.max(1, Math.floor((boardWidth - BOARD_PADDING_X * 2) / CLUSTER_WIDTH));
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        height: 54,
-        borderBottom: "1px solid rgba(255, 255, 255, 0.05)",
-        background: "linear-gradient(180deg, rgba(255,255,255,0.03), transparent)",
-      }}
-    >
-      {Array.from({ length: columns }).map((_, index) => (
-        <div
-          key={index}
-          style={{
-            position: "absolute",
-            left: BOARD_PADDING_X + index * CLUSTER_WIDTH,
-            top: 16,
-            display: "grid",
-            gap: 6,
-            color: "var(--text-muted)",
-          }}
-        >
-          <span style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Beat {index + 1}
-          </span>
-          <div
-            style={{
-              width: 48,
-              height: 2,
-              borderRadius: 999,
-              background: "rgba(255, 255, 255, 0.12)",
-            }}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function BoardLane({
-  title,
-  subtitle,
-  height,
-  top,
-}: {
-  title: string;
-  subtitle: string;
-  height: number;
-  top: number;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: BOARD_PADDING_X - 20,
-        right: 28,
-        top,
-        height,
-        borderRadius: 28,
-        border: "1px solid rgba(255, 255, 255, 0.03)",
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.006) 44%, transparent 100%)",
-      }}
-    >
-      <div
+      <strong
         style={{
-          position: "absolute",
-          left: -(BOARD_PADDING_X - 36),
-          top: 14,
-          width: BOARD_PADDING_X - 54,
-          display: "grid",
-          gap: 3,
-          zIndex: 1,
-          padding: "12px 14px",
-          borderRadius: 18,
-          border: "1px solid rgba(255, 255, 255, 0.06)",
-          background:
-            "linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02))",
-          boxShadow: "0 14px 34px rgba(0, 0, 0, 0.18)",
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.02em",
+          color: accent ? "var(--accent)" : "var(--text-primary)",
         }}
       >
+        {value}
+      </strong>
+    </div>
+  );
+}
+
+function BoardMetaPill({
+  children,
+  accent = false,
+}: {
+  children: ReactNode;
+  accent?: boolean;
+}) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "9px 12px",
+        borderRadius: 999,
+        border: `1px solid ${
+          accent ? "rgba(245, 158, 11, 0.24)" : "rgba(255, 255, 255, 0.08)"
+        }`,
+        background: accent ? "rgba(245, 158, 11, 0.08)" : "rgba(255, 255, 255, 0.04)",
+        color: accent ? "var(--accent)" : "var(--text-secondary)",
+        fontSize: 12,
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function ZoomControlButton({
+  children,
+  label,
+  onClick,
+}: {
+  children: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-label={label}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 34,
+        height: 34,
+        borderRadius: 999,
+        border: "1px solid rgba(255, 255, 255, 0.08)",
+        background: "rgba(8, 8, 10, 0.55)",
+        color: "var(--text-secondary)",
+        cursor: "pointer",
+      }}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function MetricCard({
+  caption,
+  emphasized = false,
+  label,
+  tone,
+  value,
+}: {
+  caption: string;
+  emphasized?: boolean;
+  label: string;
+  tone: "accent" | "danger" | "info" | "success";
+  value: number;
+}) {
+  const tokens =
+    tone === "info"
+      ? {
+          border: "rgba(59, 130, 246, 0.24)",
+          glow: "rgba(59, 130, 246, 0.12)",
+          text: "var(--status-info)",
+        }
+      : tone === "danger"
+        ? {
+            border: "rgba(239, 68, 68, 0.24)",
+            glow: "rgba(239, 68, 68, 0.12)",
+            text: "var(--status-error)",
+          }
+        : tone === "success"
+          ? {
+              border: "rgba(34, 197, 94, 0.24)",
+              glow: "rgba(34, 197, 94, 0.12)",
+              text: "var(--status-success)",
+            }
+          : {
+              border: "rgba(245, 158, 11, 0.24)",
+              glow: "rgba(245, 158, 11, 0.12)",
+              text: "var(--accent)",
+            };
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "grid",
+        gap: 10,
+        padding: "18px 18px 20px",
+        borderRadius: 22,
+        border: `1px solid ${tokens.border}`,
+        background:
+          emphasized
+            ? `linear-gradient(180deg, ${tokens.glow}, rgba(255,255,255,0.02) 48%), rgba(17, 17, 19, 0.86)`
+            : "rgba(17, 17, 19, 0.82)",
+        boxShadow: emphasized ? `0 18px 44px ${tokens.glow}` : "none",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: "var(--text-muted)",
+        }}
+      >
+        {label}
+      </span>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
+        <strong style={{ fontSize: 34, lineHeight: 1, letterSpacing: "-0.06em" }}>{value}</strong>
+        <span style={{ width: 10, height: 10, borderRadius: 999, background: tokens.text, opacity: 0.9 }} />
+      </div>
+      <span style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>{caption}</span>
+    </div>
+  );
+}
+
+function TrackHeader({
+  label,
+  subtitle,
+  tone,
+}: {
+  label: string;
+  subtitle: string;
+  tone: "accent" | "muted";
+}) {
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <span
           style={{
-            fontSize: 11,
+            display: "inline-flex",
+            alignItems: "center",
+            padding: "7px 12px",
+            borderRadius: 999,
+            background:
+              tone === "accent" ? "rgba(245, 158, 11, 0.12)" : "rgba(255,255,255,0.04)",
+            color: tone === "accent" ? "var(--accent)" : "var(--text-secondary)",
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+          }}
+        >
+          {label}
+        </span>
+        <div
+          style={{
+            flex: 1,
+            height: 1,
+            background:
+              tone === "accent"
+                ? "linear-gradient(90deg, rgba(245, 158, 11, 0.28), rgba(255,255,255,0.04))"
+                : "linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03))",
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{subtitle}</span>
+    </div>
+  );
+}
+
+function SequenceBadge({ caption, index }: { caption: string; index: number }) {
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: "var(--text-muted)",
+        }}
+      >
+        Sequence {String(index + 1).padStart(2, "0")}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div
+          style={{
+            width: 72,
+            height: 2,
+            borderRadius: 999,
+            background: "linear-gradient(90deg, rgba(245, 158, 11, 0.58), rgba(255,255,255,0.1))",
+          }}
+        />
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
             color: "var(--text-muted)",
           }}
         >
-          {title}
+          {caption}
         </span>
-        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{subtitle}</span>
       </div>
     </div>
   );
 }
 
-function BoardConnector({
-  fromX,
-  toX,
-  isLinked,
-}: {
-  fromX: number;
-  toX: number;
-  isLinked: boolean;
-}) {
+function InlineConnector({ isLinked }: { isLinked: boolean }) {
   return (
     <div
+      aria-hidden="true"
       style={{
-        position: "absolute",
-        left: fromX,
-        top: BOARD_MAIN_Y + 92,
-        width: Math.max(20, toX - fromX - 20),
-        height: 66,
-        pointerEvents: "none",
+        width: CONNECTOR_WIDTH,
+        flex: "0 0 auto",
+        display: "grid",
+        alignItems: "center",
+        justifyItems: "center",
+        paddingTop: 88,
       }}
     >
       <div
         style={{
-          position: "absolute",
-          left: 0,
-          right: 0,
-          top: 22,
-          height: 2,
-          borderRadius: 999,
-          background: isLinked
-            ? "linear-gradient(90deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.95))"
-            : "linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.18))",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          right: 0,
-          top: 17,
-          width: 12,
-          height: 12,
-          borderTop: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
-          borderRight: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
-          transform: "rotate(45deg)",
-        }}
-      />
-      <span
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          fontSize: 10,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: isLinked ? "var(--accent)" : "var(--text-muted)",
+          position: "relative",
+          width: 56,
+          height: 42,
         }}
       >
-        {isLinked ? "continue" : "cut"}
-      </span>
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 8,
+            top: 20,
+            height: 2,
+            borderRadius: 999,
+            background: isLinked
+              ? "linear-gradient(90deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.96))"
+              : "linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.24))",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            right: 2,
+            top: 14,
+            width: 12,
+            height: 12,
+            borderTop: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
+            borderRight: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
+            transform: "rotate(45deg)",
+          }}
+        />
+        <span
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: "0.16em",
+            textTransform: "uppercase",
+            color: isLinked ? "var(--accent)" : "var(--text-muted)",
+          }}
+        >
+          {isLinked ? "Continue" : "Cut"}
+        </span>
+      </div>
     </div>
   );
 }
 
+function CoverageEmptyState() {
+  return (
+    <div
+      style={{
+        width: TIMELINE_GROUP_WIDTH,
+        minHeight: 146,
+        display: "grid",
+        placeItems: "center",
+        borderRadius: 22,
+        border: "1px dashed rgba(255,255,255,0.1)",
+        background: "rgba(255,255,255,0.02)",
+        color: "var(--text-muted)",
+        textAlign: "center",
+      }}
+    >
+      <div style={{ display: "grid", gap: 8 }}>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: "0.16em",
+            textTransform: "uppercase",
+          }}
+        >
+          Coverage Slot Empty
+        </span>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          Bu beat icin alternatif veya insert shot eklenmedi.
+        </span>
+      </div>
+    </div>
+  );
+}
 function StoryboardEmptyState({ onImport }: { onImport: () => void }) {
   return (
     <div

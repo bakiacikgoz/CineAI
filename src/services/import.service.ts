@@ -3,6 +3,7 @@ import { exists, mkdir, readDir, readFile, readTextFile, writeFile } from "@taur
 import { v4 as uuidv4 } from "uuid";
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
 import { parseShot, type ParsedShot } from "@/lib/markdown-parser";
+import { syncActiveProjectPresentation } from "@/services/project-presentation.service";
 import { useProjectStore } from "@/store/project.store";
 
 export interface ImportPreview {
@@ -47,6 +48,9 @@ export interface ShotRow {
   externalReferenceName: string | null;
   externalReferenceNotes: string | null;
   externalReferencePath: string | null;
+  characterId: string | null;
+  characterLookId: string | null;
+  includeCharacterPrompt: boolean;
   sourceFile: string | null;
   createdAt: number;
   updatedAt: number;
@@ -124,6 +128,9 @@ const SHOT_SELECT_SQL = `SELECT
   external_reference_name AS externalReferenceName,
   external_reference_notes AS externalReferenceNotes,
   external_reference_path AS externalReferencePath,
+  character_id AS characterId,
+  character_look_id AS characterLookId,
+  COALESCE(include_character_prompt, 1) AS includeCharacterPrompt,
   source_file AS sourceFile,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -240,7 +247,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         prompt_start, prompt_end, prompt_video, summary_tr,
         model, cfg, kling_preset, transition_mode,
         requires_external_reference, external_reference_name, external_reference_notes,
-        external_reference_path,
+        external_reference_path, character_id, character_look_id, include_character_prompt,
         image_start_path, image_end_path, video_path, video_4k_path,
         image_status, video_status, upscale_status,
         is_archived, source_file, created_at, updated_at
@@ -248,7 +255,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
         $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-        $31, $32, $33, $34, $35
+        $31, $32, $33, $34, $35, $36, $37, $38
       )`,
       [
         id,
@@ -275,6 +282,9 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         shot.externalReferenceName,
         shot.externalReferenceNotes,
         existingShot?.externalReferencePath ?? sharedExternalReferencePath ?? null,
+        existingShot?.characterId ?? null,
+        existingShot?.characterLookId ?? null,
+        existingShot?.includeCharacterPrompt ? 1 : 0,
         existingShot?.imageStartPath ?? null,
         existingShot?.imageEndPath ?? null,
         existingShot?.videoPath ?? null,
@@ -291,6 +301,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
   }
 
   await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
 }
 
 export async function getShots(
@@ -326,6 +337,7 @@ export async function updateShotPaths(
     imageEndPath: string | null;
     videoPath: string | null;
     video4kPath: string | null;
+    externalReferencePath: string | null;
     imageStatus: string;
     videoStatus: string;
     upscaleStatus: string;
@@ -360,6 +372,12 @@ export async function updateShotPaths(
     parameterIndex += 1;
   }
 
+  if (updates.externalReferencePath !== undefined) {
+    setClauses.push(`external_reference_path = $${parameterIndex}`);
+    values.push(updates.externalReferencePath);
+    parameterIndex += 1;
+  }
+
   if (updates.imageStatus !== undefined) {
     setClauses.push(`image_status = $${parameterIndex}`);
     values.push(updates.imageStatus);
@@ -388,6 +406,7 @@ export async function updateShotPaths(
   );
 
   await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
 }
 
 export async function updateShotPromptFields(
@@ -441,6 +460,52 @@ export async function updateShotPromptFields(
   await syncProjectDbMirror();
 }
 
+export async function updateShotCharacterBinding(
+  shotId: string,
+  updates: Partial<{
+    characterId: string | null;
+    characterLookId: string | null;
+    includeCharacterPrompt: boolean;
+    externalReferencePath: string | null;
+  }>,
+): Promise<void> {
+  const db = await getProjectDb();
+  const clauses = ["updated_at = $1"];
+  const values: Array<string | number | null> = [Date.now()];
+
+  if (updates.characterId !== undefined) {
+    clauses.push(`character_id = $${values.length + 1}`);
+    values.push(updates.characterId);
+  }
+
+  if (updates.characterLookId !== undefined) {
+    clauses.push(`character_look_id = $${values.length + 1}`);
+    values.push(updates.characterLookId);
+  }
+
+  if (updates.includeCharacterPrompt !== undefined) {
+    clauses.push(`include_character_prompt = $${values.length + 1}`);
+    values.push(updates.includeCharacterPrompt ? 1 : 0);
+  }
+
+  if (updates.externalReferencePath !== undefined) {
+    clauses.push(`external_reference_path = $${values.length + 1}`);
+    values.push(updates.externalReferencePath);
+  }
+
+  values.push(shotId);
+
+  await db.execute(
+    `UPDATE shots
+     SET ${clauses.join(", ")}
+     WHERE id = $${values.length}`,
+    values,
+  );
+
+  await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
+}
+
 export async function assignShotMediaPath(
   shotId: string,
   target: ShotMediaAssignmentTarget,
@@ -488,6 +553,7 @@ export async function setShotArchived(
   );
 
   await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
 }
 
 export function shotNeedsExternalReferenceForMode(
@@ -590,15 +656,7 @@ async function updateShotExternalReferencePath(
   shotId: string,
   externalReferencePath: string | null,
 ): Promise<void> {
-  const db = await getProjectDb();
-  await db.execute(
-    `UPDATE shots
-     SET external_reference_path = $1, updated_at = $2
-     WHERE id = $3`,
-    [externalReferencePath, Date.now(), shotId],
-  );
-
-  await syncProjectDbMirror();
+  await updateShotPaths(shotId, { externalReferencePath });
 }
 
 export async function setShotExternalReferencePath(
@@ -657,6 +715,7 @@ async function propagateSharedExternalReferencePath(
   );
 
   await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
 }
 
 async function collectMdFiles(dir: string): Promise<string[]> {

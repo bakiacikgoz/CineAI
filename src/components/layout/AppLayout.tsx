@@ -1,11 +1,12 @@
 import type { CSSProperties } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { useUIStore } from "@/store/ui.store";
 
 export function AppLayout() {
   const sidebarExpanded = useUIStore((state) => state.sidebarExpanded);
+  const location = useLocation();
 
   return (
     <div
@@ -23,7 +24,9 @@ export function AppLayout() {
         <Sidebar />
       </div>
       <main className="main-panel">
-        <Outlet />
+        <div key={location.pathname} className="page-enter">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

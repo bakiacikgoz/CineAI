@@ -1,5 +1,6 @@
 import { FolderKanban, PanelLeft, Sparkles, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { clearProjectSession } from "@/services/project-session.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
 import { useUIStore } from "@/store/ui.store";
@@ -7,7 +8,6 @@ import { useUIStore } from "@/store/ui.store";
 export function TopBar() {
   const navigate = useNavigate();
   const activeProject = useProjectStore((state) => state.activeProject);
-  const clearActiveProject = useProjectStore((state) => state.clearActiveProject);
   const activeJobsCount = useQueueStore(
     (state) => state.jobs.filter((job) => job.status === "active").length,
   );
@@ -45,8 +45,10 @@ export function TopBar() {
               aria-label="Projeyi kapat"
               className="topbar-project-close"
               onClick={() => {
-                clearActiveProject();
-                navigate("/dashboard");
+                void (async () => {
+                  await clearProjectSession();
+                  navigate("/dashboard");
+                })();
               }}
               title="Projeyi kapat"
               type="button"

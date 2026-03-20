@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { message, open } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -40,12 +40,12 @@ import {
   type AutonomousStage,
 } from "@/services/storyboard-autonomous.service";
 import {
-  clearShotExternalReference,
-  updateShotPromptFields,
-  saveShotExternalReference,
-  setShotArchived,
-  type ShotRow,
-} from "@/services/import.service";
+  assignCharacterLookToShot,
+  clearShotCharacterLookBinding,
+  listCharacters,
+  type CharacterRecord,
+} from "@/services/character.service";
+import { clearShotExternalReference, updateShotPromptFields, saveShotExternalReference, setShotArchived, type ShotRow } from "@/services/import.service";
 import {
   listPromptTemplates,
   type PromptTemplateRecord,
@@ -96,9 +96,15 @@ export function ShotDetailPanel({
   const [updatingReference, setUpdatingReference] = useState(false);
   const [upscaling, setUpscaling] = useState(false);
   const [templates, setTemplates] = useState<PromptTemplateRecord[]>([]);
+  const [characters, setCharacters] = useState<CharacterRecord[]>([]);
+  const [loadingCharacters, setLoadingCharacters] = useState(true);
+  const [bindingCharacter, setBindingCharacter] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [selectedCharacterId, setSelectedCharacterId] = useState(shot.characterId ?? "");
+  const [selectedLookId, setSelectedLookId] = useState(shot.characterLookId ?? "");
+  const [includeCharacterPrompt, setIncludeCharacterPrompt] = useState(Boolean(shot.includeCharacterPrompt));
   const [promptDrafts, setPromptDrafts] = useState<Record<DetailView, string>>({
     start: shot.promptStart ?? "",
     end: shot.promptEnd ?? "",
@@ -116,7 +122,10 @@ export function ShotDetailPanel({
       end: shot.promptEnd ?? "",
       video: shot.promptVideo ?? "",
     });
-  }, [shot.id, shot.promptEnd, shot.promptStart, shot.promptVideo]);
+    setSelectedCharacterId(shot.characterId ?? "");
+    setSelectedLookId(shot.characterLookId ?? "");
+    setIncludeCharacterPrompt(Boolean(shot.includeCharacterPrompt));
+  }, [shot.characterId, shot.characterLookId, shot.id, shot.includeCharacterPrompt, shot.promptEnd, shot.promptStart, shot.promptVideo]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -173,6 +182,35 @@ export function ShotDetailPanel({
     };
   }, [shot.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCharacters() {
+      setLoadingCharacters(true);
+      try {
+        const nextCharacters = await listCharacters();
+        if (!cancelled) {
+          setCharacters(nextCharacters);
+        }
+      } catch (error) {
+        console.error("Failed to load characters for shot detail", error);
+        if (!cancelled) {
+          setCharacters([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingCharacters(false);
+        }
+      }
+    }
+
+    void loadCharacters();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shot.id, shot.updatedAt]);
+
   const startImageUrl = shot.imageStartPath
     ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, shot.imageStartPath))
     : null;
@@ -198,6 +236,16 @@ export function ShotDetailPanel({
   const imageModel = resolveImageModel(shot.model);
   const promptContent = promptDrafts[activePromptTab];
   const videoPromptAnalysis = analyzeKlingVideoPrompt(promptDrafts.video);
+  const selectedCharacter =
+    characters.find((character) => character.id === selectedCharacterId) ?? null;
+  const selectedLook =
+    selectedCharacter?.looks.find((look) => look.id === selectedLookId) ??
+    selectedCharacter?.looks.find((look) => look.id === selectedCharacter?.defaultLookId) ??
+    selectedCharacter?.looks[0] ??
+    null;
+  const selectedCharacterPreview = selectedLook?.primaryImage
+    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, selectedLook.primaryImage))
+    : null;
   const startReferenceMissing = missingExternalReference && shot.chainStatus !== "continue";
   const endReferenceMissing = missingExternalReference;
   const activePromptChanged =
@@ -277,6 +325,45 @@ export function ShotDetailPanel({
     }
   }
 
+  async function handleApplyCharacterBinding() {
+    if (!selectedCharacter || !selectedLook) {
+      return;
+    }
+
+    setBindingCharacter(true);
+    try {
+      await assignCharacterLookToShot(
+        shot.id,
+        selectedCharacter.id,
+        selectedLook.id,
+        includeCharacterPrompt,
+      );
+      await refreshAll();
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Karakter baglantisi kaydedilemedi.", {
+        title: shot.shotNumber,
+        kind: "error",
+      });
+    } finally {
+      setBindingCharacter(false);
+    }
+  }
+
+  async function handleClearCharacterBinding() {
+    setBindingCharacter(true);
+    try {
+      await clearShotCharacterLookBinding(shot.id);
+      await refreshAll();
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Karakter baglantisi temizlenemedi.", {
+        title: shot.shotNumber,
+        kind: "error",
+      });
+    } finally {
+      setBindingCharacter(false);
+    }
+  }
+
   async function handleBootstrap() {
     setStageAction("start");
     try {
@@ -321,10 +408,16 @@ export function ShotDetailPanel({
 
   async function handleArchiveToggle() {
     const shouldArchive = !shot.isArchived;
-    const confirmed = window.confirm(
+    const confirmed = await confirm(
       shouldArchive
         ? `${shot.shotNumber} ve coverage alt kartlari arsive alinsin mi?`
         : `${shot.shotNumber} arsivden geri alinsin mi?`,
+      {
+        title: shouldArchive ? "Shot archive" : "Shot restore",
+        kind: "warning",
+        okLabel: shouldArchive ? "Archive" : "Restore",
+        cancelLabel: "Vazgec",
+      },
     );
 
     if (!confirmed) {
@@ -374,8 +467,14 @@ export function ShotDetailPanel({
   }
 
   async function handleClearReference() {
-    const confirmed = window.confirm(
+    const confirmed = await confirm(
       `${shot.shotNumber} icin yuklu harici referans gorseli kaldirilsin mi?`,
+      {
+        title: "Referans kaldir",
+        kind: "warning",
+        okLabel: "Kaldir",
+        cancelLabel: "Vazgec",
+      },
     );
 
     if (!confirmed) {
@@ -546,7 +645,18 @@ export function ShotDetailPanel({
             </div>
           </section>
 
-          <section style={{ minWidth: 0, minHeight: 0, padding: 22, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", gap: 14 }}>
+          <section
+            style={{
+              minWidth: 0,
+              minHeight: 0,
+              padding: 22,
+              display: "grid",
+              alignContent: "start",
+              gap: 14,
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+            }}
+          >
             <section style={{ display: "grid", gap: 10, padding: "14px 16px", borderRadius: 22, border: "1px solid var(--border-subtle)", background: "rgba(255,255,255,0.02)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><span>Shot capsule</span><span>{shot.imageStatus} / {shot.videoStatus}</span></div>
               <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>{shot.summaryTr ?? "Bu shot icin Turkce ozet bulunmuyor."}</div>
@@ -661,6 +771,95 @@ export function ShotDetailPanel({
               </section>
             ) : null}
 
+            <section style={{ display: "grid", gap: 8, padding: "14px 16px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(255,255,255,0.02)" }}>
+              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Character binding</div>
+              {loadingCharacters ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Karakterler yukleniyor...</div>
+              ) : characters.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  Once Characters ekranindan bir continuity profili olustur.
+                </div>
+              ) : (
+                <>
+                  <select
+                    onChange={(event) => {
+                      const nextCharacterId = event.target.value;
+                      setSelectedCharacterId(nextCharacterId);
+                      const nextCharacter = characters.find((character) => character.id === nextCharacterId);
+                      setSelectedLookId(nextCharacter?.defaultLookId ?? nextCharacter?.looks[0]?.id ?? "");
+                    }}
+                    style={panelInputStyle}
+                    value={selectedCharacterId}
+                  >
+                    <option value="">Karakter sec</option>
+                    {characters.map((character) => (
+                      <option key={character.id} value={character.id}>
+                        {character.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    disabled={!selectedCharacter}
+                    onChange={(event) => setSelectedLookId(event.target.value)}
+                    style={panelInputStyle}
+                    value={selectedLookId}
+                  >
+                    <option value="">Look sec</option>
+                    {selectedCharacter?.looks.map((look) => (
+                      <option key={look.id} value={look.id}>
+                        {look.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--text-secondary)" }}>
+                    <input
+                      checked={includeCharacterPrompt}
+                      onChange={(event) => setIncludeCharacterPrompt(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Karakter prompt hint'ini START/END/VIDEO promptlarina ekle</span>
+                  </label>
+
+                  {selectedLook ? (
+                    <div style={{ display: "grid", gap: 8, padding: "12px 12px 14px", borderRadius: 16, border: "1px solid var(--border-subtle)", background: "rgba(255,255,255,0.03)" }}>
+                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                        {selectedCharacterPreview ? (
+                          <img
+                            alt={selectedLook.name}
+                            src={selectedCharacterPreview}
+                            style={{ width: 72, aspectRatio: "4 / 3", borderRadius: 12, objectFit: "cover", border: "1px solid var(--border-subtle)" }}
+                          />
+                        ) : null}
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            {selectedCharacter?.name} / {selectedLook.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                            {selectedLook.promptHint ?? selectedCharacter?.promptHint ?? "Continuity hint hazir degil."}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button className="btn-secondary" disabled={!selectedCharacterId || !selectedLookId || bindingCharacter} onClick={() => void handleApplyCharacterBinding()} type="button">
+                          <Link2 size={14} />
+                          {bindingCharacter ? "Kaydediliyor..." : "Shot'a bagla"}
+                        </button>
+                        {shot.characterLookId ? (
+                          <button className="btn-secondary" disabled={bindingCharacter} onClick={() => void handleClearCharacterBinding()} type="button">
+                            <Trash2 size={14} />
+                            Baglantiyi temizle
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </section>
+
             <section style={{ display: "grid", gap: 8 }}>
               <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Single actions</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -726,12 +925,19 @@ export function ShotDetailPanel({
               </div>
             </section>
 
-            <section style={{ minHeight: 0, overflow: "hidden", borderRadius: 22, border: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+            <section
+              style={{
+                borderRadius: 22,
+                border: "1px solid var(--border-subtle)",
+                background: "var(--bg-elevated)",
+                display: "grid",
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><Sparkles size={13} />Autonomous candidates</div>
                 {loadingGroups ? <LoaderCircle className="spin-slow" size={14} /> : null}
               </div>
-              <div style={{ minHeight: 0, overflowY: "auto", padding: 14, display: "grid", gap: 12 }}>
+              <div style={{ padding: 14, display: "grid", gap: 12 }}>
                 {(["start", "end", "video"] as AutonomousStage[]).map((stage) => (
                   <div key={stage} style={{ display: "grid", gap: 10, padding: "12px 12px 14px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(255,255,255,0.02)" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -772,7 +978,14 @@ export function ShotDetailPanel({
               </div>
             </section>
 
-            <section style={{ minHeight: 0, overflow: "hidden", borderRadius: 22, border: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+            <section
+              style={{
+                borderRadius: 22,
+                border: "1px solid var(--border-subtle)",
+                background: "var(--bg-elevated)",
+                display: "grid",
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><Sparkles size={13} />Prompt viewport</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -801,7 +1014,7 @@ export function ShotDetailPanel({
                   {applyingTemplate ? "Applying..." : `Use ${activePromptTab.toUpperCase()}`}
                 </button>
               </div>
-              <div style={{ minHeight: 0, overflowY: "auto", padding: "16px 16px 18px", display: "grid", gap: 12 }}>
+              <div style={{ padding: "16px 16px 18px", display: "grid", gap: 12 }}>
                 <textarea
                   value={promptContent}
                   onChange={(event) =>
@@ -889,3 +1102,14 @@ function MetaChip({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+const panelInputStyle = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-surface)",
+  color: "var(--text-primary)",
+  fontSize: 12,
+  outline: "none",
+} satisfies React.CSSProperties;

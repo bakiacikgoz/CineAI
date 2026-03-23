@@ -1,9 +1,9 @@
-import { exists, remove } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { v4 as uuidv4 } from "uuid";
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
 import { buildAssetDetachUpdates } from "@/lib/asset-detach";
-import { splitAssetTags } from "@/lib/asset-tags";
+import { replaceAssetGroupTag, splitAssetTags } from "@/lib/asset-tags";
 import {
   getShotById,
   getShots,
@@ -26,6 +26,7 @@ export interface AssetInput {
   costUsd?: number;
   falJobId?: string;
   shotId?: string;
+  metadata?: Record<string, unknown> | null;
   tags?: string[];
 }
 
@@ -44,12 +45,14 @@ export interface AssetRecord {
   cost_usd: number | null;
   fal_job_id: string | null;
   shot_id: string | null;
+  metadata_json: string | null;
   tags: string | null;
   created_at: number;
 }
 
 export type AssetWithTags = AssetRecord & {
   tagsList: string[];
+  metadata: Record<string, unknown> | null;
 };
 
 export interface AssetDeletionImpact {
@@ -57,6 +60,32 @@ export interface AssetDeletionImpact {
   slotCount: number;
   slotLabels: string[];
 }
+
+export interface ImportedProjectAsset {
+  assetId: string;
+  type: "image" | "video";
+  relativePath: string;
+  filename: string;
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".avif",
+]);
+
+const VIDEO_EXTENSIONS = new Set([
+  ".mp4",
+  ".mov",
+  ".webm",
+  ".m4v",
+  ".avi",
+  ".mkv",
+]);
 
 function parseAssetTags(tags: string | null): string[] {
   if (!tags) {
@@ -73,6 +102,44 @@ function parseAssetTags(tags: string | null): string[] {
   }
 }
 
+function parseAssetMetadata(metadataJson: string | null): Record<string, unknown> | null {
+  if (!metadataJson) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getFileExtension(filePath: string): string {
+  const match = /(\.[^./\\]+)$/.exec(filePath);
+  return match?.[1]?.toLowerCase() ?? "";
+}
+
+function sanitizeFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "asset";
+}
+
+function resolveImportedAssetType(filePath: string): "image" | "video" {
+  const extension = getFileExtension(filePath);
+
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return "image";
+  }
+
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return "video";
+  }
+
+  throw new Error("Desteklenmeyen dosya tipi. Yalnizca image ve video dosyalari ice aktarilabilir.");
+}
+
 export async function saveAsset(input: AssetInput): Promise<string> {
   const db = await getProjectDb();
   const id = uuidv4();
@@ -82,8 +149,8 @@ export async function saveAsset(input: AssetInput): Promise<string> {
     `INSERT INTO assets
       (id, project_id, type, file_path, filename, width, height,
        duration_s, resolution, model_used, prompt, cost_usd,
-       fal_job_id, shot_id, tags, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+       fal_job_id, shot_id, metadata_json, tags, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [
       id,
       input.projectId,
@@ -99,13 +166,60 @@ export async function saveAsset(input: AssetInput): Promise<string> {
       input.costUsd ?? 0,
       input.falJobId ?? null,
       input.shotId ?? null,
+      input.metadata ? JSON.stringify(input.metadata) : null,
       JSON.stringify(input.tags ?? []),
       now,
     ],
   );
 
   await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
   return id;
+}
+
+export async function importProjectAsset(params: {
+  sourcePath: string;
+  type?: "image" | "video";
+  shotId?: string;
+  tags?: string[];
+}): Promise<ImportedProjectAsset> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const assetType = params.type ?? resolveImportedAssetType(params.sourcePath);
+  const originalFilename = params.sourcePath.split(/[\\/]/).pop() ?? "asset";
+  const extension = getFileExtension(originalFilename);
+  const baseName = extension
+    ? originalFilename.slice(0, originalFilename.length - extension.length)
+    : originalFilename;
+  const targetFilename = `${sanitizeFilename(baseName)}_${uuidv4().slice(0, 8)}${extension}`;
+  const targetFolder = assetType === "image" ? ["assets", "images"] : ["assets", "videos"];
+  const relativePath = [...targetFolder, targetFilename].join("/");
+  const absolutePath = await join(project.folderPath, ...targetFolder, targetFilename);
+
+  await mkdir(await join(project.folderPath, ...targetFolder), { recursive: true });
+  await writeFile(absolutePath, await readFile(params.sourcePath));
+
+  const assetId = await saveAsset({
+    projectId: project.id,
+    type: assetType,
+    filePath: relativePath,
+    filename: targetFilename,
+    shotId: params.shotId,
+    modelUsed: "manual-import",
+    costUsd: 0,
+    tags: Array.from(new Set(["imported", ...(params.tags ?? [])])),
+  });
+
+  return {
+    assetId,
+    type: assetType,
+    relativePath,
+    filename: targetFilename,
+  };
 }
 
 export async function getAssets(
@@ -132,6 +246,7 @@ export async function getAssets(
   return rows.map((row) => ({
     ...row,
     tagsList: parseAssetTags(row.tags),
+    metadata: parseAssetMetadata(row.metadata_json),
   }));
 }
 
@@ -160,6 +275,7 @@ export async function getShotAssets(
   return rows.map((row) => ({
     ...row,
     tagsList: parseAssetTags(row.tags),
+    metadata: parseAssetMetadata(row.metadata_json),
   }));
 }
 
@@ -178,6 +294,7 @@ export async function getAssetById(assetId: string): Promise<AssetWithTags | nul
     ? {
         ...row,
         tagsList: parseAssetTags(row.tags),
+        metadata: parseAssetMetadata(row.metadata_json),
       }
     : null;
 }
@@ -203,6 +320,33 @@ export async function updateAssetUserTags(
 
   const { systemTags } = splitAssetTags(asset.tagsList);
   await updateAssetTags(assetId, [...systemTags, ...userTags]);
+}
+
+export async function updateAssetGroups(
+  assetIds: string[],
+  groupName: string | null,
+): Promise<void> {
+  const uniqueAssetIds = Array.from(new Set(assetIds.filter(Boolean)));
+
+  if (uniqueAssetIds.length === 0) {
+    return;
+  }
+
+  const db = await getProjectDb();
+  const assets = await Promise.all(uniqueAssetIds.map((assetId) => getAssetById(assetId)));
+
+  for (const asset of assets) {
+    if (!asset) {
+      continue;
+    }
+
+    await db.execute("UPDATE assets SET tags = $1 WHERE id = $2", [
+      JSON.stringify(replaceAssetGroupTag(asset.tagsList, groupName)),
+      asset.id,
+    ]);
+  }
+
+  await syncProjectDbMirror();
 }
 
 export async function setAssetShotId(assetId: string, shotId: string | null): Promise<void> {

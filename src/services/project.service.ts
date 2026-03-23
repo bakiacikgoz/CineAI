@@ -70,6 +70,8 @@ function normalizeProjectMetadata(
     readyStartCount: Number(metadata.readyStartCount) || 0,
     readyEndCount: Number(metadata.readyEndCount) || 0,
     readyVideoCount: Number(metadata.readyVideoCount) || 0,
+    characterCount: Number(metadata.characterCount) || 0,
+    assetCount: Number(metadata.assetCount) || 0,
   };
 }
 

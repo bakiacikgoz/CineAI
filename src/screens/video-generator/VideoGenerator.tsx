@@ -1,15 +1,28 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Check,
+  Expand,
   Film,
+  FolderOpen,
   Image as ImageIcon,
   LoaderCircle,
   Sparkles,
   Video as VideoIcon,
 } from "lucide-react";
-import { message } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
+import {
+  MediaLightbox,
+  type MediaLightboxItem,
+} from "@/components/media/MediaLightbox";
+import { MediaPaginationControls } from "@/components/media/MediaPaginationControls";
+import {
+  getAssetGroupName,
+  normalizeAssetGroupName,
+  replaceAssetGroupTag,
+} from "@/lib/asset-tags";
 import { resolveVideoGeneratorDefaults } from "@/lib/generator-defaults";
 import { getAppSettings } from "@/lib/store";
 import {
@@ -22,18 +35,32 @@ import {
   type VideoAspectRatio,
   type VideoModelId,
 } from "@/services/fal.service";
-import { getAssets, type AssetWithTags } from "@/services/asset.service";
+import { getAssets, updateAssetGroups, type AssetWithTags } from "@/services/asset.service";
 import { getShots, type ShotRow } from "@/services/import.service";
 import { enqueueVideoJobs } from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
+import {
+  useScreenStateStore,
+  type VideoGeneratorScreenState,
+} from "@/store/screen-state.store";
 
 type GeneratorMode = "shot-linked" | "freeform";
+const ALL_GROUP_KEY = "__all__";
+const UNGROUPED_GROUP_KEY = "__ungrouped__";
+const VIDEO_PAGE_SIZE = 9;
 
 type VideoAsset = AssetWithTags & {
   absolutePath: string;
   assetUrl: string;
+};
+
+type VideoSource = {
+  absolutePath: string;
+  assetUrl: string;
+  filename: string;
+  sourceKind: "asset" | "local";
 };
 
 type VideoGeneratorLocationState = {
@@ -46,11 +73,41 @@ type VideoGeneratorLocationState = {
   shotId?: string;
 };
 
+type AssetGroup = {
+  key: string;
+  label: string;
+  count: number;
+};
+
+const DEFAULT_VIDEO_GENERATOR_STATE: VideoGeneratorScreenState = {
+  mode: "shot-linked",
+  selectedShotId: "",
+  startAssetId: "",
+  endAssetId: "",
+  localStartPath: null,
+  localEndPath: null,
+  prompt: "",
+  model: "fal-ai/kling-video/v3/pro/image-to-video",
+  duration: 5,
+  aspectRatio: "16:9",
+  cfg: 0.45,
+  generateAudio: false,
+  shotType: "customize",
+  galleryActiveGroupKey: ALL_GROUP_KEY,
+  galleryGroupDraft: "",
+  gallerySelectedGroupTarget: UNGROUPED_GROUP_KEY,
+  galleryPage: 1,
+};
+
 export function VideoGenerator() {
   const activeProject = useProjectStore((state) => state.activeProject);
   const location = useLocation();
   const navigate = useNavigate();
   const queueJobs = useQueueStore((state) => state.jobs);
+  const activeProjectId = activeProject?.id ?? null;
+  const setVideoGeneratorState = useScreenStateStore(
+    (state) => state.setVideoGeneratorState,
+  );
   const [mode, setMode] = useState<GeneratorMode>("shot-linked");
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [imageAssets, setImageAssets] = useState<VideoAsset[]>([]);
@@ -59,6 +116,8 @@ export function VideoGenerator() {
   const [selectedShotId, setSelectedShotId] = useState<string>("");
   const [startAssetId, setStartAssetId] = useState<string>("");
   const [endAssetId, setEndAssetId] = useState<string>("");
+  const [localStartPath, setLocalStartPath] = useState<string | null>(null);
+  const [localEndPath, setLocalEndPath] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<VideoModelId>("fal-ai/kling-video/v3/pro/image-to-video");
   const [duration, setDuration] = useState<KlingDuration>(5);
@@ -68,7 +127,87 @@ export function VideoGenerator() {
   const [shotType, setShotType] = useState<KlingShotType>("customize");
   const [generating, setGenerating] = useState(false);
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
+  const [lightboxItem, setLightboxItem] = useState<MediaLightboxItem | null>(null);
   const promptAnalysis = useMemo(() => analyzeKlingVideoPrompt(prompt), [prompt]);
+
+  function applyVideoGeneratorState(nextState: VideoGeneratorScreenState) {
+    setMode(nextState.mode);
+    setSelectedShotId(nextState.selectedShotId);
+    setStartAssetId(nextState.startAssetId);
+    setEndAssetId(nextState.endAssetId);
+    setLocalStartPath(nextState.localStartPath);
+    setLocalEndPath(nextState.localEndPath);
+    setPrompt(nextState.prompt);
+    setModel(
+      nextState.model in VIDEO_MODELS
+        ? (nextState.model as VideoModelId)
+        : DEFAULT_VIDEO_GENERATOR_STATE.model,
+    );
+    setDuration(clampKlingDuration(nextState.duration));
+    setAspectRatio(nextState.aspectRatio);
+    setCfg(nextState.cfg);
+    setGenerateAudio(nextState.generateAudio);
+    setShotType(nextState.shotType);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initializeVideoGeneratorState() {
+      if (!activeProjectId) {
+        applyVideoGeneratorState(DEFAULT_VIDEO_GENERATOR_STATE);
+        setInboundNotice(null);
+        return;
+      }
+
+      const nextState =
+        useScreenStateStore.getState().videoGeneratorByProject[activeProjectId] ?? null;
+
+      if (nextState) {
+        applyVideoGeneratorState({
+          ...DEFAULT_VIDEO_GENERATOR_STATE,
+          ...nextState,
+        });
+        setInboundNotice(null);
+        return;
+      }
+
+      const [settings, defaultPreset] = await Promise.all([
+        getAppSettings(),
+        getDefaultModelPreset(),
+      ]);
+      const resolvedDefaults = resolveVideoGeneratorDefaults({
+        appDefaults: settings,
+        defaultPreset,
+        inboundState: null,
+        inboundPreset: null,
+      });
+
+      if (cancelled) {
+        return;
+      }
+
+      applyVideoGeneratorState({
+        ...DEFAULT_VIDEO_GENERATOR_STATE,
+        model:
+          resolvedDefaults.model in VIDEO_MODELS
+            ? (resolvedDefaults.model as VideoModelId)
+            : DEFAULT_VIDEO_GENERATOR_STATE.model,
+        aspectRatio: resolvedDefaults.aspectRatio,
+        cfg: resolvedDefaults.cfg,
+        duration: resolvedDefaults.duration,
+        generateAudio: resolvedDefaults.generateAudio,
+        shotType: resolvedDefaults.shotType,
+      });
+      setInboundNotice(null);
+    }
+
+    void initializeVideoGeneratorState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!activeProject) {
@@ -120,10 +259,11 @@ export function VideoGenerator() {
           setShots(mainShots);
           setImageAssets(hydratedImages);
           setVideoAssets(hydratedVideos);
-
-          if (!selectedShotId && mainShots[0]) {
-            setSelectedShotId(mainShots[0].id);
-          }
+          setSelectedShotId((current) =>
+            current && mainShots.some((shot) => shot.id === current)
+              ? current
+              : (mainShots[0]?.id ?? ""),
+          );
         }
       } catch (error) {
         console.error("Failed to load video generator state", error);
@@ -145,19 +285,21 @@ export function VideoGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [activeProject, selectedShotId]);
+  }, [activeProject]);
 
   const selectedShot = shots.find((shot) => shot.id === selectedShotId) ?? null;
 
   useEffect(() => {
-    if (!selectedShot) {
+    if (mode !== "shot-linked" || !selectedShot) {
       return;
     }
 
+    setLocalStartPath(null);
+    setLocalEndPath(null);
     setPrompt(selectedShot.promptVideo ?? "");
     setDuration(clampKlingDuration(selectedShot.durationS));
     setGenerateAudio(analyzeKlingVideoPrompt(selectedShot.promptVideo ?? "").hasAudioDirection);
-  }, [selectedShot?.id]);
+  }, [mode, selectedShot?.durationS, selectedShot?.id, selectedShot?.promptVideo]);
 
   useEffect(() => {
     if (mode !== "shot-linked" || !selectedShot) {
@@ -172,6 +314,11 @@ export function VideoGenerator() {
 
   useEffect(() => {
     const state = location.state as VideoGeneratorLocationState | null;
+
+    if (!activeProjectId || !state) {
+      return;
+    }
+
     let cancelled = false;
 
     async function applyInboundState() {
@@ -245,10 +392,78 @@ export function VideoGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [location.pathname, location.state, navigate, selectedShot]);
+  }, [activeProjectId, location.pathname, location.state, navigate, selectedShot]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    setVideoGeneratorState(activeProjectId, {
+      mode,
+      selectedShotId,
+      startAssetId,
+      endAssetId,
+      localStartPath,
+      localEndPath,
+      prompt,
+      model,
+      duration,
+      aspectRatio,
+      cfg,
+      generateAudio,
+      shotType,
+    });
+  }, [
+    activeProjectId,
+    aspectRatio,
+    cfg,
+    duration,
+    endAssetId,
+    generateAudio,
+    localEndPath,
+    localStartPath,
+    mode,
+    model,
+    prompt,
+    selectedShotId,
+    setVideoGeneratorState,
+    shotType,
+    startAssetId,
+  ]);
 
   const selectedStartAsset = imageAssets.find((asset) => asset.id === startAssetId) ?? null;
   const selectedEndAsset = imageAssets.find((asset) => asset.id === endAssetId) ?? null;
+  const selectedStartSource: VideoSource | null = selectedStartAsset
+    ? {
+        absolutePath: selectedStartAsset.absolutePath,
+        assetUrl: selectedStartAsset.assetUrl,
+        filename: selectedStartAsset.filename,
+        sourceKind: "asset",
+      }
+    : localStartPath
+      ? {
+          absolutePath: localStartPath,
+          assetUrl: convertFileSrc(localStartPath),
+          filename: localStartPath.split(/[\\/]/).pop() ?? "start-image",
+          sourceKind: "local",
+        }
+      : null;
+  const selectedEndSource: VideoSource | null = selectedEndAsset
+    ? {
+        absolutePath: selectedEndAsset.absolutePath,
+        assetUrl: selectedEndAsset.assetUrl,
+        filename: selectedEndAsset.filename,
+        sourceKind: "asset",
+      }
+    : localEndPath
+      ? {
+          absolutePath: localEndPath,
+          assetUrl: convertFileSrc(localEndPath),
+          filename: localEndPath.split(/[\\/]/).pop() ?? "end-image",
+          sourceKind: "local",
+        }
+      : null;
 
   const activeJobs = queueJobs.filter(
     (job) =>
@@ -257,13 +472,65 @@ export function VideoGenerator() {
       (job.status === "queued" || job.status === "active"),
   );
 
+  function handleVideoAssetsRegrouped(assetIds: string[], groupName: string | null) {
+    const assetIdSet = new Set(assetIds);
+    setVideoAssets((current) =>
+      current.map((asset) =>
+        assetIdSet.has(asset.id)
+          ? { ...asset, tagsList: replaceAssetGroupTag(asset.tagsList, groupName) }
+          : asset,
+      ),
+    );
+  }
+
+  async function handlePickLocalSource(target: "start" | "end") {
+    const selected = await open({
+      title: target === "start" ? "START gorselini sec" : "END gorselini sec",
+      multiple: false,
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+    });
+
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    if (target === "start") {
+      setStartAssetId("");
+      setLocalStartPath(selected);
+      return;
+    }
+
+    setEndAssetId("");
+    setLocalEndPath(selected);
+  }
+
+  function handleClearLocalSource(target: "start" | "end") {
+    if (target === "start") {
+      setLocalStartPath(null);
+
+      if (mode === "shot-linked" && selectedShot?.imageStartPath) {
+        const startMatch = imageAssets.find((asset) => asset.file_path === selectedShot.imageStartPath);
+        setStartAssetId(startMatch?.id ?? "");
+      }
+
+      return;
+    }
+
+    setLocalEndPath(null);
+
+    if (mode === "shot-linked" && selectedShot?.imageEndPath) {
+      const endMatch = imageAssets.find((asset) => asset.file_path === selectedShot.imageEndPath);
+      setEndAssetId(endMatch?.id ?? "");
+    }
+  }
+
   async function handleGenerate() {
     if (!activeProject || !prompt.trim()) {
       return;
     }
 
-    const startPath = selectedStartAsset?.absolutePath;
-    const endPath = selectedEndAsset?.absolutePath;
+    const startPath = selectedStartSource?.absolutePath;
+    const endPath = selectedEndSource?.absolutePath;
 
     if (!startPath) {
       await message("Video uretimi icin bir START gorseli secilmeli.", {
@@ -281,6 +548,8 @@ export function VideoGenerator() {
         prompt: prompt.trim(),
         imageStartPath: startPath,
         imageEndPath: endPath ?? undefined,
+        resolveStartDependencies: false,
+        resolveEndDependencies: false,
         duration,
         aspectRatio,
         cfg,
@@ -321,15 +590,16 @@ export function VideoGenerator() {
   }
 
   return (
-    <section className="screen-shell">
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "360px minmax(0, 1fr)",
-          gap: 22,
-          minHeight: "calc(100vh - var(--topbar-h) - 112px)",
-        }}
-      >
+    <>
+      <section className="screen-shell">
+        <section
+          style={{
+            display: "grid",
+            gridTemplateColumns: "360px minmax(0, 1fr)",
+            gap: 22,
+            minHeight: "calc(100vh - var(--topbar-h) - 112px)",
+          }}
+        >
         <aside style={panelStyle}>
           <header style={{ display: "grid", gap: 8 }}>
             <span style={eyebrowStyle}>
@@ -340,8 +610,8 @@ export function VideoGenerator() {
               Video Uret
             </div>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-              Shot-linked mod storyboard karelerini, freeform mod ise asset library
-              referanslarini kullanir.
+              Shot-linked mod storyboard karelerini kullanir. Freeform modda asset
+              library'den secim yapabilir veya dosyadan dogrudan gorsel yukleyebilirsin.
             </p>
             {inboundNotice ? (
               <div
@@ -407,7 +677,10 @@ export function VideoGenerator() {
             </span>
             <select
               className="studio-field"
-              onChange={(event) => setStartAssetId(event.target.value)}
+              onChange={(event) => {
+                setStartAssetId(event.target.value);
+                setLocalStartPath(null);
+              }}
               style={selectStyle}
               value={startAssetId}
             >
@@ -418,13 +691,34 @@ export function VideoGenerator() {
                 </option>
               ))}
             </select>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn-secondary"
+                onClick={() => void handlePickLocalSource("start")}
+                type="button"
+              >
+                Dosyadan sec
+              </button>
+              {localStartPath ? (
+                <button
+                  className="btn-secondary"
+                  onClick={() => handleClearLocalSource("start")}
+                  type="button"
+                >
+                  Yerel secimi kaldir
+                </button>
+              ) : null}
+            </div>
           </label>
 
           <label style={fieldStyle}>
             <span style={fieldLabelStyle}>END gorsel (opsiyonel)</span>
             <select
               className="studio-field"
-              onChange={(event) => setEndAssetId(event.target.value)}
+              onChange={(event) => {
+                setEndAssetId(event.target.value);
+                setLocalEndPath(null);
+              }}
               style={selectStyle}
               value={endAssetId}
             >
@@ -435,6 +729,24 @@ export function VideoGenerator() {
                 </option>
               ))}
             </select>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn-secondary"
+                onClick={() => void handlePickLocalSource("end")}
+                type="button"
+              >
+                Dosyadan sec
+              </button>
+              {localEndPath ? (
+                <button
+                  className="btn-secondary"
+                  onClick={() => handleClearLocalSource("end")}
+                  type="button"
+                >
+                  Yerel secimi kaldir
+                </button>
+              ) : null}
+            </div>
           </label>
 
           <label style={fieldStyle}>
@@ -587,7 +899,7 @@ export function VideoGenerator() {
           </button>
         </aside>
 
-        <section style={panelStyle}>
+          <section style={panelStyle}>
           <header
             style={{
               display: "flex",
@@ -615,24 +927,59 @@ export function VideoGenerator() {
           ) : (
             <div style={{ display: "grid", gap: 18 }}>
               <SourcePreviewSection
-                endAsset={selectedEndAsset}
-                startAsset={selectedStartAsset}
+                endSource={selectedEndSource}
+                onPickEnd={() => void handlePickLocalSource("end")}
+                onPreviewEnd={
+                  selectedEndSource
+                    ? () => setLightboxItem(buildSourcePreviewLightboxItem(selectedEndSource, "END"))
+                    : undefined
+                }
+                onPickStart={() => void handlePickLocalSource("start")}
+                onPreviewStart={
+                  selectedStartSource
+                    ? () => setLightboxItem(buildSourcePreviewLightboxItem(selectedStartSource, "START"))
+                    : undefined
+                }
+                startSource={selectedStartSource}
               />
-              <VideoGallery assets={videoAssets} />
+              <VideoGallery
+                assets={videoAssets}
+                onAssetsRegrouped={handleVideoAssetsRegrouped}
+                onPreview={(asset) =>
+                  setLightboxItem({
+                    kind: "video",
+                    src: asset.assetUrl,
+                    title: asset.filename,
+                    subtitle: `${(asset.model_used ?? "unknown").split("/").pop()} / ${asset.resolution ?? "HD"}`,
+                    description: asset.prompt ?? "Prompt kaydi yok.",
+                  })
+                }
+                projectId={activeProject.id}
+              />
             </div>
           )}
+          </section>
         </section>
       </section>
-    </section>
+      <MediaLightbox item={lightboxItem} onClose={() => setLightboxItem(null)} />
+    </>
   );
 }
 
 function SourcePreviewSection({
-  startAsset,
-  endAsset,
+  startSource,
+  endSource,
+  onPickStart,
+  onPickEnd,
+  onPreviewStart,
+  onPreviewEnd,
 }: {
-  startAsset: VideoAsset | null;
-  endAsset: VideoAsset | null;
+  startSource: VideoSource | null;
+  endSource: VideoSource | null;
+  onPickStart: () => void;
+  onPickEnd: () => void;
+  onPreviewStart?: () => void;
+  onPreviewEnd?: () => void;
 }) {
   return (
     <section style={{ display: "grid", gap: 12 }}>
@@ -640,14 +987,24 @@ function SourcePreviewSection({
         Source frames
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-        <PreviewCard asset={startAsset} label="START" />
-        <PreviewCard asset={endAsset} label="END" />
+        <PreviewCard label="START" onPick={onPickStart} onPreview={onPreviewStart} source={startSource} />
+        <PreviewCard label="END" onPick={onPickEnd} onPreview={onPreviewEnd} source={endSource} />
       </div>
     </section>
   );
 }
 
-function PreviewCard({ asset, label }: { asset: VideoAsset | null; label: string }) {
+function PreviewCard({
+  source,
+  label,
+  onPick,
+  onPreview,
+}: {
+  source: VideoSource | null;
+  label: string;
+  onPick: () => void;
+  onPreview?: () => void;
+}) {
   return (
     <article
       style={{
@@ -662,37 +1019,241 @@ function PreviewCard({ asset, label }: { asset: VideoAsset | null; label: string
       <div style={{ fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
         {label}
       </div>
-      {asset ? (
-        <>
-          <img
-            alt={asset.filename}
-            src={asset.assetUrl}
-            style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", borderRadius: 14 }}
-          />
-          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{asset.filename}</div>
-        </>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            placeItems: "center",
-            minHeight: 180,
-            borderRadius: 14,
-            border: "1px dashed var(--border-default)",
-            background: "var(--bg-base)",
-            color: "var(--text-muted)",
-            gap: 10,
-          }}
-        >
-          <ImageIcon size={24} />
-          <span style={{ fontSize: 12 }}>Gorsel secilmedi</span>
-        </div>
-      )}
+      <button
+        onClick={onPick}
+        style={{
+          display: "grid",
+          gap: 10,
+          border: "none",
+          padding: 0,
+          background: "transparent",
+          cursor: "pointer",
+          color: "inherit",
+          textAlign: "left",
+        }}
+        type="button"
+      >
+        {source ? (
+          <>
+            <div style={{ position: "relative" }}>
+              <img
+                alt={source.filename}
+                loading="lazy"
+                src={source.assetUrl}
+                style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", borderRadius: 14 }}
+              />
+              {onPreview ? (
+                <button
+                  className="btn-secondary"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPreview();
+                  }}
+                  style={{
+                    position: "absolute",
+                    top: 10,
+                    right: 10,
+                    padding: "7px 10px",
+                    borderRadius: 999,
+                    background: "rgba(10, 10, 12, 0.78)",
+                    borderColor: "rgba(255, 255, 255, 0.12)",
+                    color: "#f3f4f6",
+                    backdropFilter: "blur(10px)",
+                  }}
+                  type="button"
+                >
+                  <Expand size={13} />
+                  Buyut
+                </button>
+              ) : null}
+            </div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{source.filename}</div>
+              <div style={{ fontSize: 11, color: "var(--accent)" }}>
+                {source.sourceKind === "local" ? "Yerel dosya secildi" : "Asset library secimi"} / tikla ve degistir
+              </div>
+            </div>
+          </>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              placeItems: "center",
+              minHeight: 180,
+              borderRadius: 14,
+              border: "1px dashed var(--border-default)",
+              background: "var(--bg-base)",
+              color: "var(--text-muted)",
+              gap: 10,
+            }}
+          >
+            <ImageIcon size={24} />
+            <span style={{ fontSize: 12 }}>Gorsel secilmedi</span>
+            <span style={{ fontSize: 11, color: "var(--accent)" }}>Tikla ve dosyadan sec</span>
+          </div>
+        )}
+      </button>
     </article>
   );
 }
 
-function VideoGallery({ assets }: { assets: VideoAsset[] }) {
+function VideoGallery({
+  assets,
+  onAssetsRegrouped,
+  onPreview,
+  projectId,
+}: {
+  assets: VideoAsset[];
+  onAssetsRegrouped: (assetIds: string[], groupName: string | null) => void;
+  onPreview: (asset: VideoAsset) => void;
+  projectId: string;
+}) {
+  const setVideoGeneratorState = useScreenStateStore(
+    (state) => state.setVideoGeneratorState,
+  );
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const [groupDraft, setGroupDraft] = useState("");
+  const [selectedGroupTarget, setSelectedGroupTarget] = useState<string>(UNGROUPED_GROUP_KEY);
+  const [activeGroupKey, setActiveGroupKey] = useState<string>(ALL_GROUP_KEY);
+  const [page, setPage] = useState(1);
+  const [movingSelection, setMovingSelection] = useState(false);
+  const restoringGalleryStateRef = useRef(false);
+
+  useEffect(() => {
+    restoringGalleryStateRef.current = true;
+    const nextState = useScreenStateStore.getState().videoGeneratorByProject[projectId] ?? null;
+    setGroupDraft(nextState?.galleryGroupDraft ?? "");
+    setSelectedGroupTarget(nextState?.gallerySelectedGroupTarget ?? UNGROUPED_GROUP_KEY);
+    setActiveGroupKey(nextState?.galleryActiveGroupKey ?? ALL_GROUP_KEY);
+    setPage(nextState?.galleryPage ?? 1);
+  }, [projectId]);
+
+  useEffect(() => {
+    setSelectedAssetIds((current) =>
+      current.filter((assetId) => assets.some((asset) => asset.id === assetId)),
+    );
+  }, [assets]);
+
+  const groups = useMemo<AssetGroup[]>(() => {
+    const groupedCounts = new Map<string, number>();
+
+    for (const asset of assets) {
+      const key = getAssetGroupName(asset.tagsList) ?? UNGROUPED_GROUP_KEY;
+      groupedCounts.set(key, (groupedCounts.get(key) ?? 0) + 1);
+    }
+
+    const namedGroups = Array.from(groupedCounts.entries())
+      .filter(([key]) => key !== UNGROUPED_GROUP_KEY)
+      .sort(([left], [right]) => left.localeCompare(right, "tr"))
+      .map(([key, count]) => ({ key, label: key, count }));
+
+    return [
+      { key: ALL_GROUP_KEY, label: "Tum videolar", count: assets.length },
+      { key: UNGROUPED_GROUP_KEY, label: "Klasorsuz", count: groupedCounts.get(UNGROUPED_GROUP_KEY) ?? 0 },
+      ...namedGroups,
+    ];
+  }, [assets]);
+
+  const activeGroupAssets = useMemo(() => {
+    if (activeGroupKey === ALL_GROUP_KEY) {
+      return assets;
+    }
+
+    return assets.filter(
+      (asset) => (getAssetGroupName(asset.tagsList) ?? UNGROUPED_GROUP_KEY) === activeGroupKey,
+    );
+  }, [activeGroupKey, assets]);
+
+  const selectedAssetIdSet = useMemo(() => new Set(selectedAssetIds), [selectedAssetIds]);
+  const normalizedGroupDraft = normalizeAssetGroupName(groupDraft);
+  const totalPages = Math.max(1, Math.ceil(activeGroupAssets.length / VIDEO_PAGE_SIZE));
+  const pageStartIndex = (page - 1) * VIDEO_PAGE_SIZE;
+  const pagedAssets = activeGroupAssets.slice(pageStartIndex, pageStartIndex + VIDEO_PAGE_SIZE);
+  const rangeStart = pagedAssets.length > 0 ? pageStartIndex + 1 : 0;
+  const rangeEnd = pageStartIndex + pagedAssets.length;
+  const activeGroupLabel =
+    groups.find((group) => group.key === activeGroupKey)?.label ?? "Tum videolar";
+
+  useEffect(() => {
+    if (restoringGalleryStateRef.current) {
+      restoringGalleryStateRef.current = false;
+      return;
+    }
+
+    setPage(1);
+  }, [activeGroupKey]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
+  useEffect(() => {
+    if (activeGroupKey === ALL_GROUP_KEY) {
+      return;
+    }
+
+    if (!groups.some((group) => group.key === activeGroupKey)) {
+      setActiveGroupKey(ALL_GROUP_KEY);
+    }
+  }, [activeGroupKey, groups]);
+
+  useEffect(() => {
+    if (
+      selectedGroupTarget !== UNGROUPED_GROUP_KEY &&
+      !groups.some((group) => group.key === selectedGroupTarget)
+    ) {
+      setSelectedGroupTarget(UNGROUPED_GROUP_KEY);
+    }
+  }, [groups, selectedGroupTarget]);
+
+  useEffect(() => {
+    setVideoGeneratorState(projectId, {
+      galleryGroupDraft: groupDraft,
+      gallerySelectedGroupTarget: selectedGroupTarget,
+      galleryActiveGroupKey: activeGroupKey,
+      galleryPage: page,
+    });
+  }, [
+    activeGroupKey,
+    groupDraft,
+    page,
+    projectId,
+    selectedGroupTarget,
+    setVideoGeneratorState,
+  ]);
+
+  async function handleMoveSelectedAssets() {
+    if (selectedAssetIds.length === 0) {
+      return;
+    }
+
+    const targetGroupName =
+      normalizedGroupDraft ??
+      (selectedGroupTarget === UNGROUPED_GROUP_KEY ? null : selectedGroupTarget);
+
+    setMovingSelection(true);
+
+    try {
+      await updateAssetGroups(selectedAssetIds, targetGroupName);
+      onAssetsRegrouped(selectedAssetIds, targetGroupName);
+      setGroupDraft("");
+      setSelectedAssetIds([]);
+      setSelectedGroupTarget(targetGroupName ?? UNGROUPED_GROUP_KEY);
+      setActiveGroupKey(targetGroupName ?? UNGROUPED_GROUP_KEY);
+    } catch (error) {
+      console.error("Failed to regroup video assets", error);
+      await message(
+        error instanceof Error ? error.message : "Secilen videolar klasore tasinamadi.",
+        {
+          title: "Video Generator",
+          kind: "error",
+        },
+      );
+    } finally {
+      setMovingSelection(false);
+    }
+  }
+
   if (assets.length === 0) {
     return (
       <EmptyProjectState
@@ -704,46 +1265,307 @@ function VideoGallery({ assets }: { assets: VideoAsset[] }) {
   }
 
   return (
-    <section style={{ display: "grid", gap: 12 }}>
+    <section style={{ display: "grid", gap: 14 }}>
       <div style={{ fontSize: 12, color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
         Kayitli videolar ({assets.length})
       </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {groups.map((group) => (
+          <button
+            className={activeGroupKey === group.key ? "btn-primary" : "btn-secondary"}
+            key={group.key}
+            onClick={() => setActiveGroupKey(group.key)}
+            style={{ padding: "8px 12px", fontSize: 11 }}
+            type="button"
+          >
+            <FolderOpen size={13} />
+            {group.label}
+            <span
+              style={{
+                padding: "2px 7px",
+                borderRadius: 999,
+                background: "rgba(0, 0, 0, 0.22)",
+                fontSize: 10,
+              }}
+            >
+              {group.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-          gap: 14,
+          gap: 12,
+          padding: 14,
+          borderRadius: 20,
+          border: "1px solid var(--border-subtle)",
+          background: "var(--bg-elevated)",
         }}
       >
-        {assets.map((asset) => (
-          <article
-            key={asset.id}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              {activeGroupLabel} / {rangeStart}-{rangeEnd} / {activeGroupAssets.length}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              Her sayfada yalnizca {VIDEO_PAGE_SIZE} video karti render ediliyor ve kart videolari
+              `preload=none` ile geliyor. Bu sayede cok yuksek output sayisinda rail akici kalir.
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            {selectedAssetIds.length} video secili
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            className="studio-field"
+            onChange={(event) => setGroupDraft(event.target.value)}
+            placeholder="Yeni klasor adi"
+            style={collectionFieldStyle}
+            value={groupDraft}
+          />
+          <select
+            className="studio-field"
+            onChange={(event) => setSelectedGroupTarget(event.target.value)}
+            style={collectionFieldStyle}
+            value={selectedGroupTarget}
+          >
+            <option value={UNGROUPED_GROUP_KEY}>Klasorsuz</option>
+            {groups
+              .filter((group) => group.key !== ALL_GROUP_KEY && group.key !== UNGROUPED_GROUP_KEY)
+              .map((group) => (
+                <option key={group.key} value={group.key}>
+                  {group.label}
+                </option>
+              ))}
+          </select>
+          <button
+            className="btn-secondary"
+            disabled={selectedAssetIds.length === 0 || movingSelection}
+            onClick={() => void handleMoveSelectedAssets()}
+            style={{ padding: "9px 12px", fontSize: 11 }}
+            type="button"
+          >
+            <FolderOpen size={13} />
+            {movingSelection
+              ? "Tasiniyor..."
+              : normalizedGroupDraft
+                ? `"${normalizedGroupDraft}" klasorune tasi`
+                : selectedGroupTarget === UNGROUPED_GROUP_KEY
+                  ? "Klasorden cikar"
+                  : "Secilenleri tasi"}
+          </button>
+          {selectedAssetIds.length > 0 ? (
+            <button
+              className="btn-secondary"
+              onClick={() => setSelectedAssetIds([])}
+              style={{ padding: "9px 12px", fontSize: 11 }}
+              type="button"
+            >
+              Secimi temizle
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {activeGroupAssets.length === 0 ? (
+        <div
+          style={{
+            display: "grid",
+            placeItems: "center",
+            minHeight: 220,
+            borderRadius: 20,
+            border: "1px dashed var(--border-default)",
+            background: "var(--bg-elevated)",
+            color: "var(--text-secondary)",
+            textAlign: "center",
+            padding: 24,
+          }}
+        >
+          Bu klasorde henuz video yok.
+        </div>
+      ) : (
+        <>
+          <div
             style={{
               display: "grid",
-              gap: 12,
-              padding: 14,
-              borderRadius: 18,
-              border: "1px solid var(--border-subtle)",
-              background: "var(--bg-elevated)",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: 14,
             }}
           >
-            <video
-              controls
-              preload="metadata"
-              src={asset.assetUrl}
-              style={{ width: "100%", aspectRatio: "16 / 10", borderRadius: 14, background: "#000" }}
-            />
-            <div style={{ display: "grid", gap: 4 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{asset.filename}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                {(asset.model_used ?? "unknown").split("/").pop()} / {asset.resolution ?? "HD"}
-              </div>
-            </div>
-          </article>
-        ))}
-      </div>
+            {pagedAssets.map((asset) => (
+              <VideoCard
+                asset={asset}
+                groupName={getAssetGroupName(asset.tagsList)}
+                key={asset.id}
+                onPreview={() => onPreview(asset)}
+                onToggleSelect={() =>
+                  setSelectedAssetIds((current) =>
+                    current.includes(asset.id)
+                      ? current.filter((entry) => entry !== asset.id)
+                      : [...current, asset.id],
+                  )
+                }
+                selected={selectedAssetIdSet.has(asset.id)}
+              />
+            ))}
+          </div>
+
+          <MediaPaginationControls
+            onPageChange={setPage}
+            page={page}
+            summary={`${rangeStart}-${rangeEnd} arasi videolar gosteriliyor / toplam ${activeGroupAssets.length}`}
+            totalPages={totalPages}
+          />
+        </>
+      )}
     </section>
   );
+}
+
+function VideoCard({
+  asset,
+  groupName,
+  onPreview,
+  onToggleSelect,
+  selected,
+}: {
+  asset: VideoAsset;
+  groupName: string | null;
+  onPreview: () => void;
+  onToggleSelect: () => void;
+  selected: boolean;
+}) {
+  return (
+    <article
+      style={{
+        display: "grid",
+        gap: 12,
+        padding: 14,
+        borderRadius: 18,
+        border: selected ? "1px solid rgba(245, 158, 11, 0.35)" : "1px solid var(--border-subtle)",
+        background: "var(--bg-elevated)",
+        boxShadow: selected
+          ? "0 0 0 1px rgba(245, 158, 11, 0.18), 0 24px 70px rgba(0, 0, 0, 0.22)"
+          : "0 24px 70px rgba(0, 0, 0, 0.18)",
+      }}
+    >
+      <div style={{ position: "relative" }}>
+        <video
+          controls
+          preload="none"
+          src={asset.assetUrl}
+          style={{ width: "100%", aspectRatio: "16 / 10", borderRadius: 14, background: "#000" }}
+        />
+        <button
+          className={selected ? "btn-primary" : "btn-secondary"}
+          onClick={onToggleSelect}
+          style={{
+            position: "absolute",
+            top: 10,
+            left: 10,
+            minWidth: 34,
+            padding: "6px 10px",
+            borderRadius: 999,
+            background: selected ? "rgba(245, 158, 11, 0.92)" : "rgba(10, 10, 12, 0.72)",
+            borderColor: selected ? "rgba(245, 158, 11, 0.96)" : "rgba(255, 255, 255, 0.12)",
+            color: selected ? "#140c00" : "#f3f4f6",
+            backdropFilter: "blur(10px)",
+          }}
+          type="button"
+        >
+          {selected ? <Check size={13} /> : "Sec"}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={onPreview}
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            padding: "7px 10px",
+            borderRadius: 999,
+            background: "rgba(10, 10, 12, 0.78)",
+            borderColor: "rgba(255, 255, 255, 0.12)",
+            color: "#f3f4f6",
+            backdropFilter: "blur(10px)",
+          }}
+          type="button"
+        >
+          <Expand size={13} />
+          Buyut
+        </button>
+        {groupName ? (
+          <span
+            style={{
+              position: "absolute",
+              left: 10,
+              bottom: 10,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              borderRadius: 999,
+              border: "1px solid rgba(255, 255, 255, 0.12)",
+              background: "rgba(0, 0, 0, 0.58)",
+              padding: "6px 10px",
+              color: "#f3f4f6",
+              fontSize: 11,
+            }}
+          >
+            <FolderOpen size={12} />
+            {groupName}
+          </span>
+        ) : null}
+      </div>
+      <div style={{ display: "grid", gap: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{asset.filename}</div>
+        <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          {(asset.model_used ?? "unknown").split("/").pop()} / {asset.resolution ?? "HD"}
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            lineHeight: 1.6,
+            color: "var(--text-secondary)",
+            display: "-webkit-box",
+            overflow: "hidden",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: 2,
+          }}
+        >
+          {asset.prompt ?? "Prompt kaydi yok."}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function buildSourcePreviewLightboxItem(
+  source: VideoSource,
+  label: "START" | "END",
+): MediaLightboxItem {
+  return {
+    kind: "image",
+    src: source.assetUrl,
+    title: `${label} / ${source.filename}`,
+    subtitle: source.sourceKind === "local" ? "Yerel secim" : "Asset library secimi",
+    description:
+      source.sourceKind === "local"
+        ? "Bu kare disaridan dosya secilerek eklendi."
+        : "Bu kare proje asset library icinden secildi.",
+  };
 }
 
 function EmptyProjectState({
@@ -841,6 +1663,17 @@ const selectStyle: CSSProperties = {
   background: "var(--bg-elevated)",
   color: "var(--text-primary)",
   outline: "none",
+};
+
+const collectionFieldStyle: CSSProperties = {
+  minWidth: 180,
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-primary)",
+  outline: "none",
+  fontSize: 12,
 };
 
 const textareaStyle: CSSProperties = {

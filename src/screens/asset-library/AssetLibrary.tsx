@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
-import { message } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpToLine,
   ChevronDown,
+  Expand,
   FolderOpen,
   Image as ImageIcon,
   Link2,
@@ -17,8 +18,13 @@ import {
   Video,
 } from "lucide-react";
 import {
+  MediaLightbox,
+  type MediaLightboxItem,
+} from "@/components/media/MediaLightbox";
+import {
   assignAssetToShot,
   getAssets,
+  importProjectAsset,
   type AssetWithTags,
 } from "@/services/asset.service";
 import { enqueueUpscaleJobs } from "@/services/jobqueue.service";
@@ -79,9 +85,11 @@ export function AssetLibrary() {
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [lightboxItem, setLightboxItem] = useState<MediaLightboxItem | null>(null);
   const [shotTargetId, setShotTargetId] = useState<string>("");
   const [assignmentTarget, setAssignmentTarget] = useState<AssignmentTarget>("start");
   const [upscaling, setUpscaling] = useState(false);
+  const [importing, setImporting] = useState(false);
   const activeProjectId = activeProject?.id ?? null;
   const refreshMarker = queueJobs
     .filter((job) => job.projectId === activeProjectId)
@@ -126,9 +134,11 @@ export function AssetLibrary() {
         if (!cancelled) {
           setAssets(resolvedAssets);
           setShots(shotRows);
-          if (!selectedAssetId && resolvedAssets[0]) {
-            setSelectedAssetId(resolvedAssets[0].id);
-          }
+          setSelectedAssetId((current) =>
+            current && resolvedAssets.some((asset) => asset.id === current)
+              ? current
+              : (resolvedAssets[0]?.id ?? null),
+          );
         }
       } catch (error) {
         console.error("Failed to load asset library", error);
@@ -148,7 +158,7 @@ export function AssetLibrary() {
     return () => {
       cancelled = true;
     };
-  }, [activeProject, refreshMarker, selectedAssetId]);
+  }, [activeProject, refreshMarker]);
 
   const models = useMemo(
     () => Array.from(new Set(assets.map((asset) => asset.model_used).filter(Boolean))).sort(),
@@ -294,6 +304,80 @@ export function AssetLibrary() {
     }
   }
 
+  async function handleImportAssets() {
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "Asset Library icin medya dosyalari sec",
+      filters: [
+        {
+          name: "Media",
+          extensions: [
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "gif",
+            "bmp",
+            "avif",
+            "mp4",
+            "mov",
+            "webm",
+            "m4v",
+            "avi",
+            "mkv",
+          ],
+        },
+      ],
+    });
+
+    const selectedPaths = Array.isArray(selected)
+      ? selected
+      : selected
+        ? [selected]
+        : [];
+
+    if (selectedPaths.length === 0) {
+      return;
+    }
+
+    setImporting(true);
+
+    try {
+      const importedAssets = [];
+
+      for (const selectedPath of selectedPaths) {
+        importedAssets.push(await importProjectAsset({ sourcePath: selectedPath }));
+      }
+
+      if (importedAssets[0]) {
+        setSelectedAssetId(importedAssets[0].assetId);
+      }
+
+      await message(`${importedAssets.length} asset kutuphaneye eklendi.`, {
+        title: "Asset Library",
+        kind: "info",
+      });
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Asset ice aktarilamadi.",
+        { title: "Asset Library", kind: "error" },
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function openAssetPreview(asset: LibraryAsset) {
+    setLightboxItem({
+      kind: asset.type === "image" ? "image" : "video",
+      src: asset.assetUrl,
+      title: asset.filename,
+      subtitle: `${asset.type.toUpperCase()} / ${(asset.model_used ?? "unknown").split("/").pop()}`,
+      description: asset.prompt ?? "Prompt kaydi yok.",
+    });
+  }
+
   /* ---- render: no project ---- */
 
   if (!activeProject) {
@@ -313,12 +397,13 @@ export function AssetLibrary() {
   /* ---- render: main layout ---- */
 
   return (
-    <motion.section
-      animate={{ opacity: 1, y: 0 }}
-      className="screen-shell"
-      initial={{ opacity: 0, y: 14 }}
-      transition={{ duration: 0.35, ease: "easeOut" }}
-    >
+    <>
+      <motion.section
+        animate={{ opacity: 1, y: 0 }}
+        className="screen-shell"
+        initial={{ opacity: 0, y: 14 }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+      >
       {/* Handoff mode banner */}
       <AnimatePresence>
         {isHandoffMode && (
@@ -425,8 +510,27 @@ export function AssetLibrary() {
             </div>
 
             {/* Asset count */}
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              {filteredAssets.length} / {assets.length} asset
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                {filteredAssets.length} / {assets.length} asset
+              </div>
+              <button
+                className="btn-secondary"
+                disabled={importing}
+                onClick={() => void handleImportAssets()}
+                type="button"
+              >
+                <ArrowUpToLine size={14} />
+                {importing ? "Ice aktariliyor..." : "Dosya ice aktar"}
+              </button>
             </div>
           </header>
 
@@ -436,7 +540,7 @@ export function AssetLibrary() {
               <EmptyPanel copy="Asset kayitlari yukleniyor..." title="Yukleniyor" loading />
             ) : filteredAssets.length === 0 ? (
               <EmptyPanel
-                copy="Su anki filtrelere uyan asset bulunamadi. Generator ekranlari ya da storyboard import ile veri olustur."
+                copy="Su anki filtrelere uyan asset bulunamadi. Generator ekranlari, storyboard import veya 'Dosya ice aktar' aksiyonu ile kutuphaneyi doldur."
                 title="Asset bulunamadi"
               />
             ) : (
@@ -450,13 +554,22 @@ export function AssetLibrary() {
                 {filteredAssets.map((asset) => {
                   const isSelected = selectedAssetId === asset.id;
                   return (
-                    <motion.button
+                    <motion.div
                       key={asset.id}
                       variants={gridItemVariants}
                       whileHover={{ y: -3, scale: 1.01 }}
                       whileTap={{ scale: 0.98 }}
                       transition={{ duration: 0.15 }}
                       onClick={() => setSelectedAssetId(asset.id)}
+                      onDoubleClick={() => openAssetPreview(asset)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedAssetId(asset.id);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
                       style={{
                         ...cardStyle,
                         border: isSelected
@@ -466,13 +579,13 @@ export function AssetLibrary() {
                           ? "0 0 0 2px rgba(245, 158, 11, 0.15), 0 8px 24px rgba(0,0,0,0.3)"
                           : "0 2px 8px rgba(0,0,0,0.15)",
                       }}
-                      type="button"
                     >
                       {/* Media with gradient overlay */}
                       <div style={cardMediaWrapStyle}>
                         {asset.type === "image" ? (
                           <img
                             alt={asset.filename}
+                            loading="lazy"
                             src={asset.assetUrl}
                             style={cardMediaStyle}
                           />
@@ -480,7 +593,7 @@ export function AssetLibrary() {
                           <video
                             muted
                             playsInline
-                            preload="metadata"
+                            preload="none"
                             src={asset.assetUrl}
                             style={cardMediaStyle}
                           />
@@ -497,6 +610,28 @@ export function AssetLibrary() {
                             <span style={mutedBadgeStyle}>{asset.resolution}</span>
                           ) : null}
                         </div>
+                        <button
+                          className="btn-secondary"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openAssetPreview(asset);
+                          }}
+                          style={{
+                            position: "absolute",
+                            top: 8,
+                            right: 8,
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            background: "rgba(10, 10, 12, 0.78)",
+                            borderColor: "rgba(255, 255, 255, 0.12)",
+                            color: "#f3f4f6",
+                            backdropFilter: "blur(10px)",
+                          }}
+                          type="button"
+                        >
+                          <Expand size={12} />
+                          Buyut
+                        </button>
                         {/* Selection indicator */}
                         {isSelected && <div style={cardSelectionRingStyle} />}
                       </div>
@@ -519,7 +654,7 @@ export function AssetLibrary() {
                           {asset.model_used ?? "unknown model"}
                         </div>
                       </div>
-                    </motion.button>
+                    </motion.div>
                   );
                 })}
               </motion.div>
@@ -560,7 +695,7 @@ export function AssetLibrary() {
                 </div>
 
                 {/* Preview media */}
-                <div style={previewMediaWrapStyle}>
+                <div style={{ ...previewMediaWrapStyle, position: "relative" }}>
                   {selectedAsset.type === "image" ? (
                     <img
                       alt={selectedAsset.filename}
@@ -574,6 +709,25 @@ export function AssetLibrary() {
                       style={{ ...previewMediaStyle, background: "#000" }}
                     />
                   )}
+                  <button
+                    className="btn-secondary"
+                    onClick={() => openAssetPreview(selectedAsset)}
+                    style={{
+                      position: "absolute",
+                      top: 10,
+                      right: 10,
+                      padding: "7px 10px",
+                      borderRadius: 999,
+                      background: "rgba(10, 10, 12, 0.78)",
+                      borderColor: "rgba(255, 255, 255, 0.12)",
+                      color: "#f3f4f6",
+                      backdropFilter: "blur(10px)",
+                    }}
+                    type="button"
+                  >
+                    <Expand size={13} />
+                    Buyut
+                  </button>
                 </div>
 
                 {/* Collapsible: Metadata */}
@@ -786,7 +940,9 @@ export function AssetLibrary() {
           </AnimatePresence>
         </aside>
       </section>
-    </motion.section>
+      </motion.section>
+      <MediaLightbox item={lightboxItem} onClose={() => setLightboxItem(null)} />
+    </>
   );
 }
 

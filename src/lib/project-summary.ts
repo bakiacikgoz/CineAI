@@ -15,6 +15,8 @@ export interface ProjectSummaryMetadata {
   readyStartCount: number;
   readyEndCount: number;
   readyVideoCount: number;
+  characterCount: number;
+  assetCount: number;
 }
 
 export interface ProjectPresentationSummary {
@@ -22,8 +24,14 @@ export interface ProjectPresentationSummary {
   thumbnail: string | null;
 }
 
+export interface ProjectSummaryCounts {
+  characterCount?: number;
+  assetCount?: number;
+}
+
 export function computeProjectPresentationSummary(
   shots: ProjectSummaryShot[],
+  counts?: ProjectSummaryCounts,
 ): ProjectPresentationSummary {
   const mainShots = shots.filter((shot) => !shot.parentShotId);
   const visibleMainShots = mainShots.filter((shot) => !shot.isArchived);
@@ -45,6 +53,8 @@ export function computeProjectPresentationSummary(
       readyVideoCount: mainShots.filter(
         (shot) => Boolean(shot.video4kPath || shot.videoPath),
       ).length,
+      characterCount: Number(counts?.characterCount) || 0,
+      assetCount: Number(counts?.assetCount) || 0,
     },
     thumbnail: thumbnailStartShot?.imageStartPath ?? thumbnailEndShot?.imageEndPath ?? null,
   };

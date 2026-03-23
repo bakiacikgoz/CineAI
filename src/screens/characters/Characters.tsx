@@ -49,6 +49,10 @@ import { deleteAssetRecord } from "@/services/asset.service";
 import { Portal } from "@/components/Portal";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
+import {
+  useScreenStateStore,
+  type CharactersScreenState,
+} from "@/store/screen-state.store";
 
 
 function createEmptyLook(name = "Default Look"): StudioLookDraft {
@@ -116,10 +120,111 @@ function toCharacterStudioInput(draft: CharacterStudioDraft): CharacterStudioInp
   };
 }
 
+function buildCharacterUpdateInput(
+  character: CharacterRecord,
+  looks: CharacterLookInput[],
+): CharacterStudioInput {
+  return {
+    name: character.name,
+    description: character.description,
+    klingElementId: character.klingElementId,
+    profile: character.profile,
+    promptHint: character.promptHint,
+    defaultLookId: character.defaultLookId,
+    styleNotes: character.styleNotes,
+    looks,
+  };
+}
+
+function inferCharacterNameFromPath(sourcePath: string): string {
+  const fileName = sourcePath.split(/[\\/]/).pop() ?? "character";
+  const withoutExtension = fileName.replace(/\.[^.]+$/, "");
+  const normalized = withoutExtension
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return "Imported Character";
+  }
+
+  return normalized
+    .split(" ")
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+}
+
+function buildImportedCharacterDraft(
+  name: string,
+  importedPaths: string[],
+): CharacterStudioDraft {
+  const firstLook = createEmptyLook("Default Look");
+  firstLook.refImages = importedPaths;
+  firstLook.primaryImage = importedPaths[0] ?? null;
+
+  return {
+    id: null,
+    name,
+    description: "",
+    klingElementId: "",
+    profile: { ...EMPTY_CHARACTER_PROFILE },
+    looks: [firstLook],
+    defaultLookId: firstLook.id,
+  };
+}
+
+function hasFilledRecordValues<T extends object>(record: T): boolean {
+  return Object.values(record).some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
+function hasMeaningfulLookDraft(look: StudioLookDraft, index: number): boolean {
+  const defaultName = index === 0 ? "Default Look" : `Look ${index + 1}`;
+
+  return (
+    look.name.trim() !== defaultName ||
+    look.generationPrompt.trim().length > 0 ||
+    look.promptLocked ||
+    look.refImages.length > 0 ||
+    Boolean(look.primaryImage) ||
+    hasFilledRecordValues(look.attributes)
+  );
+}
+
+function hasMeaningfulCharacterDraft(draft: CharacterStudioDraft): boolean {
+  return (
+    Boolean(draft.id) ||
+    draft.name.trim().length > 0 ||
+    draft.description.trim().length > 0 ||
+    draft.klingElementId.trim().length > 0 ||
+    hasFilledRecordValues(draft.profile) ||
+    draft.looks.length !== 1 ||
+    draft.looks.some((look, index) => hasMeaningfulLookDraft(look, index))
+  );
+}
+
+const DEFAULT_CHARACTERS_SCREEN_STATE: CharactersScreenState = {
+  search: "",
+  showStudio: false,
+  draft: null,
+  activeLookId: null,
+  candidateAspectRatio: "3:4",
+  candidateQuantity: 4,
+  selectedCharacterId: null,
+  showAssignModal: false,
+  assignShotId: "",
+  assignLookId: "",
+  assignIncludePrompt: true,
+  studioTab: "profile",
+};
+
 
 export function Characters() {
   const activeProject = useProjectStore((state) => state.activeProject);
   const queueJobs = useQueueStore((state) => state.jobs);
+  const activeProjectId = activeProject?.id ?? null;
+  const setCharactersState = useScreenStateStore((state) => state.setCharactersState);
   const [characters, setCharacters] = useState<CharacterRecord[]>([]);
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -139,6 +244,9 @@ export function Characters() {
   const [candidateAspectRatio, setCandidateAspectRatio] = useState<(typeof CANDIDATE_ASPECT_RATIOS)[number]>("3:4");
   const [candidateQuantity, setCandidateQuantity] = useState(4);
   const [generatingCandidates, setGeneratingCandidates] = useState(false);
+  const [studioTab, setStudioTab] =
+    useState<CharactersScreenState["studioTab"]>("profile");
+  const hasResumableStudioDraft = !showStudio && hasMeaningfulCharacterDraft(draft);
 
   const activeLook = useMemo(
     () => draft.looks.find((look) => look.id === activeLookId) ?? draft.looks[0] ?? null,
@@ -190,6 +298,51 @@ export function Characters() {
       );
     });
   }, [characters, search]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      const nextDraft = createEmptyDraft();
+      setSearch(DEFAULT_CHARACTERS_SCREEN_STATE.search);
+      setShowStudio(DEFAULT_CHARACTERS_SCREEN_STATE.showStudio);
+      setShowAssignModal(DEFAULT_CHARACTERS_SCREEN_STATE.showAssignModal);
+      setSelectedCharacter(null);
+      setDraft(nextDraft);
+      setActiveLookId(nextDraft.defaultLookId);
+      setAssignShotId(DEFAULT_CHARACTERS_SCREEN_STATE.assignShotId);
+      setAssignLookId(DEFAULT_CHARACTERS_SCREEN_STATE.assignLookId);
+      setAssignIncludePrompt(DEFAULT_CHARACTERS_SCREEN_STATE.assignIncludePrompt);
+      setCandidateAspectRatio(
+        DEFAULT_CHARACTERS_SCREEN_STATE.candidateAspectRatio as (typeof CANDIDATE_ASPECT_RATIOS)[number],
+      );
+      setCandidateQuantity(DEFAULT_CHARACTERS_SCREEN_STATE.candidateQuantity);
+      setStudioTab(DEFAULT_CHARACTERS_SCREEN_STATE.studioTab);
+      return;
+    }
+
+    const nextState =
+      useScreenStateStore.getState().charactersByProject[activeProjectId] ?? null;
+    const nextDraft = nextState?.draft ?? createEmptyDraft();
+
+    setSearch(nextState?.search ?? DEFAULT_CHARACTERS_SCREEN_STATE.search);
+    setShowStudio(nextState?.showStudio ?? DEFAULT_CHARACTERS_SCREEN_STATE.showStudio);
+    setShowAssignModal(nextState?.showAssignModal ?? DEFAULT_CHARACTERS_SCREEN_STATE.showAssignModal);
+    setSelectedCharacter(null);
+    setDraft(nextDraft);
+    setActiveLookId(nextState?.activeLookId ?? nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+    setAssignShotId(nextState?.assignShotId ?? DEFAULT_CHARACTERS_SCREEN_STATE.assignShotId);
+    setAssignLookId(nextState?.assignLookId ?? DEFAULT_CHARACTERS_SCREEN_STATE.assignLookId);
+    setAssignIncludePrompt(
+      nextState?.assignIncludePrompt ?? DEFAULT_CHARACTERS_SCREEN_STATE.assignIncludePrompt,
+    );
+    setCandidateAspectRatio(
+      (nextState?.candidateAspectRatio as (typeof CANDIDATE_ASPECT_RATIOS)[number]) ??
+        DEFAULT_CHARACTERS_SCREEN_STATE.candidateAspectRatio,
+    );
+    setCandidateQuantity(
+      nextState?.candidateQuantity ?? DEFAULT_CHARACTERS_SCREEN_STATE.candidateQuantity,
+    );
+    setStudioTab(nextState?.studioTab ?? DEFAULT_CHARACTERS_SCREEN_STATE.studioTab);
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!activeProject) {
@@ -286,24 +439,259 @@ export function Characters() {
     };
   }, [showStudio, activeProject, activeCharacterId, activeLook?.id, candidateRefreshMarker]);
 
+  useEffect(() => {
+    if (!activeProjectId) {
+      setSelectedCharacter(null);
+      return;
+    }
+
+    const selectedCharacterId =
+      useScreenStateStore.getState().charactersByProject[activeProjectId]?.selectedCharacterId ??
+      null;
+
+    if (!selectedCharacterId) {
+      setSelectedCharacter(null);
+      return;
+    }
+
+    setSelectedCharacter(
+      characters.find((character) => character.id === selectedCharacterId) ?? null,
+    );
+  }, [activeProjectId, characters]);
+
+  useEffect(() => {
+    if (draft.looks.length === 0) {
+      setActiveLookId(null);
+      return;
+    }
+
+    if (activeLookId && draft.looks.some((look) => look.id === activeLookId)) {
+      return;
+    }
+
+    setActiveLookId(draft.defaultLookId ?? draft.looks[0]?.id ?? null);
+  }, [activeLookId, draft.defaultLookId, draft.looks]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    setCharactersState(activeProjectId, {
+      search,
+      showStudio,
+      draft,
+      activeLookId,
+      candidateAspectRatio,
+      candidateQuantity,
+      selectedCharacterId: selectedCharacter?.id ?? null,
+      showAssignModal,
+      assignShotId,
+      assignLookId,
+      assignIncludePrompt,
+      studioTab,
+    });
+  }, [
+    activeLookId,
+    activeProjectId,
+    assignIncludePrompt,
+    assignLookId,
+    assignShotId,
+    candidateAspectRatio,
+    candidateQuantity,
+    draft,
+    search,
+    selectedCharacter,
+    setCharactersState,
+    showAssignModal,
+    showStudio,
+    studioTab,
+  ]);
+
   async function refreshCharacters() {
     const nextCharacters = await listCharacters();
     setCharacters(nextCharacters);
     return nextCharacters;
   }
 
-  function openCreateEditor() {
+  async function handleImportCharacterFromFiles() {
+    if (hasResumableStudioDraft || showStudio) {
+      const accepted = await confirm(
+        "Character Studio'da saklanan bir taslak var. Yeni bir karakter yuklersen mevcut taslak bununla degisecek. Devam edilsin mi?",
+        {
+          title: "Taslagi degistir",
+          kind: "warning",
+          okLabel: "Degistir",
+          cancelLabel: "Taslagi koru",
+        },
+      );
+
+      if (!accepted) {
+        return;
+      }
+    }
+
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+
+      if (!selected) {
+        return;
+      }
+
+      const inputPaths = Array.isArray(selected) ? selected : [selected];
+      const inferredName = inferCharacterNameFromPath(inputPaths[0]);
+      const importedPaths = await importCharacterReferenceFiles(inferredName, inputPaths);
+      const nextDraft = buildImportedCharacterDraft(inferredName, importedPaths);
+
+      setDraft(nextDraft);
+      setActiveLookId(nextDraft.defaultLookId);
+      setStudioTab("looks");
+      setShowStudio(true);
+
+      await message(
+        `${importedPaths.length} referans gorseli ice alindi. Karakter bilgilerini kontrol edip kaydedebilirsin.`,
+        {
+          title: "Characters",
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      console.error("Failed to import external character images", error);
+      await message(
+        error instanceof Error ? error.message : "Karakter gorselleri ice alinamadi.",
+        {
+          title: "Characters",
+          kind: "error",
+        },
+      );
+    }
+  }
+
+  async function openCreateEditor(forceNew = false) {
+    if (!forceNew && hasResumableStudioDraft) {
+      setShowStudio(true);
+      return;
+    }
+
+    if (forceNew && (hasResumableStudioDraft || showStudio)) {
+      const accepted = await confirm(
+        "Mevcut Character Studio taslagi yeni bir bos taslakla degisecek. Devam edilsin mi?",
+        {
+          title: "Yeni taslak ac",
+          kind: "warning",
+          okLabel: "Yeni taslak",
+          cancelLabel: "Vazgec",
+        },
+      );
+
+      if (!accepted) {
+        return;
+      }
+    }
+
     const nextDraft = createEmptyDraft();
     setDraft(nextDraft);
     setActiveLookId(nextDraft.defaultLookId);
+    setStudioTab("profile");
     setShowStudio(true);
   }
 
-  function openEditEditor(character: CharacterRecord) {
+  async function openEditEditor(character: CharacterRecord) {
+    if (draft.id === character.id) {
+      setShowStudio(true);
+      return;
+    }
+
+    if (hasResumableStudioDraft || showStudio) {
+      const accepted = await confirm(
+        `${character.name} karakterini acarsan mevcut Character Studio taslagi bununla degisecek. Devam edilsin mi?`,
+        {
+          title: "Taslagi degistir",
+          kind: "warning",
+          okLabel: "Karakteri ac",
+          cancelLabel: "Taslagi koru",
+        },
+      );
+
+      if (!accepted) {
+        return;
+      }
+    }
+
     const nextDraft = toStudioDraft(character);
     setDraft(nextDraft);
     setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+    setStudioTab("profile");
     setShowStudio(true);
+  }
+
+  async function handleAttachImagesToCharacter(character: CharacterRecord) {
+    const defaultLook =
+      character.looks.find((look) => look.id === character.defaultLookId) ??
+      character.looks[0] ??
+      null;
+
+    if (!defaultLook) {
+      await message("Karakter icin once bir look tanimi olusmali.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return;
+    }
+
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+
+      if (!selected) {
+        return;
+      }
+
+      const inputPaths = Array.isArray(selected) ? selected : [selected];
+      const importedPaths = await importCharacterReferenceFiles(character.name, inputPaths);
+      const nextLooks = character.looks.map<CharacterLookInput>((look) =>
+        look.id === defaultLook.id
+          ? {
+              ...look,
+              refImages: Array.from(new Set([...look.refImages, ...importedPaths])),
+              primaryImage: look.primaryImage ?? importedPaths[0] ?? null,
+            }
+          : look,
+      );
+
+      await updateCharacter(character.id, buildCharacterUpdateInput(character, nextLooks));
+      const nextCharacters = await refreshCharacters();
+      const updatedCharacter =
+        nextCharacters.find((entry) => entry.id === character.id) ?? null;
+
+      if (updatedCharacter && draft.id === updatedCharacter.id) {
+        const nextDraft = toStudioDraft(updatedCharacter);
+        setDraft(nextDraft);
+        setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+      }
+
+      await message(
+        `${importedPaths.length} gorsel ${character.name} karakterine eklendi.`,
+        {
+          title: "Characters",
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      console.error("Failed to attach images to character", error);
+      await message(
+        error instanceof Error ? error.message : "Karakter gorselleri eklenemedi.",
+        {
+          title: "Characters",
+          kind: "error",
+        },
+      );
+    }
   }
 
   function updateDraft(patch: Partial<CharacterStudioDraft>) {
@@ -790,10 +1178,22 @@ export function Characters() {
             </p>
           </div>
 
-          <button className="btn-primary" onClick={openCreateEditor} type="button">
-            <Plus size={15} />
-            Character Studio
-          </button>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn-secondary" onClick={() => void handleImportCharacterFromFiles()} type="button">
+              <Plus size={15} />
+              Karakter Yukle
+            </button>
+            {hasResumableStudioDraft ? (
+              <button className="btn-secondary" onClick={() => void openCreateEditor(true)} type="button">
+                <Plus size={15} />
+                Yeni Karakter
+              </button>
+            ) : null}
+            <button className="btn-primary" onClick={() => void openCreateEditor()} type="button">
+              <Plus size={15} />
+              {hasResumableStudioDraft ? "Taslaga Don" : "Character Studio"}
+            </button>
+          </div>
         </header>
 
         <section style={toolbarStyle}>
@@ -833,7 +1233,8 @@ export function Characters() {
                   setShowAssignModal(true);
                 }}
                 onDelete={() => void handleDelete(character.id)}
-                onEdit={() => openEditEditor(character)}
+                onEdit={() => void openEditEditor(character)}
+                onUploadImages={() => void handleAttachImagesToCharacter(character)}
                 projectFolderPath={activeProject.folderPath}
               />
             ))}
@@ -845,12 +1246,14 @@ export function Characters() {
         <Portal><CharacterStudioModal
           activeLook={activeLook}
           activeLookId={activeLookId}
+          activeTab={studioTab}
           candidateAssets={candidateAssets}
           candidateAspectRatio={candidateAspectRatio}
           candidateLoading={candidateLoading}
           candidateQuantity={candidateQuantity}
           draft={draft}
           generatingCandidates={generatingCandidates}
+          onActiveTabChange={setStudioTab}
           onAddLook={handleAddLook}
           onCandidateAspectRatioChange={setCandidateAspectRatio}
           onCandidateQuantityChange={setCandidateQuantity}
@@ -924,12 +1327,14 @@ function CharacterCard({
   onEdit,
   onDelete,
   onAssign,
+  onUploadImages,
   projectFolderPath,
 }: {
   character: CharacterRecord;
   onEdit: () => void;
   onDelete: () => void;
   onAssign: () => void;
+  onUploadImages: () => void;
   projectFolderPath: string;
 }) {
   const defaultLook =
@@ -980,6 +1385,14 @@ function CharacterCard({
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn-secondary" onClick={onUploadImages} type="button">
+              <Plus size={14} />
+              Gorsel yukle
+            </button>
+            <button className="btn-secondary" onClick={onEdit} type="button">
+              <Pencil size={14} />
+              Studyoda ac
+            </button>
             <button className="btn-secondary" onClick={onAssign} type="button">
               <Link2 size={14} />
               Shot'a bagla

@@ -90,7 +90,9 @@ interface CharacterStudioModalProps {
   candidateAspectRatio: (typeof CANDIDATE_ASPECT_RATIOS)[number];
   candidateQuantity: number;
   queueJobs: number;
+  activeTab: TabId;
   onClose: () => void;
+  onActiveTabChange: (value: TabId) => void;
   onTextChange: (key: "name" | "description" | "klingElementId", value: string) => void;
   onProfileFieldChange: <K extends keyof CharacterProfile>(key: K, value: CharacterProfile[K]) => void;
   onLookFieldChange: <K extends keyof CharacterLookAttributes>(key: K, value: CharacterLookAttributes[K]) => void;
@@ -719,6 +721,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
     activeLook,
     activeLookId,
     projectFolderPath,
+    activeTab,
     saving,
     generatingCandidates,
     candidateAssets,
@@ -727,6 +730,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
     candidateQuantity,
     queueJobs,
     onClose,
+    onActiveTabChange,
     onTextChange,
     onProfileFieldChange,
     onLookFieldChange,
@@ -750,15 +754,12 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
     onSave,
   } = props;
 
-  const [activeTab, setActiveTab] = useState<TabId>("profile");
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      onClick={onClose}
       style={backdropStyle}
     >
       <motion.div
@@ -787,7 +788,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
               onClick={onClose}
               type="button"
             >
-              Kapat
+              Taslagi Gizle
             </button>
             <button
               className="btn-primary"
@@ -820,7 +821,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
+                    onClick={() => onActiveTabChange(tab.id)}
                     style={tabBtnStyle(isActive)}
                     type="button"
                   >

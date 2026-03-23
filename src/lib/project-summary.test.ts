@@ -40,7 +40,10 @@ describe("project presentation summary", () => {
         video4kPath: null,
         updatedAt: 40,
       },
-    ]);
+    ], {
+      characterCount: 3,
+      assetCount: 9,
+    });
 
     expect(summary).toEqual({
       metadata: {
@@ -50,6 +53,8 @@ describe("project presentation summary", () => {
         readyStartCount: 2,
         readyEndCount: 2,
         readyVideoCount: 1,
+        characterCount: 3,
+        assetCount: 9,
       },
       thumbnail: "latest-start.png",
     });

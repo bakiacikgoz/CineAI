@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { ImagePlus, Layers3, SlidersHorizontal, Sparkles, WandSparkles, X } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { message, open } from "@tauri-apps/plugin-dialog";
@@ -8,8 +8,16 @@ import { IMAGE_MODELS, calcImageCost, type ImageModelId } from "@/services/fal.s
 import { getAppSettings } from "@/lib/store";
 import { enqueueImageJobs } from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
-import { GeneratedImageGallery } from "@/screens/image-generator/GeneratedImageGallery";
+import {
+  GeneratedImageGallery,
+  type GalleryAsset,
+} from "@/screens/image-generator/GeneratedImageGallery";
 import { useProjectStore } from "@/store/project.store";
+import { useQueueStore, type Job } from "@/store/queue.store";
+import {
+  useScreenStateStore,
+  type ImageGeneratorScreenState,
+} from "@/store/screen-state.store";
 import { motion } from "framer-motion";
 
 const ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:2"] as const;
@@ -22,10 +30,101 @@ type ImageGeneratorLocationState = {
   referenceAssetPath?: string;
 };
 
+const DEFAULT_IMAGE_GENERATOR_STATE: ImageGeneratorScreenState = {
+  prompt: "",
+  model: "fal-ai/nano-banana-2",
+  aspectRatio: "16:9",
+  cfg: 7,
+  steps: 28,
+  quantity: 4,
+  refImage: null,
+  galleryActiveGroupKey: "__all__",
+  galleryGroupDraft: "",
+  gallerySelectedGroupTarget: "__ungrouped__",
+  galleryPage: 1,
+};
+
+const ASPECT_RATIO_VALUES: Record<(typeof ASPECT_RATIOS)[number], number> = {
+  "1:1": 1,
+  "16:9": 16 / 9,
+  "9:16": 9 / 16,
+  "4:3": 4 / 3,
+  "3:2": 3 / 2,
+};
+
+type ImageAspectRatio = (typeof ASPECT_RATIOS)[number];
+
+function getNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function getFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getQuantityValue(value: unknown): number | null {
+  const nextValue = getFiniteNumber(value);
+  return nextValue === null ? null : Math.max(1, Math.min(50, Math.round(nextValue)));
+}
+
+function getAspectRatioValue(value: unknown): ImageAspectRatio | null {
+  return typeof value === "string" && ASPECT_RATIOS.includes(value as ImageAspectRatio)
+    ? (value as ImageAspectRatio)
+    : null;
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+}
+
+function getPrimaryReferencePath(value: unknown): string | null {
+  return getNonEmptyString(value) ?? getStringArray(value)[0] ?? null;
+}
+
+function normalizePathForMatch(value: string): string {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function findMatchingImageJob(asset: GalleryAsset, jobs: Job[]): Job | null {
+  const normalizedAssetPath = normalizePathForMatch(asset.absolutePath);
+  const normalizedRelativePath = normalizePathForMatch(asset.file_path);
+
+  return (
+    jobs.find((job) => {
+      if (job.assetId === asset.id) {
+        return true;
+      }
+
+      if (asset.fal_job_id && job.falJobId === asset.fal_job_id) {
+        return true;
+      }
+
+      const resultPath = getNonEmptyString(job.resultPath);
+
+      if (!resultPath) {
+        return false;
+      }
+
+      const normalizedResultPath = normalizePathForMatch(resultPath);
+      return (
+        normalizedResultPath === normalizedAssetPath ||
+        normalizedResultPath.endsWith(`/${normalizedRelativePath}`)
+      );
+    }) ?? null
+  );
+}
+
 export function ImageGenerator() {
   const activeProject = useProjectStore((state) => state.activeProject);
+  const queueJobs = useQueueStore((state) => state.jobs);
   const location = useLocation();
   const navigate = useNavigate();
+  const activeProjectId = activeProject?.id ?? null;
+  const setImageGeneratorState = useScreenStateStore(
+    (state) => state.setImageGeneratorState,
+  );
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<ImageModelId>("fal-ai/nano-banana-2");
   const [aspectRatio, setAspectRatio] = useState<(typeof ASPECT_RATIOS)[number]>("16:9");
@@ -36,6 +135,62 @@ export function ImageGenerator() {
   const [generating, setGenerating] = useState(false);
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
 
+  const imageQueueJobs = useMemo(
+    () =>
+      [...queueJobs]
+        .filter(
+          (job) =>
+            job.projectId === activeProjectId &&
+            (job.type === "image_start" ||
+              job.type === "image_end" ||
+              job.type === "coverage_image"),
+        )
+        .sort(
+          (left, right) =>
+            (right.completedAt ?? right.queuedAt) - (left.completedAt ?? left.queuedAt),
+        ),
+    [activeProjectId, queueJobs],
+  );
+
+  function inferAspectRatioFromAsset(asset: GalleryAsset): ImageAspectRatio {
+    if (!asset.width || !asset.height) {
+      return aspectRatio;
+    }
+
+    const assetRatio = asset.width / asset.height;
+    let bestMatch: ImageAspectRatio = "16:9";
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (const ratio of ASPECT_RATIOS) {
+      const distance = Math.abs(ASPECT_RATIO_VALUES[ratio] - assetRatio);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestMatch = ratio;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  function applyGeneratorState(nextState: ImageGeneratorScreenState) {
+    setPrompt(nextState.prompt);
+    setModel(
+      nextState.model in IMAGE_MODELS
+        ? (nextState.model as ImageModelId)
+        : (DEFAULT_IMAGE_GENERATOR_STATE.model as ImageModelId),
+    );
+    setAspectRatio(
+      ASPECT_RATIOS.includes(nextState.aspectRatio as (typeof ASPECT_RATIOS)[number])
+        ? (nextState.aspectRatio as (typeof ASPECT_RATIOS)[number])
+        : (DEFAULT_IMAGE_GENERATOR_STATE.aspectRatio as (typeof ASPECT_RATIOS)[number]),
+    );
+    setCfg(nextState.cfg);
+    setSteps(nextState.steps);
+    setQuantity(nextState.quantity);
+    setRefImage(nextState.refImage);
+  }
+
   useEffect(() => {
     if (!IMAGE_MODELS[model].supportsImg2Img) {
       setRefImage(null);
@@ -43,7 +198,69 @@ export function ImageGenerator() {
   }, [model]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function initializeGeneratorState() {
+      if (!activeProjectId) {
+        applyGeneratorState(DEFAULT_IMAGE_GENERATOR_STATE);
+        setInboundNotice(null);
+        return;
+      }
+
+      const nextState =
+        useScreenStateStore.getState().imageGeneratorByProject[activeProjectId] ?? null;
+
+      if (nextState) {
+        applyGeneratorState({
+          ...DEFAULT_IMAGE_GENERATOR_STATE,
+          ...nextState,
+        });
+        setInboundNotice(null);
+        return;
+      }
+
+      const [settings, defaultPreset] = await Promise.all([
+        getAppSettings(),
+        getDefaultModelPreset(),
+      ]);
+      const resolvedDefaults = resolveImageGeneratorDefaults({
+        appDefaults: settings,
+        defaultPreset,
+        inboundState: null,
+        inboundPreset: null,
+      });
+
+      if (cancelled) {
+        return;
+      }
+
+      applyGeneratorState({
+        ...DEFAULT_IMAGE_GENERATOR_STATE,
+        model:
+          resolvedDefaults.model in IMAGE_MODELS
+            ? resolvedDefaults.model
+            : DEFAULT_IMAGE_GENERATOR_STATE.model,
+        aspectRatio: resolvedDefaults.aspectRatio,
+        cfg: resolvedDefaults.cfg,
+        steps: resolvedDefaults.steps,
+      });
+      setInboundNotice(null);
+    }
+
+    void initializeGeneratorState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId]);
+
+  useEffect(() => {
     const state = location.state as ImageGeneratorLocationState | null;
+
+    if (!activeProjectId || !state) {
+      return;
+    }
+
     let cancelled = false;
 
     async function applyInboundState() {
@@ -100,9 +317,104 @@ export function ImageGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [location.pathname, location.state, navigate]);
+  }, [activeProjectId, location.pathname, location.state, navigate]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    setImageGeneratorState(activeProjectId, {
+      prompt,
+      model,
+      aspectRatio,
+      cfg,
+      steps,
+      quantity,
+      refImage,
+    });
+  }, [
+    activeProjectId,
+    aspectRatio,
+    cfg,
+    model,
+    prompt,
+    quantity,
+    refImage,
+    setImageGeneratorState,
+    steps,
+  ]);
 
   const estimatedCost = calcImageCost(model, quantity);
+
+  function handleUseGalleryReference(absolutePath: string) {
+    if (!IMAGE_MODELS[model].supportsImg2Img) {
+      setModel("fal-ai/nano-banana-2");
+      setInboundNotice(
+        "Galeri karesi referans olarak eklendi. Img2img icin model Nano Banana 2'ye alindi.",
+      );
+    } else {
+      setInboundNotice("Galeri karesi referans olarak eklendi.");
+    }
+
+    setRefImage(absolutePath);
+  }
+
+  function handleReuseGeneration(asset: GalleryAsset) {
+    const metadata = asset.metadata ?? null;
+    const matchingJob = findMatchingImageJob(asset, imageQueueJobs);
+    const jobParams = matchingJob?.params;
+    const metadataPrompt = getNonEmptyString(metadata?.basePrompt);
+    const jobPrompt = getNonEmptyString(jobParams?.basePrompt) ?? getNonEmptyString(matchingJob?.prompt);
+    const metadataModel =
+      typeof asset.model_used === "string" && asset.model_used in IMAGE_MODELS
+        ? (asset.model_used as ImageModelId)
+        : null;
+    const jobModel =
+      typeof matchingJob?.model === "string" && matchingJob.model in IMAGE_MODELS
+        ? (matchingJob.model as ImageModelId)
+        : null;
+    const nextAspectRatio =
+      getAspectRatioValue(metadata?.aspectRatio) ??
+      getAspectRatioValue(jobParams?.aspectRatio) ??
+      inferAspectRatioFromAsset(asset);
+    const nextCfg = getFiniteNumber(metadata?.cfg) ?? getFiniteNumber(jobParams?.cfg) ?? cfg;
+    const nextSteps = getFiniteNumber(metadata?.steps) ?? getFiniteNumber(jobParams?.steps) ?? steps;
+    const nextQuantity =
+      getQuantityValue(metadata?.quantity) ?? getQuantityValue(jobParams?.quantity) ?? quantity;
+    const nextRefImage =
+      getPrimaryReferencePath(metadata?.refImagePath) ??
+      getPrimaryReferencePath(metadata?.referenceImagePaths) ??
+      getPrimaryReferencePath(matchingJob?.refImagePath) ??
+      getPrimaryReferencePath(jobParams?.referenceImagePaths);
+    const requestedModel = metadataModel ?? jobModel ?? (nextRefImage ? "fal-ai/nano-banana-2" : model);
+    const nextModel =
+      nextRefImage && !IMAGE_MODELS[requestedModel].supportsImg2Img
+        ? "fal-ai/nano-banana-2"
+        : requestedModel;
+    const nextPrompt = metadataPrompt ?? jobPrompt ?? getNonEmptyString(asset.prompt);
+
+    if (nextPrompt) {
+      setPrompt(nextPrompt);
+    }
+
+    setModel(nextModel);
+    setAspectRatio(nextAspectRatio);
+    setCfg(nextCfg);
+    setSteps(nextSteps);
+    setQuantity(nextQuantity);
+    setRefImage(nextRefImage);
+
+    setInboundNotice(
+      nextRefImage
+        ? requestedModel !== nextModel
+          ? `${asset.filename} icin prompt, ayarlar ve referans kare geri yuklendi. Referans destegi icin model Nano Banana 2'ye alindi.`
+          : `${asset.filename} icin prompt, ayarlar ve referans kare geri yuklendi.`
+        : metadata || matchingJob
+          ? `${asset.filename} icin prompt ve ayarlar geri yuklendi; bu kayit icin referans kare bulunamadi.`
+          : `${asset.filename} icin mevcut kayittan prompt/model geri yuklendi; referans kare kaydi bulunamadi.`,
+    );
+  }
 
   async function handleGenerate() {
     if (!prompt.trim() || !activeProject) {
@@ -472,7 +784,11 @@ export function ImageGenerator() {
           </div>
         </aside>
 
-        <GeneratedImageGallery projectFolderPath={activeProject.folderPath} />
+        <GeneratedImageGallery
+          onReuseGeneration={handleReuseGeneration}
+          onUseAsReference={handleUseGalleryReference}
+          projectFolderPath={activeProject.folderPath}
+        />
       </section>
     </motion.section>
   );

@@ -6,7 +6,7 @@ import { getApiKey } from "@/lib/store";
 export const IMAGE_MODELS = {
   "fal-ai/nano-banana-2": {
     label: "Nano Banana 2",
-    costPerImage: 0,
+    costPerImage: 0.08,
     supportsImg2Img: true,
   },
   "fal-ai/flux-pro/v1.1": {
@@ -21,7 +21,8 @@ export type ImageModelId = keyof typeof IMAGE_MODELS;
 export const VIDEO_MODELS = {
   "fal-ai/kling-video/v3/pro/image-to-video": {
     label: "Kling 3.0 Pro",
-    costPerVideo: 0,
+    costPerSecond: 0.112,
+    costPerSecondWithAudio: 0.168,
     maxDurationS: 15,
     supportsAudio: true,
     supportsMultiShot: true,
@@ -112,6 +113,12 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".mp4": "video/mp4",
+};
+
+type FalAliasListResponse = {
+  aliases?: unknown[];
+  data?: unknown[];
+  items?: unknown[];
 };
 
 function normalizeAspectRatio(aspectRatio: string): "auto" | "21:9" | "16:9" | "3:2" | "4:3" | "5:4" | "1:1" | "4:5" | "3:4" | "2:3" | "9:16" {
@@ -326,6 +333,41 @@ export async function initFal(): Promise<boolean> {
   fal.config({ credentials: key });
   falConfigured = true;
   return true;
+}
+
+export async function testFalConnection(
+  apiKeyOverride?: string,
+): Promise<{ aliasCount: number }> {
+  const apiKey = apiKeyOverride?.trim() || (await getApiKey("FAL_API_KEY"))?.trim();
+
+  if (!apiKey) {
+    throw new Error("FAL API key bulunamadi. Ayarlardan ekleyin.");
+  }
+
+  let lastError: Error | null = null;
+
+  for (const authorizationValue of [apiKey, `Key ${apiKey}`]) {
+    const response = await fetch("https://api.fal.ai/v1/serverless/endpoints/aliases", {
+      headers: {
+        Authorization: authorizationValue,
+      },
+    });
+
+    if (response.ok) {
+      const payload = (await response.json()) as FalAliasListResponse;
+      const aliases = payload.aliases ?? payload.data ?? payload.items ?? [];
+      return { aliasCount: aliases.length };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      lastError = new Error("FAL anahtari dogrulanamadi.");
+      continue;
+    }
+
+    throw new Error(`FAL baglanti testi basarisiz oldu (${response.status}).`);
+  }
+
+  throw lastError ?? new Error("FAL baglanti testi basarisiz oldu.");
 }
 
 export async function generateImage(
@@ -580,7 +622,13 @@ export async function downloadVideoToLocal(
 
 export function calcVideoCost(
   model: VideoModelId | string | null | undefined,
-  quantity: number,
+  durationS: number,
+  generateAudio = false,
 ): number {
-  return VIDEO_MODELS[resolveVideoModel(model)].costPerVideo * quantity;
+  const resolvedModel = VIDEO_MODELS[resolveVideoModel(model)];
+  const rate = generateAudio
+    ? resolvedModel.costPerSecondWithAudio
+    : resolvedModel.costPerSecond;
+
+  return rate * Math.max(1, durationS);
 }

@@ -278,6 +278,11 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
                   {meta.characterCount} karakter
                 </span>
               )}
+              {meta.assetCount != null && meta.assetCount > 0 && (
+                <span className="project-card-tag is-muted">
+                  {meta.assetCount} asset
+                </span>
+              )}
               {mainShotCount > 0 && videoProgress === 100 && (
                 <span
                   className="project-card-tag"

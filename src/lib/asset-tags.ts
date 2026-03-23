@@ -1,4 +1,6 @@
-const SYSTEM_TAG_PREFIXES = ["stage:", "variant:", "character:", "look:"];
+export const ASSET_GROUP_TAG_PREFIX = "group:";
+
+const SYSTEM_TAG_PREFIXES = ["stage:", "variant:", "character:", "look:", ASSET_GROUP_TAG_PREFIX];
 const SYSTEM_TAGS = new Set(["autonomous", "candidate", "selected", "upscale", "4k"]);
 
 export function isSystemAssetTag(tag: string): boolean {
@@ -26,4 +28,25 @@ export function parseUserAssetTagsInput(value: string): string[] {
         .filter(Boolean),
     ),
   );
+}
+
+export function normalizeAssetGroupName(value: string): string | null {
+  const normalized = value.trim().replace(/\s+/g, " ").slice(0, 48);
+  return normalized ? normalized : null;
+}
+
+export function getAssetGroupName(tags: string[]): string | null {
+  const match = tags.find((tag) => tag.startsWith(ASSET_GROUP_TAG_PREFIX));
+  return match ? normalizeAssetGroupName(match.slice(ASSET_GROUP_TAG_PREFIX.length)) : null;
+}
+
+export function replaceAssetGroupTag(tags: string[], groupName: string | null): string[] {
+  const nextTags = tags.filter((tag) => !tag.startsWith(ASSET_GROUP_TAG_PREFIX));
+  const normalizedGroupName = normalizeAssetGroupName(groupName ?? "");
+
+  if (!normalizedGroupName) {
+    return Array.from(new Set(nextTags));
+  }
+
+  return Array.from(new Set([...nextTags, `${ASSET_GROUP_TAG_PREFIX}${normalizedGroupName}`]));
 }

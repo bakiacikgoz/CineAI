@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS assets (
   cost_usd    REAL,
   fal_job_id  TEXT,
   shot_id     TEXT,
+  metadata_json TEXT,
   tags        TEXT,
   created_at  INTEGER NOT NULL
 );

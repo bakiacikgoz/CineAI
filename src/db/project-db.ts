@@ -115,7 +115,7 @@ export async function syncProjectDbMirror(projectFolderPath?: string): Promise<v
     throw new Error("Aktif proje yok.");
   }
 
-  const db = await getProjectDb();
+  const db = projectFolderPath ? await getDb(activeProjectFolderPath) : await getProjectDb();
   await copyMirrorToProjectDb(activeProjectFolderPath, db);
 }
 

@@ -80,9 +80,10 @@ const MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 let cachedModels: TensorPixModel[] | null = null;
+let cachedModelsKey: string | null = null;
 
-async function getTensorPixKey(): Promise<string> {
-  const apiKey = (await getApiKey("TENSORPIX_API_KEY"))?.trim();
+async function getTensorPixKey(apiKeyOverride?: string): Promise<string> {
+  const apiKey = apiKeyOverride?.trim() || (await getApiKey("TENSORPIX_API_KEY"))?.trim();
   if (!apiKey) {
     throw new Error("TensorPix API key bulunamadi. Ayarlardan ekleyin.");
   }
@@ -93,8 +94,9 @@ async function getTensorPixKey(): Promise<string> {
 async function tensorPixRequest<T>(
   path: string,
   init?: RequestInit,
+  apiKeyOverride?: string,
 ): Promise<T> {
-  const apiKey = await getTensorPixKey();
+  const apiKey = await getTensorPixKey(apiKeyOverride);
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Token ${apiKey}`);
 
@@ -157,14 +159,16 @@ async function waitForUploadedVideo(
   throw new Error("TensorPix video upload hazirlanamadi.");
 }
 
-export async function getTensorPixModels(): Promise<TensorPixModel[]> {
-  if (cachedModels) {
+export async function getTensorPixModels(apiKeyOverride?: string): Promise<TensorPixModel[]> {
+  const apiKey = await getTensorPixKey(apiKeyOverride);
+
+  if (cachedModels && cachedModelsKey === apiKey) {
     return cachedModels;
   }
 
   const response = await tensorPixRequest<{
     results: TensorPixModelRow[];
-  }>("/ml-models/");
+  }>("/ml-models/", undefined, apiKey);
 
   cachedModels = response.results
     .filter((model) => (model.upscale_factor ?? 0) >= 2)
@@ -183,8 +187,16 @@ export async function getTensorPixModels(): Promise<TensorPixModel[]> {
 
       return right.priority - left.priority;
     });
+  cachedModelsKey = apiKey;
 
   return cachedModels;
+}
+
+export async function testTensorPixConnection(
+  apiKeyOverride?: string,
+): Promise<{ modelCount: number }> {
+  const models = await getTensorPixModels(apiKeyOverride);
+  return { modelCount: models.length };
 }
 
 function pickUpscaleModel(models: TensorPixModel[], upscaleFactor: 2 | 4): TensorPixModel {

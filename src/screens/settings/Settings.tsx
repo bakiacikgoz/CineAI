@@ -15,6 +15,7 @@ import {
   IMAGE_MODELS,
   VIDEO_MODELS,
   initFal,
+  testFalConnection,
   type ImageModelId,
   type VideoModelId,
 } from "@/services/fal.service";
@@ -28,7 +29,12 @@ import {
   setAppSettings,
   type ApiKeyName,
 } from "@/lib/store";
-import { getTensorPixModels, type TensorPixModel } from "@/services/tensorpix.service";
+import {
+  getTensorPixModels,
+  testTensorPixConnection,
+  type TensorPixModel,
+} from "@/services/tensorpix.service";
+import { testOpenRouterConnection } from "@/services/llm.service";
 import { useQueueStore } from "@/store/queue.store";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -56,6 +62,17 @@ const API_KEYS: Array<{
     description: "LLM tabanli prompt zinciri ve agent akislarinda kullanilir.",
   },
 ];
+
+type ConnectionState = {
+  status: "idle" | "testing" | "success" | "error";
+  detail?: string;
+};
+
+const INITIAL_CONNECTION_STATE: Record<ApiKeyName, ConnectionState> = {
+  FAL_API_KEY: { status: "idle" },
+  TENSORPIX_API_KEY: { status: "idle" },
+  OPENROUTER_API_KEY: { status: "idle" },
+};
 
 /* ═══════════════════════════════════════════════════════════════
    Collapsible Section Component
@@ -137,6 +154,8 @@ export function Settings() {
 
   /* ── Saved indicator ── */
   const [showSavedCheck, setShowSavedCheck] = useState(false);
+  const [connectionState, setConnectionState] =
+    useState<Record<ApiKeyName, ConnectionState>>(INITIAL_CONNECTION_STATE);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,10 +198,11 @@ export function Settings() {
 
   useEffect(() => {
     let cancelled = false;
+    const tensorPixKey = values.TENSORPIX_API_KEY.trim();
 
     async function loadTensorPixModels() {
       try {
-        const models = await getTensorPixModels();
+        const models = await getTensorPixModels(tensorPixKey);
         if (!cancelled) {
           setTensorPixModels(models);
         }
@@ -193,8 +213,15 @@ export function Settings() {
       }
     }
 
-    if (values.TENSORPIX_API_KEY.trim()) {
-      void loadTensorPixModels();
+    if (tensorPixKey) {
+      const timer = setTimeout(() => {
+        void loadTensorPixModels();
+      }, 350);
+
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     } else {
       setTensorPixModels([]);
     }
@@ -203,6 +230,61 @@ export function Settings() {
       cancelled = true;
     };
   }, [values.TENSORPIX_API_KEY]);
+
+  async function handleTestConnection(key: ApiKeyName) {
+    const apiKey = values[key].trim();
+
+    if (!apiKey) {
+      setConnectionState((current) => ({
+        ...current,
+        [key]: {
+          status: "error",
+          detail: "Test icin once bir API key gir.",
+        },
+      }));
+      return;
+    }
+
+    setConnectionState((current) => ({
+      ...current,
+      [key]: {
+        status: "testing",
+        detail: "Baglanti kontrol ediliyor...",
+      },
+    }));
+
+    try {
+      const detail =
+        key === "FAL_API_KEY"
+          ? `${(await testFalConnection(apiKey)).aliasCount} endpoint alias okunabildi.`
+          : key === "TENSORPIX_API_KEY"
+            ? `${(await testTensorPixConnection(apiKey)).modelCount} TensorPix modeli listelendi.`
+            : `${(await testOpenRouterConnection(apiKey)).modelCount} OpenRouter modeli listelendi.`;
+
+      if (key === "TENSORPIX_API_KEY") {
+        setTensorPixModels(await getTensorPixModels(apiKey));
+      }
+
+      setConnectionState((current) => ({
+        ...current,
+        [key]: {
+          status: "success",
+          detail,
+        },
+      }));
+    } catch (error) {
+      setConnectionState((current) => ({
+        ...current,
+        [key]: {
+          status: "error",
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Baglanti testi tamamlanamadi.",
+        },
+      }));
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -268,6 +350,7 @@ export function Settings() {
           {API_KEYS.map(({ key, title, description }) => {
             const isVisible = visibleKeys[key];
             const hasValue = values[key].trim().length > 0;
+            const providerState = connectionState[key];
 
             return (
               <label
@@ -292,9 +375,14 @@ export function Settings() {
                   <input
                     autoComplete="off"
                     className="studio-field"
-                    onChange={(event) =>
-                      setValues((current) => ({ ...current, [key]: event.target.value }))
-                    }
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setValues((current) => ({ ...current, [key]: nextValue }));
+                      setConnectionState((current) => ({
+                        ...current,
+                        [key]: { status: "idle" },
+                      }));
+                    }}
                     placeholder={`${title} anahtarini yapistir`}
                     style={apiKeyInputStyle}
                     type={isVisible ? "text" : "password"}
@@ -310,6 +398,34 @@ export function Settings() {
                     type="button"
                   >
                     {isVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                <div style={connectionRowStyle}>
+                  <span style={connectionHintStyle(providerState.status)}>
+                    {providerState.status === "idle"
+                      ? "Heniz baglanti testi yapilmadi."
+                      : providerState.detail}
+                  </span>
+                  <button
+                    className="btn-secondary"
+                    disabled={!hasValue || loading || providerState.status === "testing"}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void handleTestConnection(key);
+                    }}
+                    style={connectionButtonStyle}
+                    type="button"
+                  >
+                    {providerState.status === "testing" ? (
+                      <LoaderCircle className="spin-slow" size={14} />
+                    ) : providerState.status === "success" ? (
+                      <Check size={14} />
+                    ) : (
+                      <ShieldCheck size={14} />
+                    )}
+                    {providerState.status === "testing"
+                      ? "Test ediliyor..."
+                      : "Baglantiyi test et"}
                   </button>
                 </div>
               </label>
@@ -596,6 +712,14 @@ const inputWrapStyle = {
   alignItems: "center",
 } satisfies CSSProperties;
 
+const connectionRowStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  flexWrap: "wrap",
+} satisfies CSSProperties;
+
 const apiKeyInputStyle = {
   width: "100%",
   padding: "12px 44px 12px 14px",
@@ -623,6 +747,27 @@ const visibilityToggleBtnStyle = {
   cursor: "pointer",
   transition: "color 150ms ease, background 150ms ease",
 } satisfies CSSProperties;
+
+const connectionButtonStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  paddingInline: 14,
+  flexShrink: 0,
+} satisfies CSSProperties;
+
+function connectionHintStyle(status: ConnectionState["status"]): CSSProperties {
+  return {
+    fontSize: 12,
+    lineHeight: 1.6,
+    color:
+      status === "success"
+        ? "var(--status-success)"
+        : status === "error"
+          ? "var(--status-danger)"
+          : "var(--text-muted)",
+  };
+}
 
 /* ── Save Row ────────────────────────────────────────────── */
 

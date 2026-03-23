@@ -9,6 +9,7 @@ import { resolveStartImage, waitForJob } from "@/services/chain.service";
 import { resolveShotCharacterContext } from "@/services/character.service";
 import { logCost } from "@/services/cost.service";
 import {
+  analyzeKlingVideoPrompt,
   clampKlingDuration,
   calcImageCost,
   calcVideoCost,
@@ -262,6 +263,8 @@ export interface EnqueueVideoJobParams {
   prompt: string;
   imageStartPath?: string;
   imageEndPath?: string;
+  resolveStartDependencies?: boolean;
+  resolveEndDependencies?: boolean;
   duration: KlingDuration;
   aspectRatio?: VideoAspectRatio;
   cfg?: number;
@@ -318,6 +321,28 @@ function toRelativeProjectPath(projectFolderPath: string, absolutePath: string):
 
 async function ensureFileDirectory(filePath: string): Promise<void> {
   await mkdir(await dirname(filePath), { recursive: true });
+}
+
+function buildImageAssetMetadata(params: {
+  source: "still-image-lab" | "storyboard";
+  basePrompt: string;
+  aspectRatio: string;
+  cfg: number;
+  steps: number;
+  quantity: number;
+  refImagePath?: string | null;
+  referenceImagePaths?: string[];
+}): Record<string, unknown> {
+  return {
+    source: params.source,
+    basePrompt: params.basePrompt,
+    aspectRatio: params.aspectRatio,
+    cfg: params.cfg,
+    steps: params.steps,
+    quantity: params.quantity,
+    refImagePath: params.refImagePath ?? null,
+    referenceImagePaths: params.referenceImagePaths ?? [],
+  };
 }
 
 function isAbortError(error: unknown): boolean {
@@ -558,6 +583,7 @@ async function ensureVideoInputPath(
   mode: "start" | "end",
   jobId: string,
   priority: number,
+  allowDependencyResolution = true,
 ): Promise<string | undefined> {
   const activeProject = useProjectStore.getState().activeProject;
 
@@ -573,6 +599,10 @@ async function ensureVideoInputPath(
     if (await exists(absolutePath)) {
       return absolutePath;
     }
+  }
+
+  if (!allowDependencyResolution) {
+    return undefined;
   }
 
   const jobType = mode === "start" ? "image_start" : "image_end";
@@ -721,6 +751,16 @@ export async function enqueueImageJobs(
         costUsd: costPerImage,
         falJobId: result.requestId ?? jobId,
         shotId,
+        metadata: buildImageAssetMetadata({
+          source: "still-image-lab",
+          basePrompt: prompt,
+          aspectRatio,
+          cfg,
+          steps,
+          quantity,
+          refImagePath: mergedReferenceImagePaths[0],
+          referenceImagePaths: mergedReferenceImagePaths,
+        }),
         tags: assetTags,
       });
 
@@ -799,7 +839,17 @@ export async function enqueueStoryboardFrameJob(
     shotId: shot.id,
     model,
     prompt: effectivePrompt,
-    params: { aspectRatio, cfg, steps, mode },
+    params: {
+      aspectRatio,
+      cfg,
+      steps,
+      mode,
+      outputSuffix: params.outputSuffix,
+      assetTags: params.assetTags,
+      persistToShotPath,
+      completeStatus,
+      basePrompt: params.prompt.trim(),
+    },
     progress: 0,
     costUsd: costPerImage,
     queuedAt: Date.now(),
@@ -886,6 +936,16 @@ export async function enqueueStoryboardFrameJob(
         costUsd: costPerImage,
         falJobId: result.requestId ?? jobId,
         shotId: shot.id,
+        metadata: buildImageAssetMetadata({
+          source: "storyboard",
+          basePrompt: params.prompt.trim(),
+          aspectRatio,
+          cfg,
+          steps,
+          quantity: 1,
+          refImagePath: referenceImagePaths[0],
+          referenceImagePaths,
+        }),
         tags: params.assetTags ?? [],
       });
 
@@ -936,8 +996,9 @@ export async function enqueueVideoJobs(
   const duration = clampKlingDuration(params.duration);
   const persistToShotPath = params.persistToShotPath ?? true;
   const completeStatus = params.completeStatus ?? "done";
+  const resolveStartDependencies = params.resolveStartDependencies ?? true;
+  const resolveEndDependencies = params.resolveEndDependencies ?? true;
   const jobIds: string[] = [];
-  const costPerVideo = calcVideoCost(model, 1);
 
   for (let index = 0; index < params.quantity; index += 1) {
     const shot = params.shotId ? await getShotById(params.shotId) : null;
@@ -952,6 +1013,9 @@ export async function enqueueVideoJobs(
       characterContext?.promptHint,
       Boolean(shot?.includeCharacterPrompt ?? false),
     );
+    const resolvedGenerateAudio =
+      params.generateAudio ?? analyzeKlingVideoPrompt(effectivePrompt).hasAudioDirection;
+    const costPerVideo = calcVideoCost(model, duration, resolvedGenerateAudio);
     const jobId = uuidv4();
 
     const job: Job = {
@@ -967,9 +1031,18 @@ export async function enqueueVideoJobs(
         duration,
         aspectRatio,
         cfg,
-        generateAudio: params.generateAudio,
+        generateAudio: resolvedGenerateAudio,
         negativePrompt: params.negativePrompt,
         shotType: params.shotType,
+        imageStartPath: params.imageStartPath,
+        imageEndPath: params.imageEndPath,
+        resolveStartDependencies,
+        resolveEndDependencies,
+        outputSuffix: params.outputSuffix,
+        assetTags: params.assetTags,
+        persistToShotPath,
+        completeStatus,
+        basePrompt: params.prompt.trim(),
       },
       progress: 0,
       costUsd: costPerVideo,
@@ -994,8 +1067,20 @@ export async function enqueueVideoJobs(
         let endPath = params.imageEndPath;
 
         if (shot?.id) {
-          startPath ??= await ensureVideoInputPath(shot, "start", jobId, job.priority);
-          endPath ??= await ensureVideoInputPath(shot, "end", jobId, job.priority);
+          startPath ??= await ensureVideoInputPath(
+            shot,
+            "start",
+            jobId,
+            job.priority,
+            resolveStartDependencies,
+          );
+          endPath ??= await ensureVideoInputPath(
+            shot,
+            "end",
+            jobId,
+            job.priority,
+            resolveEndDependencies,
+          );
         }
 
         if (!startPath) {
@@ -1013,7 +1098,7 @@ export async function enqueueVideoJobs(
           duration,
           aspectRatio,
           cfg,
-          generateAudio: params.generateAudio,
+          generateAudio: resolvedGenerateAudio,
           negativePrompt: params.negativePrompt,
           shotType: params.shotType,
           abortSignal,
@@ -1333,7 +1418,11 @@ export async function enqueueBulkProduction(
           jobType: getBulkVideoJobType(shot.parentShotId),
         });
         jobCount += 1;
-        estimatedCost += calcVideoCost(selectedVideoModel, 1);
+        estimatedCost += calcVideoCost(
+          selectedVideoModel,
+          clampKlingDuration(shot.durationS),
+          analyzeKlingVideoPrompt(shot.promptVideo).hasAudioDirection,
+        );
       }
     }
   }
@@ -1376,7 +1465,11 @@ export async function enqueueBulkProduction(
           jobType: getBulkVideoJobType(shot.parentShotId),
         });
         jobCount += 1;
-        estimatedCost += calcVideoCost(selectedVideoModel, 1);
+        estimatedCost += calcVideoCost(
+          selectedVideoModel,
+          clampKlingDuration(shot.durationS),
+          analyzeKlingVideoPrompt(shot.promptVideo).hasAudioDirection,
+        );
       }
     }
   }

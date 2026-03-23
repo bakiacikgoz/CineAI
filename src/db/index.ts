@@ -60,6 +60,7 @@ async function runInitialMigration(db: Database): Promise<void> {
   }
 
   await ensureShotColumns(db);
+  await ensureAssetSchema(db);
   await ensureCharacterSchema(db);
 }
 
@@ -174,6 +175,25 @@ async function ensureCharacterSchema(db: Database): Promise<void> {
   }
 
   await backfillLegacyCharacterLooks(db);
+}
+
+async function ensureAssetSchema(db: Database): Promise<void> {
+  const assetColumns = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(assets)",
+  );
+  const knownAssetColumns = new Set(assetColumns.map((column) => column.name));
+  const missingAssetColumns = [
+    {
+      name: "metadata_json",
+      sql: "ALTER TABLE assets ADD COLUMN metadata_json TEXT",
+    },
+  ];
+
+  for (const column of missingAssetColumns) {
+    if (!knownAssetColumns.has(column.name)) {
+      await db.execute(column.sql);
+    }
+  }
 }
 
 async function backfillLegacyCharacterLooks(db: Database): Promise<void> {

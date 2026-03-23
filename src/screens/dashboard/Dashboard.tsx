@@ -12,10 +12,10 @@ import {
   deleteProjectFromRegistry,
   getRecentProjects,
   openProject,
-  touchProject,
   type ProjectMeta,
 } from "@/services/project.service";
 import { Portal } from "@/components/Portal";
+import { activateProject } from "@/services/project-session.service";
 import { useProjectStore } from "@/store/project.store";
 
 const containerVariants = {
@@ -72,7 +72,6 @@ function AnimatedCounter({ value }: { value: number }) {
 export function Dashboard() {
   const navigate = useNavigate();
   const recentProjects = useProjectStore((state) => state.recentProjects);
-  const setActiveProject = useProjectStore((state) => state.setActiveProject);
   const setRecentProjects = useProjectStore((state) => state.setRecentProjects);
   const [showNewModal, setShowNewModal] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -149,8 +148,7 @@ export function Dashboard() {
 
     try {
       const meta = await openProject(selected);
-      await touchProject(meta.id);
-      setActiveProject(meta);
+      await activateProject(meta, { touch: true });
       await loadProjects();
       navigate("/storyboard");
     } catch (error) {
@@ -165,8 +163,7 @@ export function Dashboard() {
   async function handleSelectProject(project: ProjectMeta) {
     try {
       const meta = await openProject(project.folderPath);
-      await touchProject(meta.id);
-      setActiveProject(meta);
+      await activateProject(meta, { touch: true });
       await loadProjects();
       navigate("/storyboard");
     } catch (error) {
@@ -183,7 +180,7 @@ export function Dashboard() {
 
   async function handleNewProject(name: string, folderPath: string) {
     const meta = await createProject(name, folderPath);
-    setActiveProject(meta);
+    await activateProject(meta);
     await loadProjects();
     setShowNewModal(false);
     navigate("/storyboard");
@@ -298,7 +295,7 @@ export function Dashboard() {
         {/* --- Metrics Section --- */}
         <motion.section
           className="dashboard-metrics"
-          style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}
+          style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3, duration: 0.4 }}
@@ -397,6 +394,30 @@ export function Dashboard() {
               <AnimatedCounter value={aggregatedStats.totalCharacters} />
             </strong>
             <span className="dashboard-metric-copy">Tanimlanan karakter referanslari</span>
+          </article>
+
+          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
+            <div
+              style={{
+                position: "absolute",
+                top: -8,
+                right: -8,
+                width: 48,
+                height: 48,
+                borderRadius: "50%",
+                background: "rgba(245,158,11,0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <FolderOpen size={18} style={{ color: "var(--accent)", opacity: 0.6 }} />
+            </div>
+            <span className="dashboard-metric-label">Assetler</span>
+            <strong className="dashboard-metric-value">
+              <AnimatedCounter value={aggregatedStats.totalAssets} />
+            </strong>
+            <span className="dashboard-metric-copy">Kutuphane ve storyboard medya kayitlari</span>
           </article>
         </motion.section>
 

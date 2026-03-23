@@ -1,6 +1,7 @@
 import { getApiKey } from "@/lib/store";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const DEFAULT_OPENROUTER_MODEL = "openrouter/auto";
 
 export type PromptAssistMode =
@@ -81,4 +82,34 @@ export async function runPromptAssist(
   }
 
   return output;
+}
+
+export async function testOpenRouterConnection(
+  apiKeyOverride?: string,
+): Promise<{ modelCount: number }> {
+  const apiKey = apiKeyOverride?.trim() || (await getApiKey("OPENROUTER_API_KEY"))?.trim();
+
+  if (!apiKey) {
+    throw new Error("OpenRouter API key bulunamadi. Ayarlardan ekleyin.");
+  }
+
+  const response = await fetch(OPENROUTER_MODELS_API_URL, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://cineai.local",
+      "X-Title": "CineAI Studio",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter baglanti testi basarisiz oldu (${response.status}).`);
+  }
+
+  const payload = (await response.json()) as {
+    data?: unknown[];
+  };
+
+  return {
+    modelCount: Array.isArray(payload.data) ? payload.data.length : 0,
+  };
 }

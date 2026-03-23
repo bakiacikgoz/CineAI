@@ -1,3 +1,4 @@
+import { getDb } from "@/db";
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
 import { isVideoQueueJobType } from "@/lib/job-queue-types";
 import {
@@ -44,8 +45,16 @@ type PersistedJobRow = {
 let initialized = false;
 let isHydrating = false;
 let lastProjectId: string | null = null;
+let lastProjectFolderPath: string | null = null;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingSyncSnapshot: { projectId: string; jobs: Job[] } | null = null;
+let isFlushingSnapshot = false;
+const persistedSnapshotKeysByProject = new Map<string, string>();
+let pendingSyncSnapshot: {
+  projectId: string;
+  projectFolderPath: string;
+  jobs: Job[];
+  key: string;
+} | null = null;
 
 function coerceVideoModel(model: string | undefined): VideoModelId | undefined {
   return model && model in VIDEO_MODELS ? (model as VideoModelId) : undefined;
@@ -101,90 +110,228 @@ function fromRow(row: PersistedJobRow): Job {
 }
 
 async function listPersistedJobs(projectId: string): Promise<Job[]> {
-  const db = await getProjectDb();
-  const rows = await db.select<PersistedJobRow[]>(
-    `SELECT *
-     FROM job_queue
-     WHERE project_id = $1
-     ORDER BY queued_at ASC, priority DESC`,
-    [projectId],
-  );
-  return rows.map(fromRow);
+  return withSqliteLockRetry(async () => {
+    const db = await getProjectDb();
+    const rows = await db.select<PersistedJobRow[]>(
+      `SELECT *
+       FROM job_queue
+       WHERE project_id = $1
+       ORDER BY queued_at ASC, priority DESC`,
+      [projectId],
+    );
+    return rows.map(fromRow);
+  });
 }
 
-async function replacePersistedJobs(projectId: string, jobs: Job[]): Promise<void> {
-  const db = await getProjectDb();
-  await db.execute("DELETE FROM job_queue WHERE project_id = $1", [projectId]);
+function dedupeJobsById(jobs: Job[]): Job[] {
+  const seen = new Set<string>();
+  const uniqueJobs: Job[] = [];
 
-  for (const job of jobs) {
-    await db.execute(
-      `INSERT INTO job_queue (
-        id, project_id, type, status, priority, shot_id, asset_id,
-        model, prompt, params, ref_image_path, fal_job_id, tensorpix_job_id,
-        progress, error_msg, cost_usd, result_path, queued_at, started_at,
-        completed_at, sequence_order
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, $19, $20, $21
-      )`,
-      [
-        job.id,
-        job.projectId,
-        job.type,
-        job.status,
-        job.priority,
-        job.shotId ?? null,
-        job.assetId ?? null,
-        job.model ?? null,
-        job.prompt ?? null,
-        serializeParams(job.params),
-        job.refImagePath ?? null,
-        job.falJobId ?? null,
-        job.tensorpixJobId ?? null,
-        job.progress,
-        job.errorMsg ?? null,
-        job.costUsd ?? null,
-        job.resultPath ?? null,
-        job.queuedAt,
-        job.startedAt ?? null,
-        job.completedAt ?? null,
-        job.sequenceOrder ?? null,
-      ],
-    );
+  for (let index = jobs.length - 1; index >= 0; index -= 1) {
+    const job = jobs[index];
+
+    if (seen.has(job.id)) {
+      continue;
+    }
+
+    seen.add(job.id);
+    uniqueJobs.unshift(job);
   }
 
-  await syncProjectDbMirror();
+  return uniqueJobs;
+}
+
+function isTerminalJobStatus(status: Job["status"]): boolean {
+  return status === "done" || status === "error" || status === "cancelled";
+}
+
+function buildSnapshotKey(jobs: Job[]): string {
+  return JSON.stringify(
+    dedupeJobsById(jobs).map((job) => {
+      const isTerminal = isTerminalJobStatus(job.status);
+
+      return {
+        id: job.id,
+        projectId: job.projectId,
+        type: job.type,
+        status: job.status,
+        priority: job.priority,
+        shotId: job.shotId ?? null,
+        assetId: job.assetId ?? null,
+        model: job.model ?? null,
+        prompt: job.prompt ?? null,
+        params: job.params ?? null,
+        refImagePath: job.refImagePath ?? null,
+        falJobId: job.falJobId ?? null,
+        tensorpixJobId: job.tensorpixJobId ?? null,
+        progress: isTerminal ? job.progress : undefined,
+        errorMsg: isTerminal ? job.errorMsg ?? null : undefined,
+        costUsd: isTerminal ? job.costUsd ?? null : undefined,
+        resultPath: isTerminal ? job.resultPath ?? null : undefined,
+        queuedAt: job.queuedAt,
+        startedAt: job.startedAt ?? null,
+        completedAt: isTerminal ? job.completedAt ?? null : undefined,
+        sequenceOrder: job.sequenceOrder ?? null,
+      };
+    }),
+  );
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isSqliteLockError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("database is locked") ||
+    message.includes("database is busy") ||
+    message.includes("sqlite_busy")
+  );
+}
+
+async function wait(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withSqliteLockRetry<T>(operation: () => Promise<T>): Promise<T> {
+  const retryDelaysMs = [80, 180, 320];
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isSqliteLockError(error) || attempt === retryDelaysMs.length) {
+        throw error;
+      }
+
+      await wait(retryDelaysMs[attempt]);
+    }
+  }
+
+  throw new Error("SQLite retry flow exhausted unexpectedly.");
+}
+
+async function replacePersistedJobs(
+  projectId: string,
+  jobs: Job[],
+  projectFolderPath?: string,
+): Promise<void> {
+  const uniqueJobs = dedupeJobsById(jobs);
+
+  await withSqliteLockRetry(async () => {
+    const db = projectFolderPath ? await getDb(projectFolderPath) : await getProjectDb();
+    await db.execute("DELETE FROM job_queue WHERE project_id = $1", [projectId]);
+
+    for (const job of uniqueJobs) {
+      await db.execute(
+        `INSERT OR REPLACE INTO job_queue (
+          id, project_id, type, status, priority, shot_id, asset_id,
+          model, prompt, params, ref_image_path, fal_job_id, tensorpix_job_id,
+          progress, error_msg, cost_usd, result_path, queued_at, started_at,
+          completed_at, sequence_order
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+          $14, $15, $16, $17, $18, $19, $20, $21
+        )`,
+        [
+          job.id,
+          job.projectId,
+          job.type,
+          job.status,
+          job.priority,
+          job.shotId ?? null,
+          job.assetId ?? null,
+          job.model ?? null,
+          job.prompt ?? null,
+          serializeParams(job.params),
+          job.refImagePath ?? null,
+          job.falJobId ?? null,
+          job.tensorpixJobId ?? null,
+          job.progress,
+          job.errorMsg ?? null,
+          job.costUsd ?? null,
+          job.resultPath ?? null,
+          job.queuedAt,
+          job.startedAt ?? null,
+          job.completedAt ?? null,
+          job.sequenceOrder ?? null,
+        ],
+      );
+    }
+  });
+
+  try {
+    await withSqliteLockRetry(() => syncProjectDbMirror(projectFolderPath));
+  } catch (error) {
+    console.warn("Skipped job queue mirror sync after lock contention.", error);
+  }
 }
 
 async function flushSyncSnapshot(): Promise<void> {
-  if (!pendingSyncSnapshot) {
+  if (isFlushingSnapshot || !pendingSyncSnapshot) {
     return;
   }
 
-  const snapshot = pendingSyncSnapshot;
-  pendingSyncSnapshot = null;
-  await replacePersistedJobs(snapshot.projectId, snapshot.jobs);
+  isFlushingSnapshot = true;
+
+  try {
+    while (pendingSyncSnapshot) {
+      const snapshot = pendingSyncSnapshot;
+      pendingSyncSnapshot = null;
+      await replacePersistedJobs(
+        snapshot.projectId,
+        snapshot.jobs,
+        snapshot.projectFolderPath,
+      );
+      persistedSnapshotKeysByProject.set(snapshot.projectId, snapshot.key);
+    }
+  } catch (error) {
+    console.error("Failed to persist job queue snapshot", error);
+  } finally {
+    isFlushingSnapshot = false;
+
+    if (pendingSyncSnapshot) {
+      void flushSyncSnapshot();
+    }
+  }
 }
 
-function scheduleSync(projectId?: string, jobs?: Job[]) {
+function scheduleSync(projectId?: string, jobs?: Job[], projectFolderPath?: string) {
   if (isHydrating) {
     return;
   }
 
   const activeProject = useProjectStore.getState().activeProject;
   const scopedProjectId = projectId ?? activeProject?.id;
+  const scopedProjectFolderPath = projectFolderPath ?? activeProject?.folderPath;
 
-  if (!scopedProjectId) {
+  if (!scopedProjectId || !scopedProjectFolderPath) {
+    return;
+  }
+
+  const nextJobs = dedupeJobsById(
+    jobs ??
+      useQueueStore
+        .getState()
+        .jobs.filter((job) => job.projectId === scopedProjectId),
+  );
+  const nextKey = buildSnapshotKey(nextJobs);
+  const pendingKeyForProject =
+    pendingSyncSnapshot?.projectId === scopedProjectId ? pendingSyncSnapshot.key : null;
+
+  if (
+    persistedSnapshotKeysByProject.get(scopedProjectId) === nextKey ||
+    pendingKeyForProject === nextKey
+  ) {
     return;
   }
 
   pendingSyncSnapshot = {
     projectId: scopedProjectId,
-    jobs:
-      jobs ??
-      useQueueStore
-        .getState()
-        .jobs.filter((job) => job.projectId === scopedProjectId),
+    projectFolderPath: scopedProjectFolderPath,
+    jobs: nextJobs,
+    key: nextKey,
   };
 
   if (syncTimer) {
@@ -194,20 +341,34 @@ function scheduleSync(projectId?: string, jobs?: Job[]) {
   syncTimer = setTimeout(() => {
     syncTimer = null;
     void flushSyncSnapshot();
-  }, 250);
+  }, 900);
 }
 
 async function requeuePersistedJob(job: Job): Promise<void> {
   const params = job.params ?? {};
+  const basePrompt =
+    typeof params.basePrompt === "string" && params.basePrompt.trim()
+      ? params.basePrompt
+      : job.prompt;
 
-  if (!job.prompt?.trim()) {
+  if (!basePrompt?.trim()) {
     return;
   }
 
   if (isVideoQueueJobType(job.type)) {
     await enqueueVideoJobs({
       model: coerceVideoModel(job.model),
-      prompt: job.prompt,
+      prompt: basePrompt,
+      imageStartPath: params.imageStartPath as string | undefined,
+      imageEndPath: params.imageEndPath as string | undefined,
+      resolveStartDependencies:
+        typeof params.resolveStartDependencies === "boolean"
+          ? params.resolveStartDependencies
+          : undefined,
+      resolveEndDependencies:
+        typeof params.resolveEndDependencies === "boolean"
+          ? params.resolveEndDependencies
+          : undefined,
       duration: clampKlingDuration(params.duration as number | undefined),
       aspectRatio: (params.aspectRatio as "16:9" | "9:16" | "1:1") ?? "16:9",
       cfg: Number(params.cfg ?? 0.45),
@@ -220,6 +381,15 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       quantity: 1,
       shotId: job.shotId,
       priority: job.priority,
+      outputSuffix: params.outputSuffix as string | undefined,
+      assetTags: Array.isArray(params.assetTags)
+        ? (params.assetTags as string[])
+        : undefined,
+      persistToShotPath:
+        typeof params.persistToShotPath === "boolean"
+          ? params.persistToShotPath
+          : undefined,
+      completeStatus: params.completeStatus as string | undefined,
       jobType: job.type,
     });
     return;
@@ -246,7 +416,7 @@ async function requeuePersistedJob(job: Job): Promise<void> {
   ) {
     await enqueueStoryboardFrameJob({
       shotId: job.shotId,
-      prompt: job.prompt,
+      prompt: basePrompt,
       mode:
         job.type === "image_start"
           ? "start"
@@ -258,13 +428,22 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       cfg: Number(params.cfg ?? 7),
       steps: Number(params.steps ?? 28),
       priority: job.priority,
+      outputSuffix: params.outputSuffix as string | undefined,
+      assetTags: Array.isArray(params.assetTags)
+        ? (params.assetTags as string[])
+        : undefined,
+      persistToShotPath:
+        typeof params.persistToShotPath === "boolean"
+          ? params.persistToShotPath
+          : undefined,
+      completeStatus: params.completeStatus as string | undefined,
     });
     return;
   }
 
   await enqueueImageJobs({
     model: coerceImageModel(job.model) ?? "fal-ai/nano-banana-2",
-    prompt: job.prompt,
+    prompt: basePrompt,
     aspectRatio: (params.aspectRatio as string) ?? "16:9",
     cfg: Number(params.cfg ?? 7),
     steps: Number(params.steps ?? 28),
@@ -303,7 +482,15 @@ async function hydrateForProject(projectId: string): Promise<void> {
     const queuedJobs = persistedJobs.filter((job) => job.status === "queued");
 
     useQueueStore.getState().setJobs([...terminalJobs, ...interruptedJobs]);
-    await replacePersistedJobs(projectId, [...terminalJobs, ...interruptedJobs]);
+    try {
+      await replacePersistedJobs(projectId, [...terminalJobs, ...interruptedJobs]);
+      persistedSnapshotKeysByProject.set(
+        projectId,
+        buildSnapshotKey([...terminalJobs, ...interruptedJobs]),
+      );
+    } catch (error) {
+      console.error("Failed to rewrite hydrated terminal jobs.", error);
+    }
 
     for (const queuedJob of queuedJobs) {
       try {
@@ -336,6 +523,7 @@ export function initializeJobQueuePersistence(): void {
 
   initialized = true;
   lastProjectId = useProjectStore.getState().activeProject?.id ?? null;
+  lastProjectFolderPath = useProjectStore.getState().activeProject?.folderPath ?? null;
 
   useQueueStore.subscribe(() => {
     scheduleSync();
@@ -348,14 +536,15 @@ export function initializeJobQueuePersistence(): void {
     }
 
     const previousProjectId = lastProjectId;
+    const previousProjectFolderPath = lastProjectFolderPath;
     const previousProjectJobs = previousProjectId
       ? useQueueStore
           .getState()
           .jobs.filter((job) => job.projectId === previousProjectId)
       : [];
 
-    if (previousProjectId) {
-      scheduleSync(previousProjectId, previousProjectJobs);
+    if (previousProjectId && previousProjectFolderPath) {
+      scheduleSync(previousProjectId, previousProjectJobs, previousProjectFolderPath);
       if (syncTimer) {
         clearTimeout(syncTimer);
         syncTimer = null;
@@ -364,6 +553,7 @@ export function initializeJobQueuePersistence(): void {
     }
 
     lastProjectId = nextProjectId;
+    lastProjectFolderPath = state.activeProject?.folderPath ?? null;
 
     if (!nextProjectId) {
       isHydrating = true;

@@ -24,6 +24,7 @@ import { ShotDetailPanel } from "@/screens/storyboard/ShotDetailPanel";
 import { Portal } from "@/components/Portal";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
+import { useScreenStateStore } from "@/store/screen-state.store";
 
 const TIMELINE_GROUP_WIDTH = 340;
 const CONNECTOR_WIDTH = 72;
@@ -56,7 +57,10 @@ export function Storyboard() {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const zoomRef = useRef(DEFAULT_ZOOM);
   const panStateRef = useRef<PanState | null>(null);
+  const restoreViewportRef = useRef(true);
+  const viewportPersistFrameRef = useRef<number | null>(null);
   const queueJobs = useQueueStore((state) => state.jobs);
+  const setStoryboardState = useScreenStateStore((state) => state.setStoryboardState);
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
   const [showBulkModal, setShowBulkModal] = useState(false);
@@ -64,6 +68,7 @@ export function Storyboard() {
   const [importPreviewData, setImportPreviewData] = useState<ImportPreview | null>(null);
   const [importFolder, setImportFolder] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [importing, setImporting] = useState(false);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [spacePressed, setSpacePressed] = useState(false);
@@ -71,19 +76,50 @@ export function Storyboard() {
   const [detailModalView, setDetailModalView] = useState<DetailModalView>("start");
   const [showArchived, setShowArchived] = useState(false);
   const activeProjectId = activeProject?.id ?? null;
+  const savedStoryboardState = useScreenStateStore((state) =>
+    activeProjectId ? state.storyboardByProject[activeProjectId] ?? null : null,
+  );
   const queueRefreshMarker = queueJobs
     .filter((job) => job.projectId === activeProjectId)
     .map((job) => `${job.id}:${job.status}:${job.resultPath ?? ""}`)
     .join("|");
 
+  useEffect(() => {
+    if (!activeProjectId) {
+      setSelectedShotId(null);
+      setDetailModalView("start");
+      setShowArchived(false);
+      setZoom(DEFAULT_ZOOM);
+      zoomRef.current = DEFAULT_ZOOM;
+      setHasLoadedOnce(false);
+      setLoading(true);
+      return;
+    }
+
+    const nextState = useScreenStateStore.getState().storyboardByProject[activeProjectId];
+    setSelectedShotId(nextState?.selectedShotId ?? null);
+    setDetailModalView(nextState?.detailModalView ?? "start");
+    setShowArchived(nextState?.showArchived ?? false);
+    const nextZoom = nextState?.zoom ?? DEFAULT_ZOOM;
+    setZoom(nextZoom);
+    zoomRef.current = nextZoom;
+    restoreViewportRef.current = true;
+    setHasLoadedOnce(false);
+    setLoading(true);
+  }, [activeProjectId]);
+
   const loadShots = useCallback(async () => {
     if (!activeProject) {
       setShots([]);
       setLoading(false);
+      setHasLoadedOnce(false);
       return;
     }
 
-    setLoading(true);
+    const showInitialLoader = !hasLoadedOnce;
+    if (showInitialLoader) {
+      setLoading(true);
+    }
 
     try {
       const nextShots = await getShots(activeProject.id, { includeArchived: true });
@@ -98,9 +134,12 @@ export function Storyboard() {
         },
       );
     } finally {
-      setLoading(false);
+      if (showInitialLoader) {
+        setLoading(false);
+      }
+      setHasLoadedOnce(true);
     }
-  }, [activeProject]);
+  }, [activeProject, hasLoadedOnce]);
 
   useEffect(() => {
     void loadShots();
@@ -131,6 +170,50 @@ export function Storyboard() {
   useEffect(() => {
     zoomRef.current = zoom;
   }, [zoom]);
+
+  const persistViewportState = useCallback(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    const viewport = viewportRef.current;
+    if (!viewport && restoreViewportRef.current) {
+      return;
+    }
+
+    setStoryboardState(activeProjectId, {
+      zoom: zoomRef.current,
+      scrollLeft: viewport?.scrollLeft ?? 0,
+      scrollTop: viewport?.scrollTop ?? 0,
+      showArchived,
+      selectedShotId,
+      detailModalView,
+    });
+  }, [activeProjectId, detailModalView, selectedShotId, setStoryboardState, showArchived]);
+
+  const scheduleViewportPersist = useCallback(() => {
+    if (viewportPersistFrameRef.current !== null) {
+      cancelAnimationFrame(viewportPersistFrameRef.current);
+    }
+
+    viewportPersistFrameRef.current = requestAnimationFrame(() => {
+      viewportPersistFrameRef.current = null;
+      persistViewportState();
+    });
+  }, [persistViewportState]);
+
+  useEffect(
+    () => () => {
+      if (viewportPersistFrameRef.current !== null) {
+        cancelAnimationFrame(viewportPersistFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    persistViewportState();
+  }, [persistViewportState, selectedShotId, detailModalView, showArchived, zoom]);
 
   async function handleImportClick() {
     try {
@@ -268,9 +351,10 @@ export function Storyboard() {
       requestAnimationFrame(() => {
         viewport.scrollLeft = centerX * ratio - viewport.clientWidth / 2;
         viewport.scrollTop = centerY * ratio - viewport.clientHeight / 2;
+        scheduleViewportPersist();
       });
     },
-    [setZoom],
+    [scheduleViewportPersist, setZoom],
   );
 
   const changeZoom = useCallback(
@@ -299,18 +383,49 @@ export function Storyboard() {
     requestAnimationFrame(() => {
       viewport.scrollLeft = 0;
       viewport.scrollTop = 0;
+      scheduleViewportPersist();
     });
-  }, [boardHeight, boardWidth, setZoomFromViewport]);
+  }, [boardHeight, boardWidth, scheduleViewportPersist, setZoomFromViewport]);
 
   useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || mainShots.length === 0) {
+    if (
+      !activeProjectId ||
+      !savedStoryboardState ||
+      !hasLoadedOnce ||
+      mainShots.length === 0 ||
+      !restoreViewportRef.current
+    ) {
       return;
     }
 
-    viewport.scrollLeft = 0;
-    viewport.scrollTop = 0;
-  }, [mainShots.length]);
+    const nextZoom = savedStoryboardState.zoom || DEFAULT_ZOOM;
+    const viewport = viewportRef.current;
+
+    if (!viewport) {
+      return;
+    }
+
+    setZoom(nextZoom);
+    zoomRef.current = nextZoom;
+
+    requestAnimationFrame(() => {
+      const nextViewport = viewportRef.current;
+      if (!nextViewport) {
+        return;
+      }
+
+      nextViewport.scrollLeft = savedStoryboardState.scrollLeft;
+      nextViewport.scrollTop = savedStoryboardState.scrollTop;
+      restoreViewportRef.current = false;
+      scheduleViewportPersist();
+    });
+  }, [
+    activeProjectId,
+    hasLoadedOnce,
+    mainShots.length,
+    savedStoryboardState,
+    scheduleViewportPersist,
+  ]);
 
   useEffect(() => {
     function isEditableTarget(target: EventTarget | null) {
@@ -750,6 +865,7 @@ export function Storyboard() {
             onPointerMove={handleViewportPointerMove}
             onPointerUp={stopPanning}
             onPointerCancel={stopPanning}
+            onScroll={scheduleViewportPersist}
             onWheel={handleViewportWheel}
             style={{
               minWidth: 0,

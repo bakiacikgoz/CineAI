@@ -19,6 +19,7 @@ import {
   type ImageModelId,
   type VideoModelId,
 } from "@/services/fal.service";
+import { testElevenLabsConnection } from "@/services/elevenlabs.service";
 import {
   getApiKey,
   getAppSetting,
@@ -59,7 +60,12 @@ const API_KEYS: Array<{
   {
     key: "OPENROUTER_API_KEY",
     title: "OpenRouter",
-    description: "LLM tabanli prompt zinciri ve agent akislarinda kullanilir.",
+    description: "LLM tabanli prompt zinciri, agent akislar ve dialogue speech optimizer burada calisir.",
+  },
+  {
+    key: "ELEVENLABS_API_KEY",
+    title: "ElevenLabs",
+    description: "Profesyonel dialogue TTS ve timestamp uretileri burada calisir.",
   },
 ];
 
@@ -72,6 +78,7 @@ const INITIAL_CONNECTION_STATE: Record<ApiKeyName, ConnectionState> = {
   FAL_API_KEY: { status: "idle" },
   TENSORPIX_API_KEY: { status: "idle" },
   OPENROUTER_API_KEY: { status: "idle" },
+  ELEVENLABS_API_KEY: { status: "idle" },
 };
 
 /* ═══════════════════════════════════════════════════════════════
@@ -134,10 +141,12 @@ export function Settings() {
     FAL_API_KEY: "",
     TENSORPIX_API_KEY: "",
     OPENROUTER_API_KEY: "",
+    ELEVENLABS_API_KEY: "",
   });
   const [defaultImageModel, setDefaultImageModel] = useState<ImageModelId>("fal-ai/nano-banana-2");
   const [defaultVideoModel, setDefaultVideoModel] = useState<VideoModelId>("fal-ai/kling-video/v3/pro/image-to-video");
   const [defaultUpscaleFactor, setDefaultUpscaleFactor] = useState<2 | 4>(4);
+  const [elevenLabsEstimatedUsdPer1kChars, setElevenLabsEstimatedUsdPer1kChars] = useState("0.12");
   const [defaultTensorPixFilter, setDefaultTensorPixFilter] = useState("");
   const [tensorPixModels, setTensorPixModels] = useState<TensorPixModel[]>([]);
   const [queueParallelLimit, setQueueParallelLimit] = useState(3);
@@ -150,6 +159,7 @@ export function Settings() {
     FAL_API_KEY: false,
     TENSORPIX_API_KEY: false,
     OPENROUTER_API_KEY: false,
+    ELEVENLABS_API_KEY: false,
   });
 
   /* ── Saved indicator ── */
@@ -177,6 +187,9 @@ export function Settings() {
           setDefaultImageModel(appSettings.defaultImageModel as ImageModelId);
           setDefaultVideoModel(appSettings.defaultVideoModel as VideoModelId);
           setDefaultUpscaleFactor(appSettings.defaultUpscaleFactor);
+          setElevenLabsEstimatedUsdPer1kChars(
+            String(appSettings.elevenLabsEstimatedUsdPer1kChars),
+          );
           setDefaultTensorPixFilter(savedTensorPixFilter ?? "");
           setQueueParallelLimit(appSettings.queueParallelLimit);
         }
@@ -259,7 +272,9 @@ export function Settings() {
           ? `${(await testFalConnection(apiKey)).aliasCount} endpoint alias okunabildi.`
           : key === "TENSORPIX_API_KEY"
             ? `${(await testTensorPixConnection(apiKey)).modelCount} TensorPix modeli listelendi.`
-            : `${(await testOpenRouterConnection(apiKey)).modelCount} OpenRouter modeli listelendi.`;
+            : key === "OPENROUTER_API_KEY"
+              ? `${(await testOpenRouterConnection(apiKey)).modelCount} OpenRouter modeli listelendi.`
+              : `${(await testElevenLabsConnection(apiKey)).voiceCount} ElevenLabs voice listelendi.`;
 
       if (key === "TENSORPIX_API_KEY") {
         setTensorPixModels(await getTensorPixModels(apiKey));
@@ -298,6 +313,8 @@ export function Settings() {
         defaultImageModel,
         defaultVideoModel,
         defaultUpscaleFactor,
+        elevenLabsEstimatedUsdPer1kChars:
+          Math.max(0, Number(elevenLabsEstimatedUsdPer1kChars)) || 0.12,
       });
       await setAppSetting("DEFAULT_TENSORPIX_FILTER", defaultTensorPixFilter);
       await initFal();
@@ -569,6 +586,30 @@ export function Settings() {
               ))}
             </select>
           </label>
+
+          <label style={fieldWrapStyle}>
+            <span style={fieldLabelStyle}>ElevenLabs Tahmini USD / 1K karakter</span>
+            <input
+              className="studio-field"
+              inputMode="decimal"
+              onChange={(event) => setElevenLabsEstimatedUsdPer1kChars(event.target.value)}
+              placeholder="0.12"
+              style={textInputStyle}
+              type="text"
+              value={elevenLabsEstimatedUsdPer1kChars}
+            />
+          </label>
+
+          <div style={infoCardStyle}>
+            <strong style={{ color: "var(--text-primary)", fontSize: 13 }}>
+              Dialogue TTS sabitleri
+            </strong>
+            <span style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.7 }}>
+              Dialogue pipeline ElevenLabs `eleven_v3` modeliyle once `wav_44100` dener;
+              plan izin vermiyorsa otomatik `mp3_44100_128` fallback kullanir. Buradaki USD
+              alani dashboard tahmini icindir; faturalama kaynagi degildir.
+            </span>
+          </div>
         </SettingsSection>
       </motion.section>
     </section>
@@ -594,7 +635,7 @@ const headerStyle = {
   borderRadius: 26,
   border: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(140deg, rgba(245, 158, 11, 0.08), transparent 28%), var(--bg-surface)",
+    "linear-gradient(140deg, rgba(0, 0, 0, 0.03), transparent 28%), var(--bg-surface)",
 } satisfies CSSProperties;
 
 const badgeStyle = {
@@ -677,9 +718,9 @@ const keyIconWrapStyle = {
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 12,
-  border: "1px solid rgba(245, 158, 11, 0.22)",
-  background: "rgba(245, 158, 11, 0.08)",
-  color: "var(--accent)",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "rgba(0, 0, 0, 0.04)",
+  color: "var(--text-primary)",
   flexShrink: 0,
 } satisfies CSSProperties;
 
@@ -825,4 +866,24 @@ const selectStyle = {
   outline: "none",
   fontSize: 13,
   cursor: "pointer",
+} satisfies CSSProperties;
+
+const textInputStyle = {
+  width: "100%",
+  padding: "12px 14px",
+  borderRadius: 14,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-primary)",
+  outline: "none",
+  fontSize: 13,
+} satisfies CSSProperties;
+
+const infoCardStyle = {
+  display: "grid",
+  gap: 6,
+  padding: "14px 16px",
+  borderRadius: 18,
+  border: "1px solid rgba(59, 130, 246, 0.18)",
+  background: "rgba(59, 130, 246, 0.06)",
 } satisfies CSSProperties;

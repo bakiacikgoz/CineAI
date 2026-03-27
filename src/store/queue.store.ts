@@ -8,7 +8,8 @@ export type JobType =
   | "video"
   | "upscale"
   | "coverage_image"
-  | "coverage_video";
+  | "coverage_video"
+  | "audio_dialogue";
 
 export interface Job {
   id: string;

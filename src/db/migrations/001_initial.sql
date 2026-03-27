@@ -44,6 +44,24 @@ CREATE TABLE IF NOT EXISTS shots (
   character_id     TEXT,
   character_look_id TEXT,
   include_character_prompt INTEGER NOT NULL DEFAULT 1,
+  audio_direction_json TEXT,
+  audio_dialogue_preview TEXT,
+  audio_status     TEXT DEFAULT 'none',
+  audio_master_path TEXT,
+  audio_model_used TEXT,
+  audio_output_format TEXT,
+  audio_character_count INTEGER,
+  audio_cost_usd   REAL,
+  audio_timestamps_json TEXT,
+  audio_content_hash TEXT,
+  audio_error      TEXT,
+  audio_optimized_dialogue_json TEXT,
+  audio_optimized_dialogue_preview TEXT,
+  audio_optimizer_model TEXT,
+  audio_optimizer_source_hash TEXT,
+  audio_generation_profile_json TEXT,
+  audio_dialogue_override_json TEXT,
+  audio_take_history_json TEXT,
   source_file      TEXT,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
@@ -98,6 +116,44 @@ CREATE TABLE IF NOT EXISTS character_looks (
   is_default        INTEGER NOT NULL DEFAULT 0,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_voice_bindings (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id),
+  character_id   TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  voice_id       TEXT NOT NULL,
+  voice_name     TEXT,
+  voice_provider TEXT NOT NULL DEFAULT 'elevenlabs',
+  model_id       TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  UNIQUE(project_id, character_id)
+);
+
+CREATE TABLE IF NOT EXISTS audio_speaker_aliases (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id),
+  speaker_key   TEXT NOT NULL,
+  speaker_label TEXT NOT NULL,
+  character_id  TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE(project_id, speaker_key)
+);
+
+CREATE TABLE IF NOT EXISTS audio_speaker_voice_bindings (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id),
+  speaker_key    TEXT NOT NULL,
+  speaker_label  TEXT NOT NULL,
+  voice_id       TEXT NOT NULL,
+  voice_name     TEXT,
+  voice_provider TEXT NOT NULL DEFAULT 'elevenlabs',
+  model_id       TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  UNIQUE(project_id, speaker_key)
 );
 
 CREATE TABLE IF NOT EXISTS job_queue (

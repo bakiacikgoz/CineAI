@@ -6,8 +6,14 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { resolveImageGeneratorDefaults } from "@/lib/generator-defaults";
 import { IMAGE_MODELS, calcImageCost, type ImageModelId } from "@/services/fal.service";
 import { getAppSettings } from "@/lib/store";
-import { enqueueImageJobs } from "@/services/jobqueue.service";
+import { getShots, type ShotRow } from "@/services/import.service";
+import { enqueueImageJobs, enqueueStoryboardFrameJob } from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
+import {
+  ImageEditModal,
+  type ImageEditModalDraft,
+  type ImageEditSubmitPayload,
+} from "@/components/media/ImageEditModal";
 import {
   GeneratedImageGallery,
   type GalleryAsset,
@@ -21,6 +27,8 @@ import {
 import { motion } from "framer-motion";
 
 const ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:2"] as const;
+type GeneratorMode = "shot-linked" | "freeform";
+type ShotStage = "start" | "end";
 
 type ImageGeneratorLocationState = {
   promptTemplateContent?: string;
@@ -28,9 +36,14 @@ type ImageGeneratorLocationState = {
   promptTemplateModel?: string;
   modelPresetId?: string;
   referenceAssetPath?: string;
+  shotId?: string;
+  shotStage?: ShotStage;
 };
 
 const DEFAULT_IMAGE_GENERATOR_STATE: ImageGeneratorScreenState = {
+  mode: "freeform",
+  selectedShotId: "",
+  shotStage: "start",
   prompt: "",
   model: "fal-ai/nano-banana-2",
   aspectRatio: "16:9",
@@ -87,6 +100,10 @@ function normalizePathForMatch(value: string): string {
   return value.replace(/\\/g, "/").toLowerCase();
 }
 
+function buildStoryboardImageVariantSuffix(stage: ShotStage, batchKey: string, index: number): string {
+  return `manual_${stage}_${batchKey}_v${String(index + 1).padStart(2, "0")}`;
+}
+
 function findMatchingImageJob(asset: GalleryAsset, jobs: Job[]): Job | null {
   const normalizedAssetPath = normalizePathForMatch(asset.absolutePath);
   const normalizedRelativePath = normalizePathForMatch(asset.file_path);
@@ -125,6 +142,10 @@ export function ImageGenerator() {
   const setImageGeneratorState = useScreenStateStore(
     (state) => state.setImageGeneratorState,
   );
+  const [mode, setMode] = useState<GeneratorMode>("freeform");
+  const [shots, setShots] = useState<ShotRow[]>([]);
+  const [selectedShotId, setSelectedShotId] = useState("");
+  const [shotStage, setShotStage] = useState<ShotStage>("start");
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<ImageModelId>("fal-ai/nano-banana-2");
   const [aspectRatio, setAspectRatio] = useState<(typeof ASPECT_RATIOS)[number]>("16:9");
@@ -133,7 +154,12 @@ export function ImageGenerator() {
   const [quantity, setQuantity] = useState(4);
   const [refImage, setRefImage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [imageEditDraft, setImageEditDraft] = useState<ImageEditModalDraft | null>(null);
+  const [submittingImageEdit, setSubmittingImageEdit] = useState(false);
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? 1440 : window.innerWidth,
+  );
 
   const imageQueueJobs = useMemo(
     () =>
@@ -151,6 +177,15 @@ export function ImageGenerator() {
         ),
     [activeProjectId, queueJobs],
   );
+  const selectedShot = shots.find((shot) => shot.id === selectedShotId) ?? null;
+
+  useEffect(() => {
+    if (mode !== "shot-linked" || !selectedShot) {
+      return;
+    }
+
+    setPrompt(shotStage === "end" ? selectedShot.promptEnd ?? "" : selectedShot.promptStart ?? "");
+  }, [mode, selectedShot?.id, selectedShot?.promptEnd, selectedShot?.promptStart, shotStage]);
 
   function inferAspectRatioFromAsset(asset: GalleryAsset): ImageAspectRatio {
     if (!asset.width || !asset.height) {
@@ -174,6 +209,9 @@ export function ImageGenerator() {
   }
 
   function applyGeneratorState(nextState: ImageGeneratorScreenState) {
+    setMode(nextState.mode);
+    setSelectedShotId(nextState.selectedShotId);
+    setShotStage(nextState.shotStage);
     setPrompt(nextState.prompt);
     setModel(
       nextState.model in IMAGE_MODELS
@@ -196,6 +234,20 @@ export function ImageGenerator() {
       setRefImage(null);
     }
   }, [model]);
+
+  useEffect(() => {
+    function handleResize() {
+      setViewportWidth(window.innerWidth);
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    setImageEditDraft(null);
+    setSubmittingImageEdit(false);
+  }, [activeProjectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -255,6 +307,48 @@ export function ImageGenerator() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (!activeProject) {
+      setShots([]);
+      setSelectedShotId("");
+      return;
+    }
+
+    const project = activeProject;
+    let cancelled = false;
+
+    async function loadShotsForGenerator() {
+      try {
+        const shotRows = await getShots(project.id, { includeArchived: false });
+
+        if (cancelled) {
+          return;
+        }
+
+        const mainShots = shotRows.filter((shot) => !shot.parentShotId);
+        setShots(mainShots);
+        setSelectedShotId((current) =>
+          current && mainShots.some((shot) => shot.id === current)
+            ? current
+            : (mainShots[0]?.id ?? ""),
+        );
+      } catch (error) {
+        console.error("Failed to load storyboard shots for image generator", error);
+
+        if (!cancelled) {
+          setShots([]);
+          setSelectedShotId("");
+        }
+      }
+    }
+
+    void loadShotsForGenerator();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject]);
+
+  useEffect(() => {
     const state = location.state as ImageGeneratorLocationState | null;
 
     if (!activeProjectId || !state) {
@@ -302,6 +396,13 @@ export function ImageGenerator() {
         notices.push("Reference frame attached");
       }
 
+      if (inboundState?.shotId) {
+        setMode("shot-linked");
+        setSelectedShotId(inboundState.shotId);
+        setShotStage(inboundState.shotStage ?? "start");
+        notices.push("Storyboard shot focused");
+      }
+
       if (inboundState?.modelPresetId && !cancelled && inboundPreset) {
         notices.push(`Preset loaded: ${inboundPreset.name}`);
       }
@@ -325,6 +426,9 @@ export function ImageGenerator() {
     }
 
     setImageGeneratorState(activeProjectId, {
+      mode,
+      selectedShotId,
+      shotStage,
       prompt,
       model,
       aspectRatio,
@@ -338,14 +442,30 @@ export function ImageGenerator() {
     aspectRatio,
     cfg,
     model,
+    mode,
     prompt,
     quantity,
     refImage,
+    selectedShotId,
     setImageGeneratorState,
+    shotStage,
     steps,
   ]);
 
   const estimatedCost = calcImageCost(model, quantity);
+  const hasStoryboardShots = shots.length > 0;
+  const isCompactLayout = viewportWidth < 1240;
+  const canGenerate =
+    Boolean(prompt.trim()) &&
+    !generating &&
+    (mode !== "shot-linked" || Boolean(selectedShot));
+  const generateButtonLabel = generating
+    ? "Kuyruga aliniyor..."
+    : mode === "shot-linked"
+      ? selectedShot
+        ? `${selectedShot.shotNumber} ${shotStage.toUpperCase()} uret${quantity > 1 ? ` (${quantity})` : ""}`
+        : "Once shot sec"
+      : `Uret (${quantity} gorsel)`;
 
   function handleUseGalleryReference(absolutePath: string) {
     if (!IMAGE_MODELS[model].supportsImg2Img) {
@@ -416,6 +536,55 @@ export function ImageGenerator() {
     );
   }
 
+  function handleEditAsset(asset: GalleryAsset) {
+    setImageEditDraft({
+      id: asset.id,
+      label: asset.filename,
+      absolutePath: asset.absolutePath,
+      previewUrl: asset.assetUrl,
+      width: asset.width,
+      height: asset.height,
+    });
+  }
+
+  async function handleSubmitImageEdit(payload: ImageEditSubmitPayload) {
+    const draft = imageEditDraft;
+
+    if (!draft) {
+      throw new Error("Duzenlenecek kare bulunamadi.");
+    }
+
+    setSubmittingImageEdit(true);
+
+    try {
+      await enqueueImageJobs({
+        model: "fal-ai/nano-banana-2",
+        prompt: payload.prompt,
+        aspectRatio: payload.aspectRatio,
+        cfg,
+        steps,
+        quantity: 1,
+        refImagePath: payload.referenceImagePaths[0],
+        referenceImagePaths: payload.referenceImagePaths,
+        assetTags: ["edited"],
+      });
+
+      setImageEditDraft(null);
+      setInboundNotice(
+        `${draft.label} icin isaretlemeli duzenleme Nano Banana 2 ile kuyruga alindi.`,
+      );
+      await message(`${draft.label} icin duzenleme isi kuyruga eklendi.`, {
+        title: "Image Generator",
+        kind: "info",
+      });
+    } catch (error) {
+      console.error("Failed to enqueue edited image job", error);
+      throw error;
+    } finally {
+      setSubmittingImageEdit(false);
+    }
+  }
+
   async function handleGenerate() {
     if (!prompt.trim() || !activeProject) {
       return;
@@ -424,19 +593,74 @@ export function ImageGenerator() {
     setGenerating(true);
 
     try {
-      await enqueueImageJobs({
-        model,
-        prompt: prompt.trim(),
-        aspectRatio,
-        cfg,
-        steps,
-        quantity,
-        refImagePath: refImage ?? undefined,
-      });
-      await message(`${quantity} gorsel is kuyruguna eklendi.`, {
-        title: "Image Generator",
-        kind: "info",
-      });
+      if (mode === "shot-linked") {
+        if (!selectedShot) {
+          await message("Shot-linked uretim icin once bir storyboard shot sec.", {
+            title: "Image Generator",
+            kind: "warning",
+          });
+          return;
+        }
+
+        if (quantity === 1) {
+          await enqueueStoryboardFrameJob({
+            shotId: selectedShot.id,
+            prompt: prompt.trim(),
+            mode: shotStage,
+            model,
+            aspectRatio,
+            cfg,
+            steps,
+            referenceImagePaths: refImage ? [refImage] : undefined,
+          });
+        } else {
+          const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+          for (let index = 0; index < quantity; index += 1) {
+            await enqueueStoryboardFrameJob({
+              shotId: selectedShot.id,
+              prompt: prompt.trim(),
+              mode: shotStage,
+              model,
+              aspectRatio,
+              cfg,
+              steps,
+              priority: 120 - index,
+              outputSuffix: buildStoryboardImageVariantSuffix(shotStage, batchKey, index),
+              assetTags: [`stage:${shotStage}`],
+              persistToShotPath: false,
+              completeStatus: shotStage === "start"
+                ? (selectedShot.imageStartPath ? "done" : "review")
+                : (selectedShot.imageEndPath ? "done" : "review"),
+              referenceImagePaths: refImage ? [refImage] : undefined,
+            });
+          }
+        }
+
+        await message(
+          quantity === 1
+            ? `${selectedShot.shotNumber} icin ${shotStage.toUpperCase()} isi kuyruga eklendi.`
+            : `${selectedShot.shotNumber} icin ${quantity} ${shotStage.toUpperCase()} varyanti kuyruga eklendi.`,
+          {
+            title: "Image Generator",
+            kind: "info",
+          },
+        );
+      } else {
+        await enqueueImageJobs({
+          model,
+          prompt: prompt.trim(),
+          aspectRatio,
+          cfg,
+          steps,
+          quantity,
+          refImagePath: refImage ?? undefined,
+        });
+        await message(`${quantity} gorsel is kuyruguna eklendi.`, {
+          title: "Image Generator",
+          kind: "info",
+        });
+      }
     } catch (error) {
       console.error("Failed to enqueue image jobs", error);
       await message(
@@ -462,7 +686,7 @@ export function ImageGenerator() {
             borderRadius: 24,
             border: "1px solid var(--border-subtle)",
             background:
-              "radial-gradient(circle at top, rgba(245, 158, 11, 0.14), transparent 38%), var(--bg-surface)",
+              "radial-gradient(circle at top, rgba(0, 0, 0, 0.03), transparent 38%), var(--bg-surface)",
           }}
         >
           <div
@@ -496,7 +720,9 @@ export function ImageGenerator() {
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "340px minmax(0, 1fr)",
+          gridTemplateColumns: isCompactLayout
+            ? "minmax(0, 1fr)"
+            : "minmax(360px, 390px) minmax(0, 1fr)",
           gap: 22,
           minHeight: "calc(100vh - var(--topbar-h) - 112px)",
         }}
@@ -506,12 +732,13 @@ export function ImageGenerator() {
             display: "grid",
             alignContent: "start",
             gap: 16,
+            minWidth: 0,
             padding: 18,
             borderRadius: 24,
             border: "1px solid var(--border-subtle)",
             background:
-              "linear-gradient(180deg, rgba(245, 158, 11, 0.08), transparent 26%), var(--bg-surface)",
-            boxShadow: "0 30px 90px rgba(0, 0, 0, 0.26)",
+              "linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 26%), var(--bg-surface)",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
           }}
         >
           <div
@@ -529,8 +756,8 @@ export function ImageGenerator() {
                 alignItems: "center",
                 gap: 8,
                 borderRadius: 999,
-                border: "1px solid rgba(245, 158, 11, 0.24)",
-                background: "rgba(245, 158, 11, 0.1)",
+                border: "1px solid rgba(0, 0, 0, 0.1)",
+                background: "rgba(0, 0, 0, 0.04)",
                 padding: "6px 10px",
                 fontSize: 11,
                 letterSpacing: "0.08em",
@@ -545,31 +772,122 @@ export function ImageGenerator() {
               Gorsel Uret
             </div>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-              Promptu, model secimini ve referans kareyi ayarla. Isler kuyruga
-              duser, galeri tarafinda ilerleme aninda gorunur.
+              Shot-linked mod storyboard promptlarini kullanir. Freeform modda promptu,
+              modeli ve referans kareyi serbest ayarlayabilirsin.
             </p>
             {inboundNotice ? (
               <div
                 style={{
                   padding: "10px 12px",
                   borderRadius: 14,
-                  border: "1px solid rgba(245, 158, 11, 0.22)",
-                  background: "rgba(245, 158, 11, 0.08)",
-                  color: "var(--text-secondary)",
-                  fontSize: 12,
-                  lineHeight: 1.6,
-                }}
-              >
-                {inboundNotice}
-              </div>
-            ) : null}
+                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                background: "rgba(0, 0, 0, 0.03)",
+                color: "var(--text-secondary)",
+                fontSize: 12,
+                lineHeight: 1.6,
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+              }}
+            >
+              {inboundNotice}
+            </div>
+          ) : null}
           </div>
+
+          <FieldGroup label="Mod" icon={<Sparkles size={14} />}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+              {([
+                ["shot-linked", "Shot-linked"],
+                ["freeform", "Freeform"],
+              ] as const).map(([value, label]) => (
+                <button
+                  className={mode === value ? "btn-primary" : "btn-secondary"}
+                  key={value}
+                  onClick={() => setMode(value)}
+                  style={{ flex: 1 }}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </FieldGroup>
+
+          {mode === "shot-linked" ? (
+            <>
+              <FieldGroup label="Shot" icon={<Layers3 size={14} />}>
+                <select
+                  className="studio-field"
+                  onChange={(event) => setSelectedShotId(event.target.value)}
+                  style={selectStyle}
+                  value={selectedShotId}
+                >
+                  {shots.map((shot) => (
+                    <option key={shot.id} value={shot.id}>
+                      {shot.shotNumber} - {shot.summaryTr ?? "Storyboard shot"}
+                    </option>
+                  ))}
+                </select>
+                {!hasStoryboardShots ? (
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 14,
+                      border: "1px solid var(--border-subtle)",
+                      background: "rgba(0, 0, 0, 0.02)",
+                      color: "var(--text-secondary)",
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    Bu projede henuz storyboard shot'i yok. Storyboard ekranindan shot import
+                    edip sonra shot-linked uretime gecebilirsin.
+                  </div>
+                ) : selectedShot ? (
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 14,
+                      border: "1px solid rgba(0, 0, 0, 0.08)",
+                      background: "rgba(0, 0, 0, 0.03)",
+                      color: "var(--text-secondary)",
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {selectedShot.shotNumber} secili. {shotStage.toUpperCase()} promptu otomatik
+                    yuklenir; istersen burada degistirip varyant uretebilirsin.
+                  </div>
+                ) : null}
+              </FieldGroup>
+
+          <FieldGroup label="Hedef Kare">
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {(["start", "end"] as const).map((value) => (
+                    <button
+                      className={shotStage === value ? "btn-primary" : "btn-secondary"}
+                      key={value}
+                      onClick={() => setShotStage(value)}
+                      style={{ flex: 1 }}
+                      type="button"
+                    >
+                      {value.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </FieldGroup>
+            </>
+          ) : null}
 
           <FieldGroup label="Prompt" icon={<WandSparkles size={14} />}>
             <textarea
               className="studio-field"
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Sahneyi, lens dilini, isik ve atmosferi tarif et..."
+              placeholder={
+                mode === "shot-linked"
+                  ? "Secili shot promptu burada yuklenir; istersen duzenleyebilirsin..."
+                  : "Sahneyi, lens dilini, isik ve atmosferi tarif et..."
+              }
               rows={7}
               style={textareaStyle}
               value={prompt}
@@ -594,9 +912,9 @@ export function ImageGenerator() {
                       padding: 12,
                       borderRadius: 14,
                       border: `1px solid ${
-                        active ? "rgba(245, 158, 11, 0.34)" : "var(--border-subtle)"
+                        active ? "rgba(0, 0, 0, 0.2)" : "var(--border-subtle)"
                       }`,
-                      background: active ? "rgba(245, 158, 11, 0.08)" : "var(--bg-elevated)",
+                      background: active ? "rgba(0, 0, 0, 0.04)" : "var(--bg-elevated)",
                       color: "inherit",
                       cursor: "pointer",
                       textAlign: "left",
@@ -642,10 +960,10 @@ export function ImageGenerator() {
                       padding: "7px 12px",
                       borderRadius: 999,
                       border: `1px solid ${
-                        active ? "rgba(245, 158, 11, 0.34)" : "var(--border-default)"
+                        active ? "#000000" : "var(--border-default)"
                       }`,
-                      background: active ? "var(--accent)" : "var(--bg-elevated)",
-                      color: active ? "#140b00" : "var(--text-secondary)",
+                      background: active ? "#000000" : "var(--bg-elevated)",
+                      color: active ? "#ffffff" : "var(--text-secondary)",
                       cursor: "pointer",
                       fontSize: 12,
                       fontWeight: 600,
@@ -774,22 +1092,38 @@ export function ImageGenerator() {
 
             <button
               className="btn-primary"
-              disabled={!prompt.trim() || generating}
+              disabled={!canGenerate}
               onClick={() => void handleGenerate()}
               style={{ width: "100%", padding: "12px 16px" }}
               type="button"
             >
-              {generating ? "Kuyruga aliniyor..." : `Uret (${quantity} gorsel)`}
+              {generateButtonLabel}
             </button>
           </div>
         </aside>
 
         <GeneratedImageGallery
+          onEditAsset={handleEditAsset}
           onReuseGeneration={handleReuseGeneration}
           onUseAsReference={handleUseGalleryReference}
           projectFolderPath={activeProject.folderPath}
         />
       </section>
+      <ImageEditModal
+        dialogTitle="Image Generator"
+        draft={imageEditDraft}
+        guideFilePrefix="guide_still"
+        onClose={() => {
+          if (submittingImageEdit) {
+            return;
+          }
+
+          setImageEditDraft(null);
+        }}
+        onSubmit={handleSubmitImageEdit}
+        projectFolderPath={activeProject.folderPath}
+        submitting={submittingImageEdit}
+      />
     </motion.section>
   );
 }
@@ -804,7 +1138,7 @@ function FieldGroup({
   children: ReactNode;
 }) {
   return (
-    <section style={{ display: "grid", gap: 8 }}>
+    <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <div
         style={{
           display: "flex",
@@ -858,11 +1192,12 @@ function RefImagePicker({
       style={{
         display: "grid",
         gap: 10,
+        minWidth: 0,
         width: "100%",
         padding: 14,
         borderRadius: 16,
         border: `1px dashed ${disabled ? "var(--border-subtle)" : "var(--border-default)"}`,
-        background: value ? "rgba(245, 158, 11, 0.08)" : "var(--bg-elevated)",
+        background: value ? "rgba(0, 0, 0, 0.03)" : "var(--bg-elevated)",
         color: "inherit",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.6 : 1,
@@ -870,25 +1205,45 @@ function RefImagePicker({
       type="button"
     >
       {previewUrl ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
           <img
             alt="Ref image"
             src={previewUrl}
             style={{
+              flexShrink: 0,
               width: 56,
               height: 56,
               borderRadius: 10,
               objectFit: "cover",
-              border: "1px solid rgba(255, 255, 255, 0.08)",
+              border: "1px solid rgba(0, 0, 0, 0.08)",
             }}
           />
-          <div style={{ display: "grid", gap: 4, textAlign: "left" }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>{fileName}</span>
-            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          <div style={{ display: "grid", gap: 4, minWidth: 0, flex: 1, textAlign: "left" }}>
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={fileName}
+            >
+              {fileName}
+            </span>
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
               Img2img referansi olarak gonderilecek.
             </span>
           </div>
-          <span
+          <button
             onClick={(event) => {
               event.stopPropagation();
               onChange(null);
@@ -896,6 +1251,7 @@ function RefImagePicker({
             style={{
               marginLeft: "auto",
               display: "inline-flex",
+              flexShrink: 0,
               width: 28,
               height: 28,
               alignItems: "center",
@@ -903,10 +1259,12 @@ function RefImagePicker({
               borderRadius: 999,
               border: "1px solid var(--border-default)",
               background: "var(--bg-surface)",
+              color: "var(--text-primary)",
             }}
+            type="button"
           >
             <X size={14} />
-          </span>
+          </button>
         </div>
       ) : (
         <div style={{ display: "grid", justifyItems: "center", gap: 8 }}>
@@ -933,6 +1291,16 @@ const textareaStyle: CSSProperties = {
   outline: "none",
   font: "inherit",
   lineHeight: 1.7,
+};
+
+const selectStyle: CSSProperties = {
+  width: "100%",
+  padding: "11px 12px",
+  borderRadius: 14,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-elevated)",
+  color: "var(--text-primary)",
+  outline: "none",
 };
 
 const stepperButtonStyle: CSSProperties = {

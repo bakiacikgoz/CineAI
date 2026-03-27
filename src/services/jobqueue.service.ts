@@ -5,6 +5,11 @@ import { getCoveragePrompt, resolveBulkScope } from "@/lib/bulk-production";
 import { composeShotCharacterPrompt } from "@/lib/character-studio";
 import { getBulkVideoJobType } from "@/lib/job-queue-types";
 import { saveAsset } from "@/services/asset.service";
+import {
+  generateShotDialogueAudio,
+  getDialogueAudioShotById,
+  listDialogueAudioShots,
+} from "@/services/audio-pipeline.service";
 import { resolveStartImage, waitForJob } from "@/services/chain.service";
 import { resolveShotCharacterContext } from "@/services/character.service";
 import { logCost } from "@/services/cost.service";
@@ -31,6 +36,7 @@ import {
   getShotById,
   getShots,
   resolveShotExternalReferencePath,
+  updateShotAudioFields,
   updateShotPaths,
   type ShotRow,
 } from "@/services/import.service";
@@ -48,6 +54,30 @@ type RegisteredTask = {
 };
 
 type StoryboardFrameMode = "start" | "end" | "coverage";
+
+async function syncAudioDialogueShotStatusFromQueue(
+  shotId: string,
+  nextStatus: "queued" | "cancelled",
+): Promise<void> {
+  const detail = await getDialogueAudioShotById(shotId);
+
+  if (!detail) {
+    return;
+  }
+
+  if (nextStatus === "queued") {
+    await updateShotAudioFields(shotId, {
+      audioStatus: "queued",
+      audioError: null,
+    });
+    return;
+  }
+
+  await updateShotAudioFields(shotId, {
+    audioStatus: detail.blockerReason ? "blocked" : "pending",
+    audioError: detail.blockerReason,
+  });
+}
 
 class JobRunner {
   private running = 0;
@@ -82,6 +112,9 @@ class JobRunner {
       startedAt: undefined,
       completedAt: undefined,
     });
+    if (job.type === "audio_dialogue" && job.shotId) {
+      void syncAudioDialogueShotStatusFromQueue(job.shotId, "queued");
+    }
 
     this.pendingIds = this.pendingIds.filter((pendingId) => pendingId !== jobId);
     this.pendingIds.push(jobId);
@@ -105,6 +138,9 @@ class JobRunner {
       completedAt: Date.now(),
       errorMsg: undefined,
     });
+    if (job.type === "audio_dialogue" && job.shotId) {
+      void syncAudioDialogueShotStatusFromQueue(job.shotId, "cancelled");
+    }
   }
 
   resume() {
@@ -256,6 +292,7 @@ export interface EnqueueStoryboardFrameJobParams {
   assetTags?: string[];
   persistToShotPath?: boolean;
   completeStatus?: string;
+  referenceImagePaths?: string[];
 }
 
 export interface EnqueueVideoJobParams {
@@ -289,6 +326,11 @@ export interface EnqueueUpscaleJobParams {
   filterId?: number;
   priority?: number;
   outputSuffix?: string;
+}
+
+export interface EnqueueAudioDialogueJobParams {
+  shotId: string;
+  priority?: number;
 }
 
 export interface BulkProductionOptions {
@@ -538,8 +580,10 @@ async function resolveStartReferenceForShot(
 async function resolveDirectReferenceForShot(
   shot: ShotRow,
   mode: "end" | "coverage",
+  allowMissingReference = false,
 ): Promise<string[]> {
-  const missingReferenceMessage = getShotMissingExternalReferenceMessage(shot, mode);
+  const missingReferenceMessage =
+    !allowMissingReference ? getShotMissingExternalReferenceMessage(shot, mode) : null;
 
   if (missingReferenceMessage) {
     throw new Error(missingReferenceMessage);
@@ -565,9 +609,14 @@ async function resolveEndReferenceForShot(
   shot: ShotRow,
   jobId: string,
   priority: number,
+  allowMissingReference = false,
 ): Promise<string[]> {
   const startReferencePath = await ensureVideoInputPath(shot, "start", jobId, priority);
-  const externalReferencePaths = await resolveDirectReferenceForShot(shot, "end");
+  const externalReferencePaths = await resolveDirectReferenceForShot(
+    shot,
+    "end",
+    allowMissingReference,
+  );
 
   return Array.from(
     new Set(
@@ -591,6 +640,10 @@ async function ensureVideoInputPath(
     throw new Error("Aktif proje yok.");
   }
 
+  if (!allowDependencyResolution) {
+    return undefined;
+  }
+
   const storedPath = mode === "start" ? shot.imageStartPath : shot.imageEndPath;
 
   if (storedPath) {
@@ -599,10 +652,6 @@ async function ensureVideoInputPath(
     if (await exists(absolutePath)) {
       return absolutePath;
     }
-  }
-
-  if (!allowDependencyResolution) {
-    return undefined;
   }
 
   const jobType = mode === "start" ? "image_start" : "image_end";
@@ -803,7 +852,13 @@ export async function enqueueStoryboardFrameJob(
     throw new Error("Prompt bos olamaz.");
   }
 
-  const missingReferenceMessage = getShotMissingExternalReferenceMessage(shot, params.mode);
+  const explicitReferenceImagePaths = Array.from(
+    new Set((params.referenceImagePaths ?? []).filter((value): value is string => Boolean(value))),
+  );
+  const missingReferenceMessage =
+    explicitReferenceImagePaths.length === 0
+      ? getShotMissingExternalReferenceMessage(shot, params.mode)
+      : null;
 
   if (missingReferenceMessage) {
     throw new Error(missingReferenceMessage);
@@ -845,11 +900,13 @@ export async function enqueueStoryboardFrameJob(
       steps,
       mode,
       outputSuffix: params.outputSuffix,
+      referenceImagePaths: explicitReferenceImagePaths,
       assetTags: params.assetTags,
       persistToShotPath,
       completeStatus,
       basePrompt: params.prompt.trim(),
     },
+    refImagePath: explicitReferenceImagePaths[0],
     progress: 0,
     costUsd: costPerImage,
     queuedAt: Date.now(),
@@ -864,22 +921,36 @@ export async function enqueueStoryboardFrameJob(
     try {
       await updateShotGenerationState(shot.id, mode, "generating");
 
-      let referenceImagePaths: string[] = [];
+      let referenceImagePaths = explicitReferenceImagePaths;
 
       if (mode === "start") {
-        referenceImagePaths = await resolveStartReferenceForShot(
+        const resolvedReferenceImagePaths = await resolveStartReferenceForShot(
           shot,
           jobId,
           params.priority ?? 120,
+        );
+        referenceImagePaths = Array.from(
+          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
         );
       } else if (mode === "end") {
-        referenceImagePaths = await resolveEndReferenceForShot(
+        const resolvedReferenceImagePaths = await resolveEndReferenceForShot(
           shot,
           jobId,
           params.priority ?? 120,
+          explicitReferenceImagePaths.length > 0,
+        );
+        referenceImagePaths = Array.from(
+          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
         );
       } else {
-        referenceImagePaths = await resolveDirectReferenceForShot(shot, mode);
+        const resolvedReferenceImagePaths = await resolveDirectReferenceForShot(
+          shot,
+          mode,
+          explicitReferenceImagePaths.length > 0,
+        );
+        referenceImagePaths = Array.from(
+          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
+        );
       }
 
       updateProgress(10);
@@ -1299,6 +1370,138 @@ export async function enqueueUpscaleJobs(
   });
 
   return [jobId];
+}
+
+export async function enqueueAudioDialogueJob(
+  params: EnqueueAudioDialogueJobParams,
+): Promise<string> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const shot = await getShotById(params.shotId);
+
+  if (!shot) {
+    throw new Error("Shot bulunamadi.");
+  }
+
+  const detail = await getDialogueAudioShotById(shot.id);
+
+  if (!detail) {
+    throw new Error("Bu shot icin parse edilen diyalog transcript yok.");
+  }
+
+  if (detail.blockerReason) {
+    await updateShotAudioFields(shot.id, {
+      audioStatus: "blocked",
+      audioError: detail.blockerReason,
+    });
+    throw new Error(detail.blockerReason);
+  }
+
+  const existingJob = useQueueStore
+    .getState()
+    .jobs.slice()
+    .reverse()
+    .find(
+      (job) =>
+        job.type === "audio_dialogue" &&
+        job.shotId === shot.id &&
+        (job.status === "queued" || job.status === "active"),
+    );
+
+  if (existingJob) {
+    return existingJob.id;
+  }
+
+  const jobId = uuidv4();
+  const job: Job = {
+    id: jobId,
+    projectId: project.id,
+    type: "audio_dialogue",
+    status: "queued",
+    priority: params.priority ?? 85,
+    shotId: shot.id,
+    model: "eleven_v3",
+    prompt: detail.audioDirection?.dialoguePreview ?? shot.promptVideo ?? shot.shotNumber,
+    params: {
+      outputFormat: "wav_44100 -> mp3_44100_128 fallback",
+      characterCount: detail.characterCount,
+    },
+    progress: 0,
+    queuedAt: Date.now(),
+  };
+
+  await updateShotAudioFields(shot.id, {
+    audioStatus: "queued",
+    audioError: null,
+  });
+
+  jobRunner.enqueue(job, async (abortSignal) => {
+    const queue = useQueueStore.getState();
+    const updateProgress = (progress: number) => {
+      queue.updateJob(jobId, { progress });
+    };
+
+    const result = await generateShotDialogueAudio({
+      shotId: shot.id,
+      jobId,
+      abortSignal,
+      onProgress: updateProgress,
+    });
+
+    queue.updateJob(jobId, {
+      resultPath: result.outputPath,
+      costUsd: result.costUsd,
+      progress: 96,
+    });
+  });
+
+  return jobId;
+}
+
+export async function enqueueBulkAudioDialogueJobs(params?: {
+  filter?: "all" | "missing" | "selected";
+  selectedShotIds?: string[];
+}): Promise<{ jobCount: number }> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const filter = params?.filter ?? "missing";
+  const selectedShotIds = new Set(params?.selectedShotIds ?? []);
+  const dialogueShots = await listDialogueAudioShots(project.id);
+  const readyShots = dialogueShots.filter((detail) => {
+    if (!detail.isReady) {
+      return false;
+    }
+
+    if (filter === "missing") {
+      return !detail.shot.audioMasterPath;
+    }
+
+    if (filter === "selected") {
+      return selectedShotIds.has(detail.shot.id);
+    }
+
+    return true;
+  });
+
+  let jobCount = 0;
+
+  for (const [index, detail] of readyShots.entries()) {
+    await enqueueAudioDialogueJob({
+      shotId: detail.shot.id,
+      priority: 85 - index,
+    });
+    jobCount += 1;
+  }
+
+  return { jobCount };
 }
 
 export async function enqueueBulkProduction(

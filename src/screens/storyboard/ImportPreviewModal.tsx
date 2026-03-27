@@ -14,6 +14,8 @@ export function ImportPreviewModal({
   onConfirm,
   onClose,
 }: ImportPreviewModalProps) {
+  const isUpdateFlow = preview.existingShotCount > 0;
+
   return (
     <div
       onClick={onClose}
@@ -24,8 +26,8 @@ export function ImportPreviewModal({
         display: "grid",
         placeItems: "center",
         padding: 20,
-        background: "rgba(0, 0, 0, 0.72)",
-        backdropFilter: "blur(10px)",
+        background: "rgba(0, 0, 0, 0.4)",
+        backdropFilter: "blur(8px)",
       }}
     >
       <div
@@ -37,16 +39,19 @@ export function ImportPreviewModal({
           padding: 26,
           borderRadius: 24,
           border: "1px solid var(--border-default)",
-          background:
-            "linear-gradient(180deg, rgba(24, 24, 28, 0.98), rgba(13, 13, 16, 0.98))",
-          boxShadow: "0 36px 120px rgba(0, 0, 0, 0.52)",
+          background: "#ffffff",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
         }}
       >
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 24, fontWeight: 600 }}>Import preview</div>
+          <div style={{ fontSize: 24, fontWeight: 600 }}>
+            {isUpdateFlow ? "Shot guncelleme preview" : "Import preview"}
+          </div>
           <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            SHOT markdown dosyalari parse edilip mevcut storyboard tablolarina upsert
-            edilecek.
+            SHOT markdown dosyalari parse edilip storyboard tablosuna uygulanacak.
+            {isUpdateFlow
+              ? " Ayni shot number'a sahip kayitlar yeni markdown icerigiyle guncellenecek."
+              : " Ilk importta yeni shot kayitlari olusturulacak."}
           </p>
         </div>
 
@@ -73,8 +78,9 @@ export function ImportPreviewModal({
             lineHeight: 1.7,
           }}
         >
-          {preview.files.length} markdown dosyasi islenecek. Ayni shot number'a sahip
-          kayitlar guncellenecek.
+          {preview.files.length} markdown dosyasi islenecek. Mevcut storyboardda{" "}
+          {preview.existingShotCount} shot var. Bu importta {preview.matchedShotCount} shot
+          guncellenecek, {preview.newShotCount} yeni shot eklenecek.
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
@@ -88,7 +94,9 @@ export function ImportPreviewModal({
             type="button"
           >
             <Download size={15} />
-            {importing ? "Importing..." : "Import"}
+            {importing
+              ? (isUpdateFlow ? "Guncelleniyor..." : "Importing...")
+              : (isUpdateFlow ? "Shotlari guncelle" : "Import")}
           </button>
         </div>
       </div>
@@ -105,11 +113,11 @@ function StatCard({ label, value }: { label: string; value: number }) {
         padding: "14px 12px",
         borderRadius: 16,
         border: "1px solid var(--border-subtle)",
-        background: "rgba(255, 255, 255, 0.03)",
+        background: "rgba(0, 0, 0, 0.03)",
         textAlign: "center",
       }}
     >
-      <strong style={{ fontSize: 24, color: "var(--accent)" }}>{value}</strong>
+      <strong style={{ fontSize: 24, color: "var(--text-primary)" }}>{value}</strong>
       <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
         {label}
       </span>

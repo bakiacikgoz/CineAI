@@ -59,9 +59,14 @@ async function runInitialMigration(db: Database): Promise<void> {
     await db.execute(statement);
   }
 
+  await ensureDbSchema(db);
+}
+
+async function ensureDbSchema(db: Database): Promise<void> {
   await ensureShotColumns(db);
   await ensureAssetSchema(db);
   await ensureCharacterSchema(db);
+  await ensureAudioSchema(db);
 }
 
 async function ensureShotColumns(db: Database): Promise<void> {
@@ -71,6 +76,10 @@ async function ensureShotColumns(db: Database): Promise<void> {
     {
       name: "is_archived",
       sql: "ALTER TABLE shots ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+    },
+    {
+      name: "use_previous_end_for_start",
+      sql: "ALTER TABLE shots ADD COLUMN use_previous_end_for_start INTEGER NOT NULL DEFAULT 1",
     },
     {
       name: "requires_external_reference",
@@ -87,6 +96,78 @@ async function ensureShotColumns(db: Database): Promise<void> {
     {
       name: "external_reference_path",
       sql: "ALTER TABLE shots ADD COLUMN external_reference_path TEXT",
+    },
+    {
+      name: "audio_direction_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_direction_json TEXT",
+    },
+    {
+      name: "audio_dialogue_preview",
+      sql: "ALTER TABLE shots ADD COLUMN audio_dialogue_preview TEXT",
+    },
+    {
+      name: "audio_status",
+      sql: "ALTER TABLE shots ADD COLUMN audio_status TEXT DEFAULT 'none'",
+    },
+    {
+      name: "audio_master_path",
+      sql: "ALTER TABLE shots ADD COLUMN audio_master_path TEXT",
+    },
+    {
+      name: "audio_model_used",
+      sql: "ALTER TABLE shots ADD COLUMN audio_model_used TEXT",
+    },
+    {
+      name: "audio_output_format",
+      sql: "ALTER TABLE shots ADD COLUMN audio_output_format TEXT",
+    },
+    {
+      name: "audio_character_count",
+      sql: "ALTER TABLE shots ADD COLUMN audio_character_count INTEGER",
+    },
+    {
+      name: "audio_cost_usd",
+      sql: "ALTER TABLE shots ADD COLUMN audio_cost_usd REAL",
+    },
+    {
+      name: "audio_timestamps_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_timestamps_json TEXT",
+    },
+    {
+      name: "audio_content_hash",
+      sql: "ALTER TABLE shots ADD COLUMN audio_content_hash TEXT",
+    },
+    {
+      name: "audio_error",
+      sql: "ALTER TABLE shots ADD COLUMN audio_error TEXT",
+    },
+    {
+      name: "audio_optimized_dialogue_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_optimized_dialogue_json TEXT",
+    },
+    {
+      name: "audio_optimized_dialogue_preview",
+      sql: "ALTER TABLE shots ADD COLUMN audio_optimized_dialogue_preview TEXT",
+    },
+    {
+      name: "audio_optimizer_model",
+      sql: "ALTER TABLE shots ADD COLUMN audio_optimizer_model TEXT",
+    },
+    {
+      name: "audio_optimizer_source_hash",
+      sql: "ALTER TABLE shots ADD COLUMN audio_optimizer_source_hash TEXT",
+    },
+    {
+      name: "audio_generation_profile_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_generation_profile_json TEXT",
+    },
+    {
+      name: "audio_dialogue_override_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_dialogue_override_json TEXT",
+    },
+    {
+      name: "audio_take_history_json",
+      sql: "ALTER TABLE shots ADD COLUMN audio_take_history_json TEXT",
     },
   ];
 
@@ -175,6 +256,70 @@ async function ensureCharacterSchema(db: Database): Promise<void> {
   }
 
   await backfillLegacyCharacterLooks(db);
+}
+
+async function ensureAudioSchema(db: Database): Promise<void> {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS character_voice_bindings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      voice_id TEXT NOT NULL,
+      voice_name TEXT,
+      voice_provider TEXT NOT NULL DEFAULT 'elevenlabs',
+      model_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(project_id, character_id)
+    )`,
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_character_voice_bindings_project_id ON character_voice_bindings(project_id)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_character_voice_bindings_character_id ON character_voice_bindings(character_id)",
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS audio_speaker_aliases (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      speaker_key TEXT NOT NULL,
+      speaker_label TEXT NOT NULL,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(project_id, speaker_key)
+    )`,
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_audio_speaker_aliases_project_id ON audio_speaker_aliases(project_id)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_audio_speaker_aliases_character_id ON audio_speaker_aliases(character_id)",
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS audio_speaker_voice_bindings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      speaker_key TEXT NOT NULL,
+      speaker_label TEXT NOT NULL,
+      voice_id TEXT NOT NULL,
+      voice_name TEXT,
+      voice_provider TEXT NOT NULL DEFAULT 'elevenlabs',
+      model_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(project_id, speaker_key)
+    )`,
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_audio_speaker_voice_bindings_project_id ON audio_speaker_voice_bindings(project_id)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_audio_speaker_voice_bindings_speaker_key ON audio_speaker_voice_bindings(speaker_key)",
+  );
 }
 
 async function ensureAssetSchema(db: Database): Promise<void> {
@@ -294,7 +439,10 @@ export async function getDb(projectFolderPath: string): Promise<Database> {
   const existingConnection = connections.get(connectionPath);
 
   if (existingConnection) {
-    return existingConnection;
+    return existingConnection.then(async (db) => {
+      await ensureDbSchema(db);
+      return db;
+    });
   }
 
   const nextConnection = (async () => {

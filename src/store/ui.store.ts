@@ -8,6 +8,7 @@ export type ActiveScreen =
   | "job-queue"
   | "asset-library"
   | "characters"
+  | "audio-pipeline"
   | "prompt-library"
   | "model-manager"
   | "cost-dashboard"

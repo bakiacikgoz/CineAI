@@ -5,16 +5,19 @@ import { message } from "@tauri-apps/plugin-dialog";
 import {
   Check,
   Clapperboard,
+  Download,
   Expand,
   FolderOpen,
   Image as ImageIcon,
   ImagePlus,
   LoaderCircle,
+  Pencil,
   RotateCcw,
 } from "lucide-react";
 import { MediaLightbox, type MediaLightboxItem } from "@/components/media/MediaLightbox";
 import { MediaPaginationControls } from "@/components/media/MediaPaginationControls";
 import { getAssetGroupName, normalizeAssetGroupName } from "@/lib/asset-tags";
+import { downloadMediaFile } from "@/lib/media-download";
 import { getAssets, updateAssetGroups, type AssetWithTags } from "@/services/asset.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
@@ -39,12 +42,14 @@ type GeneratedImageGalleryProps = {
   projectFolderPath: string;
   onUseAsReference: (absolutePath: string) => void;
   onReuseGeneration: (asset: GalleryAsset) => void;
+  onEditAsset: (asset: GalleryAsset) => void;
 };
 
 export function GeneratedImageGallery({
   projectFolderPath,
   onUseAsReference,
   onReuseGeneration,
+  onEditAsset,
 }: GeneratedImageGalleryProps) {
   const activeProject = useProjectStore((state) => state.activeProject);
   const queueJobs = useQueueStore((state) => state.jobs);
@@ -291,6 +296,21 @@ export function GeneratedImageGallery({
     }
   }
 
+  async function handleDownloadAsset(asset: GalleryAsset) {
+    try {
+      await downloadMediaFile({
+        sourcePath: asset.absolutePath,
+        suggestedName: asset.filename,
+        dialogTitle: asset.filename,
+      });
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Gorsel indirilemedi.", {
+        title: "Galeri",
+        kind: "error",
+      });
+    }
+  }
+
   return (
     <>
       <section
@@ -302,7 +322,7 @@ export function GeneratedImageGallery({
           borderRadius: 28,
           border: "1px solid var(--border-subtle)",
           background:
-            "linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%), var(--bg-surface)",
+            "linear-gradient(180deg, rgba(0, 0, 0, 0.01), transparent 22%), var(--bg-surface)",
         }}
       >
         <header
@@ -600,10 +620,14 @@ export function GeneratedImageGallery({
                                 title: asset.filename,
                                 subtitle: `${(asset.model_used ?? "unknown").split("/").pop()} / ${asset.width ?? "-"} x ${asset.height ?? "-"}`,
                                 description: asset.prompt ?? "Prompt kaydi yok.",
+                                downloadPath: asset.absolutePath,
+                                downloadName: asset.filename,
                               })
                             }
+                            onDownload={() => void handleDownloadAsset(asset)}
                             onUseAsReference={() => onUseAsReference(asset.absolutePath)}
                             onReuseGeneration={() => onReuseGeneration(asset)}
+                            onEdit={() => onEditAsset(asset)}
                             onToggleSelect={() => toggleSelectedAsset(asset.id)}
                             selected={selectedAssetIdSet.has(asset.id)}
                           />
@@ -647,7 +671,7 @@ function ImageSkeleton({ progress }: { progress: number }) {
           display: "grid",
           placeItems: "center",
           background:
-            "linear-gradient(135deg, rgba(245, 158, 11, 0.16), transparent 50%), var(--bg-overlay)",
+            "linear-gradient(135deg, rgba(0, 0, 0, 0.04), transparent 50%), var(--bg-overlay)",
         }}
       >
         <LoaderCircle className="spin-slow" size={24} style={{ color: "var(--accent)" }} />
@@ -659,7 +683,7 @@ function ImageSkeleton({ progress }: { progress: number }) {
             height: 4,
             overflow: "hidden",
             borderRadius: 999,
-            background: "rgba(255, 255, 255, 0.06)",
+            background: "rgba(0, 0, 0, 0.06)",
           }}
         >
           <div
@@ -684,16 +708,20 @@ function ImageCard({
   asset,
   groupName,
   onOpen,
+  onDownload,
   onUseAsReference,
   onReuseGeneration,
+  onEdit,
   onToggleSelect,
   selected,
 }: {
   asset: GalleryAsset;
   groupName: string | null;
   onOpen: () => void;
+  onDownload: () => void;
   onUseAsReference: () => void;
   onReuseGeneration: () => void;
+  onEdit: () => void;
   onToggleSelect: () => void;
   selected: boolean;
 }) {
@@ -704,11 +732,11 @@ function ImageCard({
         gap: 0,
         overflow: "hidden",
         borderRadius: 18,
-        border: selected ? "1px solid rgba(245, 158, 11, 0.35)" : "1px solid var(--border-subtle)",
-        background: "var(--bg-elevated)",
+        border: selected ? "1.5px solid #000000" : "1px solid #e8e8e8",
+        background: "#ffffff",
         boxShadow: selected
-          ? "0 0 0 1px rgba(245, 158, 11, 0.18), 0 24px 70px rgba(0, 0, 0, 0.22)"
-          : "0 24px 70px rgba(0, 0, 0, 0.2)",
+          ? "0 0 0 1px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08)"
+          : "0 1px 3px rgba(0, 0, 0, 0.04)",
       }}
     >
       <div style={{ position: "relative" }}>
@@ -751,9 +779,9 @@ function ImageCard({
             minWidth: 34,
             padding: "6px 10px",
             borderRadius: 999,
-            background: selected ? "rgba(245, 158, 11, 0.92)" : "rgba(10, 10, 12, 0.72)",
-            borderColor: selected ? "rgba(245, 158, 11, 0.96)" : "rgba(255, 255, 255, 0.12)",
-            color: selected ? "#140c00" : "#f3f4f6",
+            background: selected ? "#000000" : "rgba(255, 255, 255, 0.88)",
+            borderColor: selected ? "#000000" : "rgba(0, 0, 0, 0.12)",
+            color: selected ? "#ffffff" : "#1a1c1c",
             backdropFilter: "blur(10px)",
           }}
           type="button"
@@ -768,64 +796,13 @@ function ImageCard({
             position: "absolute",
             top: 10,
             right: 10,
-            padding: "6px 10px",
-            borderRadius: 999,
-            background: "rgba(10, 10, 12, 0.72)",
-            borderColor: "rgba(255, 255, 255, 0.12)",
-            color: "#f3f4f6",
-            backdropFilter: "blur(10px)",
+            zIndex: 2,
+            ...overlayIconButtonStyle,
           }}
+          title="Buyut"
           type="button"
         >
           <Expand size={12} />
-        </button>
-
-        <button
-          aria-label="Referans olarak kullan"
-          className="btn-secondary"
-          onClick={onUseAsReference}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 52,
-            width: 34,
-            minWidth: 34,
-            height: 34,
-            padding: 0,
-            borderRadius: 999,
-            background: "rgba(10, 10, 12, 0.72)",
-            borderColor: "rgba(255, 255, 255, 0.12)",
-            color: "#f3f4f6",
-            backdropFilter: "blur(10px)",
-          }}
-          title="Referans olarak kullan"
-          type="button"
-        >
-          <ImagePlus size={13} />
-        </button>
-
-        <button
-          aria-label="Tum ayarlari geri yukle"
-          className="btn-secondary"
-          onClick={onReuseGeneration}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 94,
-            width: 34,
-            minWidth: 34,
-            height: 34,
-            padding: 0,
-            borderRadius: 999,
-            background: "rgba(10, 10, 12, 0.72)",
-            borderColor: "rgba(255, 255, 255, 0.12)",
-            color: "#f3f4f6",
-            backdropFilter: "blur(10px)",
-          }}
-          title="Tum ayarlari geri yukle"
-          type="button"
-        >
-          <RotateCcw size={13} />
         </button>
 
         {groupName ? (
@@ -834,14 +811,15 @@ function ImageCard({
               position: "absolute",
               left: 10,
               bottom: 10,
+              zIndex: 1,
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
               borderRadius: 999,
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              background: "rgba(0, 0, 0, 0.58)",
+              border: "1px solid rgba(0, 0, 0, 0.12)",
+              background: "rgba(255, 255, 255, 0.88)",
               padding: "6px 10px",
-              color: "#f3f4f6",
+              color: "#1a1c1c",
               fontSize: 11,
             }}
           >
@@ -851,20 +829,26 @@ function ImageCard({
         ) : null}
       </div>
 
-      <button
+      <div
         onClick={onOpen}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen();
+          }
+        }}
         style={{
           display: "grid",
           gap: 8,
           padding: 14,
-          border: "none",
           background: "transparent",
           cursor: "pointer",
           textAlign: "left",
           color: "inherit",
         }}
-        type="button"
-        >
+        role="button"
+        tabIndex={0}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
           <span
             style={{
@@ -888,6 +872,64 @@ function ImageCard({
           {(asset.model_used ?? "unknown").split("/").pop()} / {asset.width ?? "-"} x{" "}
           {asset.height ?? "-"}
         </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            aria-label="Gorseli indir"
+            className="btn-secondary"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDownload();
+            }}
+            style={cardActionButtonStyle}
+            title="Gorseli indir"
+            type="button"
+          >
+            <Download size={13} />
+            Indir
+          </button>
+          <button
+            aria-label="Gorseli isaretleyerek duzenle"
+            className="btn-secondary"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit();
+            }}
+            style={cardActionButtonStyle}
+            title="Gorseli isaretleyerek duzenle"
+            type="button"
+          >
+            <Pencil size={13} />
+            Duzenle
+          </button>
+          <button
+            aria-label="Tum ayarlari geri yukle"
+            className="btn-secondary"
+            onClick={(event) => {
+              event.stopPropagation();
+              onReuseGeneration();
+            }}
+            style={cardActionButtonStyle}
+            title="Tum ayarlari geri yukle"
+            type="button"
+          >
+            <RotateCcw size={13} />
+            Ayarlari yukle
+          </button>
+          <button
+            aria-label="Referans olarak kullan"
+            className="btn-secondary"
+            onClick={(event) => {
+              event.stopPropagation();
+              onUseAsReference();
+            }}
+            style={cardActionButtonStyle}
+            title="Referans olarak kullan"
+            type="button"
+          >
+            <ImagePlus size={13} />
+            Referans yap
+          </button>
+        </div>
         <p
           style={{
             margin: 0,
@@ -903,7 +945,7 @@ function ImageCard({
         >
           {asset.prompt ?? "Prompt kaydi yok."}
         </p>
-      </button>
+      </div>
 
     </article>
   );
@@ -918,4 +960,22 @@ const collectionInputStyle = {
   color: "var(--text-primary)",
   fontSize: 12,
   outline: "none",
+} satisfies React.CSSProperties;
+
+const overlayIconButtonStyle = {
+  width: 34,
+  minWidth: 34,
+  height: 34,
+  padding: 0,
+  borderRadius: 999,
+  background: "rgba(255, 255, 255, 0.88)",
+  borderColor: "rgba(0, 0, 0, 0.12)",
+  color: "#1a1c1c",
+  backdropFilter: "blur(10px)",
+} satisfies React.CSSProperties;
+
+const cardActionButtonStyle = {
+  padding: "6px 10px",
+  minHeight: 32,
+  fontSize: 11,
 } satisfies React.CSSProperties;

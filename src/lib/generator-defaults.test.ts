@@ -54,7 +54,7 @@ describe("generator defaults", () => {
       duration: 5,
       aspectRatio: "16:9",
       cfg: 0.45,
-      generateAudio: false,
+      generateAudio: true,
       shotType: "customize",
     });
   });

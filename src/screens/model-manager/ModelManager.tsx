@@ -521,7 +521,7 @@ const heroStyle = {
   padding: 24,
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(135deg, rgba(245,158,11,0.08), transparent 28%), var(--bg-surface)",
+  background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 28%), var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const eyebrowStyle = {
@@ -531,9 +531,9 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(245, 158, 11, 0.24)",
-  background: "rgba(245, 158, 11, 0.1)",
-  color: "var(--accent)",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "rgba(0, 0, 0, 0.04)",
+  color: "var(--text-primary)",
   fontSize: 11,
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -620,8 +620,8 @@ const tagStyle = {
   display: "inline-flex",
   padding: "4px 8px",
   borderRadius: 999,
-  background: "rgba(245, 158, 11, 0.1)",
-  color: "var(--accent)",
+  background: "rgba(0, 0, 0, 0.05)",
+  color: "var(--text-primary)",
   fontSize: 11,
 } satisfies React.CSSProperties;
 
@@ -629,7 +629,7 @@ const mutedTagStyle = {
   display: "inline-flex",
   padding: "4px 8px",
   borderRadius: 999,
-  background: "rgba(255,255,255,0.04)",
+  background: "rgba(0,0,0,0.03)",
   color: "var(--text-secondary)",
   fontSize: 11,
 } satisfies React.CSSProperties;
@@ -662,8 +662,8 @@ const modalBackdropStyle = {
   display: "grid",
   placeItems: "center",
   padding: 20,
-  background: "rgba(0, 0, 0, 0.72)",
-  backdropFilter: "blur(10px)",
+  background: "rgba(0, 0, 0, 0.4)",
+  backdropFilter: "blur(8px)",
 } satisfies React.CSSProperties;
 
 const modalPanelStyle = {

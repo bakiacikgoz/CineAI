@@ -96,7 +96,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
           style={{
             position: "absolute",
             inset: 0,
-            background: "linear-gradient(135deg, rgba(245,158,11,0.08), transparent 50%)",
+            background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 50%)",
             pointerEvents: "none",
             zIndex: 0,
           }}
@@ -146,12 +146,13 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
               gap: 5,
               padding: "4px 10px",
               borderRadius: 999,
-              background: "rgba(0,0,0,0.6)",
+              background: "rgba(255,255,255,0.85)",
               backdropFilter: "blur(8px)",
               fontSize: 11,
               fontWeight: 600,
-              color: "var(--text-primary)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              color: "#1a1c1c",
+              border: "1px solid rgba(0,0,0,0.06)",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
             }}
           >
             <ImageIcon size={11} style={{ color: "var(--accent)" }} />
@@ -202,7 +203,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
                   width: "100%",
                   height: 3,
                   borderRadius: 999,
-                  background: "rgba(255,255,255,0.06)",
+                  background: "rgba(0,0,0,0.06)",
                   overflow: "hidden",
                 }}
               >
@@ -213,7 +214,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
                   style={{
                     height: "100%",
                     borderRadius: 999,
-                    background: "linear-gradient(90deg, var(--accent), #ffbd44)",
+                    background: "linear-gradient(90deg, #000000, #333333)",
                   }}
                 />
               </div>
@@ -243,7 +244,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
                   width: "100%",
                   height: 3,
                   borderRadius: 999,
-                  background: "rgba(255,255,255,0.06)",
+                  background: "rgba(0,0,0,0.06)",
                   overflow: "hidden",
                 }}
               >

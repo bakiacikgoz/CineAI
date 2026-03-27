@@ -49,7 +49,7 @@ export function EmptyState({ onNew, onOpen }: EmptyStateProps) {
           width: 320,
           height: 320,
           borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(245,158,11,0.1), transparent 65%)",
+          background: "radial-gradient(circle, rgba(0,0,0,0.03), transparent 65%)",
           filter: "blur(50px)",
           pointerEvents: "none",
         }}
@@ -94,10 +94,10 @@ export function EmptyState({ onNew, onOpen }: EmptyStateProps) {
             width: 88,
             height: 88,
             borderRadius: 24,
-            border: "1px solid rgba(245,158,11,0.15)",
+            border: "1px solid rgba(0,0,0,0.08)",
             background:
-              "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))",
-            boxShadow: "0 20px 60px rgba(245,158,11,0.06)",
+              "linear-gradient(135deg, rgba(0,0,0,0.03), rgba(0,0,0,0.01))",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.04)",
           }}
         >
           <Film size={36} strokeWidth={1.3} style={{ color: "var(--accent)", opacity: 0.7 }} />
@@ -135,9 +135,7 @@ export function EmptyState({ onNew, onOpen }: EmptyStateProps) {
         <h2
           className="dashboard-empty-title"
           style={{
-            background: "linear-gradient(135deg, var(--text-primary), var(--text-secondary))",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
+            color: "var(--text-primary)",
             fontSize: 26,
           }}
         >

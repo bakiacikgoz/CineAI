@@ -59,6 +59,7 @@ export interface AssetDeletionImpact {
   shotCount: number;
   slotCount: number;
   slotLabels: string[];
+  fileDeletePending?: boolean;
 }
 
 export interface ImportedProjectAsset {
@@ -86,6 +87,48 @@ const VIDEO_EXTENSIONS = new Set([
   ".avi",
   ".mkv",
 ]);
+
+function normalizeAssetPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+async function removeAssetFileWithRetry(absolutePath: string, retries = 3): Promise<void> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (!(await exists(absolutePath))) {
+      return;
+    }
+
+    try {
+      await remove(absolutePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+}
+
+async function tryRemoveAssetFile(absolutePath: string): Promise<boolean> {
+  try {
+    await removeAssetFileWithRetry(absolutePath);
+    return false;
+  } catch (error) {
+    console.warn("Failed to remove asset file after logical delete", {
+      absolutePath,
+      error,
+    });
+    return true;
+  }
+}
 
 function parseAssetTags(tags: string | null): string[] {
   if (!tags) {
@@ -441,7 +484,7 @@ export async function deleteAssetRecord(assetId: string): Promise<AssetDeletionI
 
   const detachUpdates = buildAssetDetachUpdates(
     await getShots(project.id, { includeArchived: true }),
-    asset.file_path,
+    normalizeAssetPath(asset.file_path),
   );
 
   for (const detachUpdate of detachUpdates) {
@@ -453,14 +496,18 @@ export async function deleteAssetRecord(assetId: string): Promise<AssetDeletionI
   await syncProjectDbMirror();
   await syncActiveProjectPresentation();
   const siblingRows = await db.select<Array<{ total: number }>>(
-    "SELECT COUNT(*) AS total FROM assets WHERE file_path = $1",
-    [asset.file_path],
+    "SELECT COUNT(*) AS total FROM assets WHERE REPLACE(file_path, '\\\\', '/') = $1",
+    [normalizeAssetPath(asset.file_path)],
   );
   const hasSiblingAsset = Number(siblingRows[0]?.total ?? 0) > 0;
 
-  const absolutePath = await join(project.folderPath, ...asset.file_path.split(/[\\/]+/).filter(Boolean));
+  const absolutePath = await join(
+    project.folderPath,
+    ...normalizeAssetPath(asset.file_path).split(/[\\/]+/).filter(Boolean),
+  );
+  let fileDeletePending = false;
   if (!hasSiblingAsset && (await exists(absolutePath))) {
-    await remove(absolutePath);
+    fileDeletePending = await tryRemoveAssetFile(absolutePath);
   }
 
   return {
@@ -469,5 +516,49 @@ export async function deleteAssetRecord(assetId: string): Promise<AssetDeletionI
     slotLabels: detachUpdates.flatMap((update) =>
       update.slots.map((slot) => `${update.shotNumber} ${slot.toUpperCase()}`),
     ),
+    fileDeletePending,
+  };
+}
+
+export async function deleteAssetPath(assetPath: string): Promise<AssetDeletionImpact> {
+  const project = useProjectStore.getState().activeProject;
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const normalizedPath = normalizeAssetPath(assetPath);
+  const detachUpdates = buildAssetDetachUpdates(
+    await getShots(project.id, { includeArchived: true }),
+    normalizedPath,
+  );
+
+  for (const detachUpdate of detachUpdates) {
+    await updateShotPaths(detachUpdate.shotId, detachUpdate.updates);
+  }
+
+  const db = await getProjectDb();
+  await db.execute(
+    "DELETE FROM assets WHERE REPLACE(file_path, '\\\\', '/') = $1",
+    [normalizedPath],
+  );
+  await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
+
+  const absolutePath = await join(
+    project.folderPath,
+    ...normalizedPath.split(/[\\/]+/).filter(Boolean),
+  );
+  let fileDeletePending = false;
+  if (await exists(absolutePath)) {
+    fileDeletePending = await tryRemoveAssetFile(absolutePath);
+  }
+
+  return {
+    shotCount: detachUpdates.length,
+    slotCount: detachUpdates.reduce((total, update) => total + update.slots.length, 0),
+    slotLabels: detachUpdates.flatMap((update) =>
+      update.slots.map((slot) => `${update.shotNumber} ${slot.toUpperCase()}`),
+    ),
+    fileDeletePending,
   };
 }

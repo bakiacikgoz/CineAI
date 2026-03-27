@@ -1,6 +1,7 @@
 import { extname } from "@tauri-apps/api/path";
-import { fal } from "@fal-ai/client";
+import { ApiError, ValidationError, fal } from "@fal-ai/client";
 import { readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { extractAudioDirectionBlock } from "@/lib/audio-direction-parser";
 import { getApiKey } from "@/lib/store";
 
 export const IMAGE_MODELS = {
@@ -32,6 +33,22 @@ export const VIDEO_MODELS = {
 export type VideoModelId = keyof typeof VIDEO_MODELS;
 export type VideoAspectRatio = "16:9" | "9:16" | "1:1";
 export type KlingShotType = "customize" | "intelligent";
+export type KlingMultiShotDuration =
+  | "1"
+  | "2"
+  | "3"
+  | "4"
+  | "5"
+  | "6"
+  | "7"
+  | "8"
+  | "9"
+  | "10"
+  | "11"
+  | "12"
+  | "13"
+  | "14"
+  | "15";
 
 export const KLING_V3_DURATION_VALUES = [
   3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -41,7 +58,7 @@ export type KlingDuration = (typeof KLING_V3_DURATION_VALUES)[number];
 
 export interface KlingMultiPromptElement {
   prompt: string;
-  duration?: KlingDuration;
+  duration?: KlingMultiShotDuration;
 }
 
 export interface KlingPromptAnalysis {
@@ -176,7 +193,62 @@ function buildKlingMultiPromptPrompt(
   shotPrompt: string,
   sharedSuffix: string,
 ): string {
-  return [sharedPrefix, shotPrompt, sharedSuffix].filter(Boolean).join("\n\n").trim();
+  let prompt = shotPrompt.trim();
+
+  if (sharedPrefix) {
+    const withPrefix = [sharedPrefix, prompt].filter(Boolean).join("\n\n").trim();
+
+    if (withPrefix.length <= 512) {
+      prompt = withPrefix;
+    }
+  }
+
+  if (sharedSuffix) {
+    const withSuffix = [prompt, sharedSuffix].filter(Boolean).join("\n\n").trim();
+
+    if (withSuffix.length <= 512) {
+      prompt = withSuffix;
+    }
+  }
+
+  return prompt;
+}
+
+function stripKlingShotHeader(shotPrompt: string): string {
+  return shotPrompt.replace(/^\s*Shot\s+\d+\s*[,:.\-]\s*/i, "").trim();
+}
+
+function summarizeFalApiError(error: unknown): string {
+  if (error instanceof ValidationError) {
+    const detail = error.fieldErrors
+      .map((item) => {
+        const location = item.loc?.join(".") || "body";
+        return `${location}: ${item.msg}`;
+      })
+      .filter(Boolean)
+      .join(" | ");
+
+    return [error.message, detail, error.requestId ? `requestId: ${error.requestId}` : undefined]
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  if (error instanceof ApiError) {
+    const bodyMessage =
+      error.body && typeof error.body === "object" && "message" in error.body
+        ? String(error.body.message)
+        : undefined;
+
+    return [
+      error.message || `Fal istegi HTTP ${error.status} ile basarisiz oldu.`,
+      bodyMessage,
+      error.requestId ? `requestId: ${error.requestId}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function isKlingDuration(value: number): value is KlingDuration {
@@ -216,65 +288,41 @@ export function analyzeKlingVideoPrompt(prompt: string): KlingPromptAnalysis {
 
   const avoidMatch = /\n?Avoid:\s*([\s\S]*)$/i.exec(normalized);
   const withoutAvoid = avoidMatch ? normalized.slice(0, avoidMatch.index).trim() : normalized;
+  const audioExtraction = extractAudioDirectionBlock(withoutAvoid);
+  const withoutAudio = audioExtraction.promptWithoutAudioBlock || withoutAvoid;
   const negativePrompt = dedupePromptList([
     DEFAULT_KLING_NEGATIVE_PROMPT,
     normalizeAvoidBlock(avoidMatch?.[1] ?? ""),
   ]);
 
   const shotHeaderRegex = /^\s*Shot\s+\d+\s*[,:.\-].*$/gim;
-  const shotHeaders = Array.from(withoutAvoid.matchAll(shotHeaderRegex))
+  const shotHeaders = Array.from(withoutAudio.matchAll(shotHeaderRegex))
     .map((match) => ({
       index: typeof match.index === "number" ? match.index : -1,
     }))
     .filter((match) => match.index >= 0);
-  const hasAudioDirection = /(^|\n)\s*Audio direction\s*:/i.test(withoutAvoid);
+  const hasAudioDirection = audioExtraction.hasAudioDirection;
 
   if (shotHeaders.length < 2) {
     return {
       detectedMultiShot: false,
       shotCount: shotHeaders.length,
       hasAudioDirection,
-      prompt: withoutAvoid,
+      prompt: withoutAudio,
       multiPrompt: null,
       negativePrompt,
     };
   }
 
-  const trailingSectionRegex =
-    /^\s*(Audio direction:|Language:|Type:|Dialogue transcript:|SFX:|Ambience:|Music:|Mix target:|No on-screen subtitles\/captions\.)/im;
-  const sharedPrefix = withoutAvoid.slice(0, shotHeaders[0].index).trim();
+  const sharedPrefix = withoutAudio.slice(0, shotHeaders[0].index).trim();
   const multiPrompt: KlingMultiPromptElement[] = [];
-  const lastShotStart = shotHeaders[shotHeaders.length - 1]?.index ?? 0;
-  const trailingMatch = trailingSectionRegex.exec(withoutAvoid.slice(lastShotStart));
-  const sharedSuffixStartIndex =
-    trailingMatch && typeof trailingMatch.index === "number" && trailingMatch.index > 0
-      ? lastShotStart + trailingMatch.index
-      : -1;
-  const sharedSuffix =
-    sharedSuffixStartIndex >= 0
-      ? withoutAvoid.slice(sharedSuffixStartIndex).trim()
-      : "";
+  const sharedSuffix = "";
 
   shotHeaders.forEach((header, index) => {
-    const nextHeaderIndex = shotHeaders[index + 1]?.index ?? withoutAvoid.length;
-    let endIndex = nextHeaderIndex;
-
-    if (index === shotHeaders.length - 1) {
-      if (sharedSuffixStartIndex >= 0) {
-        endIndex = sharedSuffixStartIndex;
-      } else {
-        const inlineTrailingMatch = trailingSectionRegex.exec(withoutAvoid.slice(header.index));
-        if (
-          inlineTrailingMatch &&
-          typeof inlineTrailingMatch.index === "number" &&
-          inlineTrailingMatch.index > 0
-        ) {
-          endIndex = header.index + inlineTrailingMatch.index;
-        }
-      }
-    }
-
-    const shotPrompt = withoutAvoid.slice(header.index, endIndex).trim();
+    const nextHeaderIndex = shotHeaders[index + 1]?.index ?? withoutAudio.length;
+    const shotPrompt = stripKlingShotHeader(
+      withoutAudio.slice(header.index, nextHeaderIndex).trim(),
+    );
 
     if (!shotPrompt) {
       return;
@@ -289,10 +337,49 @@ export function analyzeKlingVideoPrompt(prompt: string): KlingPromptAnalysis {
     detectedMultiShot: multiPrompt.length > 1,
     shotCount: multiPrompt.length,
     hasAudioDirection,
-    prompt: withoutAvoid,
+    prompt: withoutAudio,
     multiPrompt: multiPrompt.length > 1 ? multiPrompt : null,
     negativePrompt,
   };
+}
+
+export function distributeKlingMultiShotDurations(
+  totalDuration: KlingDuration,
+  shotCount: number,
+): KlingMultiShotDuration[] {
+  if (!Number.isInteger(shotCount) || shotCount < 2) {
+    return [];
+  }
+
+  if (shotCount > totalDuration) {
+    throw new Error(
+      `Multi-shot prompt ${shotCount} bolum iceriyor. Sure en az ${shotCount}s olmali.`,
+    );
+  }
+
+  const baseDuration = Math.floor(totalDuration / shotCount);
+  const remainder = totalDuration % shotCount;
+
+  return Array.from({ length: shotCount }, (_, index) =>
+    String(baseDuration + (index < remainder ? 1 : 0)) as KlingMultiShotDuration,
+  );
+}
+
+export function getKlingMultiPromptValidationMessage(
+  promptAnalysis: KlingPromptAnalysis,
+): string | null {
+  if (!promptAnalysis.multiPrompt || promptAnalysis.multiPrompt.length < 2) {
+    return null;
+  }
+
+  const tooLongIndex = promptAnalysis.multiPrompt.findIndex((element) => element.prompt.length > 512);
+
+  if (tooLongIndex >= 0) {
+    const length = promptAnalysis.multiPrompt[tooLongIndex]?.prompt.length ?? 0;
+    return `Shot ${tooLongIndex + 1} promptu ${length} karakter. Kling multi-shot modda her shot en fazla 512 karakter olabilir. Shot bloklarini kisalt veya tek shot kullan.`;
+  }
+
+  return null;
 }
 
 async function ensureFalConfigured() {
@@ -515,7 +602,20 @@ export async function generateVideo(
   }
 
   if (promptAnalysis.multiPrompt && promptAnalysis.multiPrompt.length > 1) {
-    input.multi_prompt = promptAnalysis.multiPrompt;
+    const validationMessage = getKlingMultiPromptValidationMessage(promptAnalysis);
+
+    if (validationMessage) {
+      throw new Error(validationMessage);
+    }
+
+    const shotDurations = distributeKlingMultiShotDurations(
+      duration,
+      promptAnalysis.multiPrompt.length,
+    );
+    input.multi_prompt = promptAnalysis.multiPrompt.map((element, index) => ({
+      ...element,
+      duration: shotDurations[index],
+    }));
     input.shot_type = params.shotType ?? "customize";
   } else {
     input.prompt = promptAnalysis.prompt || prompt;
@@ -535,26 +635,46 @@ export async function generateVideo(
     },
   ) => Promise<{ data: unknown; requestId?: string }>;
 
-  const result = await subscribeVideo(model, {
-    input,
-    abortSignal,
-    mode: "polling",
-    pollInterval: 1200,
-    logs: true,
-    onQueueUpdate(update) {
-      if (update.status === "IN_QUEUE") {
-        onProgress?.(16);
-      }
+  let result: { data: unknown; requestId?: string };
 
-      if (update.status === "IN_PROGRESS") {
-        onProgress?.(62);
-      }
+  try {
+    result = await subscribeVideo(model, {
+      input,
+      abortSignal,
+      mode: "polling",
+      pollInterval: 1200,
+      logs: true,
+      onQueueUpdate(update) {
+        if (update.status === "IN_QUEUE") {
+          onProgress?.(16);
+        }
 
-      if (update.status === "COMPLETED") {
-        onProgress?.(84);
-      }
-    },
-  });
+        if (update.status === "IN_PROGRESS") {
+          onProgress?.(62);
+        }
+
+        if (update.status === "COMPLETED") {
+          onProgress?.(84);
+        }
+      },
+    });
+  } catch (error) {
+    console.error("Fal video request failed", {
+      model,
+      requestContext: {
+        duration,
+        aspectRatio: params.aspectRatio,
+        generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
+        hasEndImage: Boolean(tailImageUrl),
+        detectedMultiShot: promptAnalysis.detectedMultiShot,
+        shotCount: promptAnalysis.shotCount,
+        shotType: params.shotType,
+      },
+      error,
+    });
+
+    throw new Error(summarizeFalApiError(error));
+  }
 
   const data = result.data as {
     video?: { url?: string };

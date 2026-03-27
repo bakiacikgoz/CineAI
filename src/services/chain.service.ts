@@ -11,7 +11,11 @@ export interface ChainResolveResult {
 }
 
 export async function resolveStartImage(shot: ShotRow): Promise<ChainResolveResult> {
-  if (shot.chainStatus !== "continue" || !shot.prevShotId) {
+  if (
+    shot.chainStatus !== "continue" ||
+    !shot.prevShotId ||
+    !shot.usePreviousEndForStart
+  ) {
     return { refImagePath: null, waitForJobId: null, status: "ready" };
   }
 
@@ -27,8 +31,13 @@ export async function resolveStartImage(shot: ShotRow): Promise<ChainResolveResu
     return { refImagePath: null, waitForJobId: null, status: "ready" };
   }
 
-  if (previousShot.imageEndPath) {
-    const absolutePath = await join(project.folderPath, previousShot.imageEndPath);
+  const candidateReferencePaths = [
+    previousShot.imageEndPath,
+    previousShot.imageStartPath,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const relativePath of candidateReferencePaths) {
+    const absolutePath = await join(project.folderPath, relativePath);
 
     if (await exists(absolutePath)) {
       return {

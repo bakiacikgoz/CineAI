@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import {
+  AudioLines,
   BookText,
   Bot,
   Clapperboard,
@@ -75,6 +76,13 @@ const NAV_ITEMS: NavItem[] = [
     description: "Karakter tutarliligi",
     icon: UserRound,
     screen: "characters",
+  },
+  {
+    path: "/audio-pipeline",
+    label: "Seslendirme",
+    description: "Dialogue audio pipeline",
+    icon: AudioLines,
+    screen: "audio-pipeline",
   },
   {
     path: "/prompt-library",
@@ -165,8 +173,8 @@ export function Sidebar() {
                           alignItems: "center",
                           justifyContent: "center",
                           borderRadius: 999,
-                          background: "var(--accent)",
-                          color: "#140b00",
+                          background: "#1a1c1c",
+                          color: "#ffffff",
                           fontSize: 10,
                           fontWeight: 800,
                         }
@@ -180,8 +188,8 @@ export function Sidebar() {
                           alignItems: "center",
                           justifyContent: "center",
                           borderRadius: 999,
-                          background: "var(--accent)",
-                          color: "#140b00",
+                          background: "#1a1c1c",
+                          color: "#ffffff",
                           fontSize: 10,
                           fontWeight: 800,
                         }

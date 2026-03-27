@@ -5,6 +5,9 @@ import { AppLayout } from "@/components/layout/AppLayout";
 const AssetLibrary = lazy(async () => ({
   default: (await import("@/screens/asset-library/AssetLibrary")).AssetLibrary,
 }));
+const AudioPipeline = lazy(async () => ({
+  default: (await import("@/screens/audio-pipeline/AudioPipeline")).AudioPipeline,
+}));
 const Characters = lazy(async () => ({
   default: (await import("@/screens/characters/Characters")).Characters,
 }));
@@ -74,6 +77,7 @@ export function AppRouter() {
           <Route element={withRouteFallback(<JobQueue />)} path="job-queue" />
           <Route element={withRouteFallback(<AssetLibrary />)} path="asset-library" />
           <Route element={withRouteFallback(<Characters />)} path="characters" />
+          <Route element={withRouteFallback(<AudioPipeline />)} path="audio-pipeline" />
           <Route element={withRouteFallback(<PromptLibrary />)} path="prompt-library" />
           <Route element={withRouteFallback(<ModelManager />)} path="model-manager" />
           <Route element={withRouteFallback(<CostDashboard />)} path="cost-dashboard" />

@@ -1,3 +1,5 @@
+import { parseAudioDirection, type ParsedAudioDirection } from "@/lib/audio-direction-parser";
+
 export type ParsedShotType =
   | "main"
   | "wide"
@@ -24,6 +26,7 @@ export interface ParsedShot {
   promptStart: string | null;
   promptEnd: string | null;
   promptVideo: string | null;
+  audioDirection: ParsedAudioDirection | null;
   summaryTr: string | null;
   requiresExternalReference: boolean;
   externalReferenceName: string | null;
@@ -69,6 +72,7 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
   promptStart = extractPromptAfterHeading(md, START_PROMPT_HEADINGS);
   promptEnd = extractPromptAfterHeading(md, END_PROMPT_HEADINGS);
   promptVideo = extractPromptAfterHeading(md, VIDEO_PROMPT_HEADINGS);
+  const audioDirection = promptVideo ? parseAudioDirection(promptVideo) : null;
 
   const parsedShots: ParsedShot[] = [
     {
@@ -89,6 +93,7 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
       promptStart,
       promptEnd,
       promptVideo,
+      audioDirection,
       summaryTr,
       requiresExternalReference: mainReferenceRequirement.requiresExternalReference,
       externalReferenceName: mainReferenceRequirement.externalReferenceName,
@@ -142,6 +147,7 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
       promptStart: coveragePromptStart,
       promptEnd: extractPromptAfterHeading(block, END_PROMPT_HEADINGS),
       promptVideo: coveragePromptVideo,
+      audioDirection: coveragePromptVideo ? parseAudioDirection(coveragePromptVideo) : null,
       summaryTr: null,
       requiresExternalReference: coverageReferenceRequirement.requiresExternalReference,
       externalReferenceName: coverageReferenceRequirement.externalReferenceName,

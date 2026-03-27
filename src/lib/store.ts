@@ -5,13 +5,15 @@ let storeInstance: Store | null = null;
 export type ApiKeyName =
   | "FAL_API_KEY"
   | "TENSORPIX_API_KEY"
-  | "OPENROUTER_API_KEY";
+  | "OPENROUTER_API_KEY"
+  | "ELEVENLABS_API_KEY";
 
 export type AppSettingName =
   | "DEFAULT_IMAGE_MODEL"
   | "DEFAULT_VIDEO_MODEL"
   | "DEFAULT_TENSORPIX_FILTER"
   | "DEFAULT_UPSCALE_FACTOR"
+  | "ELEVENLABS_ESTIMATED_USD_PER_1K_CHARS"
   | "PARALLEL_LIMIT"
   | "QUEUE_PARALLEL_LIMIT"
   | "LAST_ACTIVE_PROJECT_PATH";
@@ -22,6 +24,7 @@ export interface AppSettings {
   defaultImageModel: string;
   defaultVideoModel: string;
   defaultUpscaleFactor: 2 | 4;
+  elevenLabsEstimatedUsdPer1kChars: number;
   queueParallelLimit: number;
 }
 
@@ -29,6 +32,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultImageModel: "fal-ai/nano-banana-2",
   defaultVideoModel: "fal-ai/kling-video/v3/pro/image-to-video",
   defaultUpscaleFactor: 4,
+  elevenLabsEstimatedUsdPer1kChars: 0.12,
   queueParallelLimit: 3,
 };
 
@@ -83,6 +87,7 @@ export async function getAppSettings(): Promise<AppSettings> {
     defaultImageModel,
     defaultVideoModel,
     defaultUpscaleFactor,
+    elevenLabsEstimatedUsdPer1kChars,
     queueParallelLimit,
     legacyParallelLimit,
   ] = await Promise.all([
@@ -91,6 +96,10 @@ export async function getAppSettings(): Promise<AppSettings> {
     getSetting(
       "DEFAULT_UPSCALE_FACTOR",
       DEFAULT_APP_SETTINGS.defaultUpscaleFactor,
+    ),
+    getSetting(
+      "ELEVENLABS_ESTIMATED_USD_PER_1K_CHARS",
+      DEFAULT_APP_SETTINGS.elevenLabsEstimatedUsdPer1kChars,
     ),
     getAppSetting<number>("QUEUE_PARALLEL_LIMIT"),
     getAppSetting<number>("PARALLEL_LIMIT"),
@@ -106,6 +115,9 @@ export async function getAppSettings(): Promise<AppSettings> {
       defaultUpscaleFactor === 2 || defaultUpscaleFactor === 4
         ? defaultUpscaleFactor
         : DEFAULT_APP_SETTINGS.defaultUpscaleFactor,
+    elevenLabsEstimatedUsdPer1kChars:
+      Math.max(0, Number(elevenLabsEstimatedUsdPer1kChars)) ||
+      DEFAULT_APP_SETTINGS.elevenLabsEstimatedUsdPer1kChars,
     queueParallelLimit: Math.min(
       5,
       Math.max(1, Number(resolvedParallelLimit) || 3),
@@ -131,6 +143,8 @@ export async function setAppSettings(settings: Partial<AppSettings>): Promise<vo
           ? "DEFAULT_VIDEO_MODEL"
           : key === "defaultUpscaleFactor"
             ? "DEFAULT_UPSCALE_FACTOR"
+            : key === "elevenLabsEstimatedUsdPer1kChars"
+              ? "ELEVENLABS_ESTIMATED_USD_PER_1K_CHARS"
             : "QUEUE_PARALLEL_LIMIT";
     await store.set(
       storageKey,

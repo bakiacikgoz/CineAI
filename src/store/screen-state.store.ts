@@ -16,6 +16,9 @@ export type StoryboardScreenState = {
 };
 
 export type ImageGeneratorScreenState = {
+  mode: "shot-linked" | "freeform";
+  selectedShotId: string;
+  shotStage: "start" | "end";
   prompt: string;
   model: string;
   aspectRatio: string;
@@ -57,6 +60,7 @@ export type CharactersScreenState = {
   candidateAspectRatio: string;
   candidateQuantity: number;
   selectedCharacterId: string | null;
+  viewedLookId: string | null;
   showAssignModal: boolean;
   assignShotId: string;
   assignLookId: string;

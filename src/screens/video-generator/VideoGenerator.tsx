@@ -4,6 +4,7 @@ import { join } from "@tauri-apps/api/path";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Check,
+  Download,
   Expand,
   Film,
   FolderOpen,
@@ -23,11 +24,14 @@ import {
   normalizeAssetGroupName,
   replaceAssetGroupTag,
 } from "@/lib/asset-tags";
+import { downloadMediaFile } from "@/lib/media-download";
 import { resolveVideoGeneratorDefaults } from "@/lib/generator-defaults";
 import { getAppSettings } from "@/lib/store";
 import {
   analyzeKlingVideoPrompt,
   clampKlingDuration,
+  distributeKlingMultiShotDurations,
+  getKlingMultiPromptValidationMessage,
   KLING_V3_DURATION_VALUES,
   VIDEO_MODELS,
   type KlingDuration,
@@ -91,7 +95,7 @@ const DEFAULT_VIDEO_GENERATOR_STATE: VideoGeneratorScreenState = {
   duration: 5,
   aspectRatio: "16:9",
   cfg: 0.45,
-  generateAudio: false,
+  generateAudio: true,
   shotType: "customize",
   galleryActiveGroupKey: ALL_GROUP_KEY,
   galleryGroupDraft: "",
@@ -123,7 +127,7 @@ export function VideoGenerator() {
   const [duration, setDuration] = useState<KlingDuration>(5);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("16:9");
   const [cfg, setCfg] = useState(0.45);
-  const [generateAudio, setGenerateAudio] = useState(false);
+  const [generateAudio, setGenerateAudio] = useState(true);
   const [shotType, setShotType] = useState<KlingShotType>("customize");
   const [generating, setGenerating] = useState(false);
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
@@ -196,7 +200,7 @@ export function VideoGenerator() {
         aspectRatio: resolvedDefaults.aspectRatio,
         cfg: resolvedDefaults.cfg,
         duration: resolvedDefaults.duration,
-        generateAudio: resolvedDefaults.generateAudio,
+        generateAudio: true,
         shotType: resolvedDefaults.shotType,
       });
       setInboundNotice(null);
@@ -298,7 +302,6 @@ export function VideoGenerator() {
     setLocalEndPath(null);
     setPrompt(selectedShot.promptVideo ?? "");
     setDuration(clampKlingDuration(selectedShot.durationS));
-    setGenerateAudio(analyzeKlingVideoPrompt(selectedShot.promptVideo ?? "").hasAudioDirection);
   }, [mode, selectedShot?.durationS, selectedShot?.id, selectedShot?.promptVideo]);
 
   useEffect(() => {
@@ -343,7 +346,6 @@ export function VideoGenerator() {
         setModel(resolvedDefaults.model as VideoModelId);
         setAspectRatio(resolvedDefaults.aspectRatio);
         setCfg(resolvedDefaults.cfg);
-        setGenerateAudio(resolvedDefaults.generateAudio);
         setShotType(resolvedDefaults.shotType);
         if (!selectedShot || inboundState?.modelPresetId) {
           setDuration(clampKlingDuration(resolvedDefaults.duration));
@@ -524,6 +526,21 @@ export function VideoGenerator() {
     }
   }
 
+  async function handleDownloadMedia(path: string, fileName: string, title: string) {
+    try {
+      await downloadMediaFile({
+        sourcePath: path,
+        suggestedName: fileName,
+        dialogTitle: title,
+      });
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Medya indirilemedi.", {
+        title,
+        kind: "error",
+      });
+    }
+  }
+
   async function handleGenerate() {
     if (!activeProject || !prompt.trim()) {
       return;
@@ -538,6 +555,31 @@ export function VideoGenerator() {
         kind: "warning",
       });
       return;
+    }
+
+    if (promptAnalysis.detectedMultiShot) {
+      try {
+        distributeKlingMultiShotDurations(duration, promptAnalysis.shotCount);
+      } catch (error) {
+        await message(
+          error instanceof Error ? error.message : "Multi-shot sure dagilimi gecersiz.",
+          {
+            title: "Video Generator",
+            kind: "warning",
+          },
+        );
+        return;
+      }
+
+      const validationMessage = getKlingMultiPromptValidationMessage(promptAnalysis);
+
+      if (validationMessage) {
+        await message(validationMessage, {
+          title: "Video Generator",
+          kind: "warning",
+        });
+        return;
+      }
     }
 
     setGenerating(true);
@@ -618,8 +660,8 @@ export function VideoGenerator() {
                 style={{
                   padding: "10px 12px",
                   borderRadius: 14,
-                  border: "1px solid rgba(245, 158, 11, 0.22)",
-                  background: "rgba(245, 158, 11, 0.08)",
+                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                  background: "rgba(0, 0, 0, 0.03)",
                   color: "var(--text-secondary)",
                   fontSize: 12,
                   lineHeight: 1.6,
@@ -835,7 +877,7 @@ export function VideoGenerator() {
                 padding: "12px 14px",
                 borderRadius: 16,
                 border: "1px solid var(--border-subtle)",
-                background: "rgba(255,255,255,0.03)",
+                background: "rgba(0, 0, 0, 0.02)",
               }}
             >
               <div style={{ display: "grid", gap: 4 }}>
@@ -859,8 +901,8 @@ export function VideoGenerator() {
                   gap: 10,
                   padding: "12px 14px",
                   borderRadius: 16,
-                  border: "1px solid rgba(245, 158, 11, 0.2)",
-                  background: "rgba(245, 158, 11, 0.08)",
+                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                  background: "rgba(0, 0, 0, 0.03)",
                 }}
               >
                 <div style={{ display: "grid", gap: 4 }}>
@@ -928,6 +970,16 @@ export function VideoGenerator() {
             <div style={{ display: "grid", gap: 18 }}>
               <SourcePreviewSection
                 endSource={selectedEndSource}
+                onDownloadEnd={
+                  selectedEndSource
+                    ? () =>
+                        void handleDownloadMedia(
+                          selectedEndSource.absolutePath,
+                          selectedEndSource.filename,
+                          "END",
+                        )
+                    : undefined
+                }
                 onPickEnd={() => void handlePickLocalSource("end")}
                 onPreviewEnd={
                   selectedEndSource
@@ -940,11 +992,24 @@ export function VideoGenerator() {
                     ? () => setLightboxItem(buildSourcePreviewLightboxItem(selectedStartSource, "START"))
                     : undefined
                 }
+                onDownloadStart={
+                  selectedStartSource
+                    ? () =>
+                        void handleDownloadMedia(
+                          selectedStartSource.absolutePath,
+                          selectedStartSource.filename,
+                          "START",
+                        )
+                    : undefined
+                }
                 startSource={selectedStartSource}
               />
               <VideoGallery
                 assets={videoAssets}
                 onAssetsRegrouped={handleVideoAssetsRegrouped}
+                onDownload={(asset) =>
+                  void handleDownloadMedia(asset.absolutePath, asset.filename, asset.filename)
+                }
                 onPreview={(asset) =>
                   setLightboxItem({
                     kind: "video",
@@ -952,6 +1017,8 @@ export function VideoGenerator() {
                     title: asset.filename,
                     subtitle: `${(asset.model_used ?? "unknown").split("/").pop()} / ${asset.resolution ?? "HD"}`,
                     description: asset.prompt ?? "Prompt kaydi yok.",
+                    downloadPath: asset.absolutePath,
+                    downloadName: asset.filename,
                   })
                 }
                 projectId={activeProject.id}
@@ -969,6 +1036,8 @@ export function VideoGenerator() {
 function SourcePreviewSection({
   startSource,
   endSource,
+  onDownloadStart,
+  onDownloadEnd,
   onPickStart,
   onPickEnd,
   onPreviewStart,
@@ -976,6 +1045,8 @@ function SourcePreviewSection({
 }: {
   startSource: VideoSource | null;
   endSource: VideoSource | null;
+  onDownloadStart?: () => void;
+  onDownloadEnd?: () => void;
   onPickStart: () => void;
   onPickEnd: () => void;
   onPreviewStart?: () => void;
@@ -987,8 +1058,20 @@ function SourcePreviewSection({
         Source frames
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-        <PreviewCard label="START" onPick={onPickStart} onPreview={onPreviewStart} source={startSource} />
-        <PreviewCard label="END" onPick={onPickEnd} onPreview={onPreviewEnd} source={endSource} />
+        <PreviewCard
+          label="START"
+          onDownload={onDownloadStart}
+          onPick={onPickStart}
+          onPreview={onPreviewStart}
+          source={startSource}
+        />
+        <PreviewCard
+          label="END"
+          onDownload={onDownloadEnd}
+          onPick={onPickEnd}
+          onPreview={onPreviewEnd}
+          source={endSource}
+        />
       </div>
     </section>
   );
@@ -998,11 +1081,13 @@ function PreviewCard({
   source,
   label,
   onPick,
+  onDownload,
   onPreview,
 }: {
   source: VideoSource | null;
   label: string;
   onPick: () => void;
+  onDownload?: () => void;
   onPreview?: () => void;
 }) {
   return (
@@ -1019,8 +1104,15 @@ function PreviewCard({
       <div style={{ fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
         {label}
       </div>
-      <button
+      <div
         onClick={onPick}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onPick();
+          }
+        }}
+        role="button"
         style={{
           display: "grid",
           gap: 10,
@@ -1031,7 +1123,7 @@ function PreviewCard({
           color: "inherit",
           textAlign: "left",
         }}
-        type="button"
+        tabIndex={0}
       >
         {source ? (
           <>
@@ -1042,29 +1134,59 @@ function PreviewCard({
                 src={source.assetUrl}
                 style={{ width: "100%", aspectRatio: "16 / 10", objectFit: "cover", borderRadius: 14 }}
               />
-              {onPreview ? (
-                <button
-                  className="btn-secondary"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onPreview();
-                  }}
+              {onPreview || onDownload ? (
+                <div
                   style={{
                     position: "absolute",
                     top: 10,
                     right: 10,
-                    padding: "7px 10px",
-                    borderRadius: 999,
-                    background: "rgba(10, 10, 12, 0.78)",
-                    borderColor: "rgba(255, 255, 255, 0.12)",
-                    color: "#f3f4f6",
-                    backdropFilter: "blur(10px)",
+                    display: "flex",
+                    gap: 8,
                   }}
-                  type="button"
                 >
-                  <Expand size={13} />
-                  Buyut
-                </button>
+                  {onDownload ? (
+                    <button
+                      className="btn-secondary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDownload();
+                      }}
+                      style={{
+                        padding: "7px 10px",
+                        borderRadius: 999,
+                        background: "rgba(255, 255, 255, 0.88)",
+                        borderColor: "rgba(0, 0, 0, 0.12)",
+                        color: "#1a1c1c",
+                        backdropFilter: "blur(10px)",
+                      }}
+                      type="button"
+                    >
+                      <Download size={13} />
+                      Indir
+                    </button>
+                  ) : null}
+                  {onPreview ? (
+                    <button
+                      className="btn-secondary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onPreview();
+                      }}
+                      style={{
+                        padding: "7px 10px",
+                        borderRadius: 999,
+                        background: "rgba(255, 255, 255, 0.88)",
+                        borderColor: "rgba(0, 0, 0, 0.12)",
+                        color: "#1a1c1c",
+                        backdropFilter: "blur(10px)",
+                      }}
+                      type="button"
+                    >
+                      <Expand size={13} />
+                      Buyut
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             <div style={{ display: "grid", gap: 4 }}>
@@ -1092,7 +1214,7 @@ function PreviewCard({
             <span style={{ fontSize: 11, color: "var(--accent)" }}>Tikla ve dosyadan sec</span>
           </div>
         )}
-      </button>
+      </div>
     </article>
   );
 }
@@ -1100,11 +1222,13 @@ function PreviewCard({
 function VideoGallery({
   assets,
   onAssetsRegrouped,
+  onDownload,
   onPreview,
   projectId,
 }: {
   assets: VideoAsset[];
   onAssetsRegrouped: (assetIds: string[], groupName: string | null) => void;
+  onDownload: (asset: VideoAsset) => void;
   onPreview: (asset: VideoAsset) => void;
   projectId: string;
 }) {
@@ -1410,6 +1534,7 @@ function VideoGallery({
                 asset={asset}
                 groupName={getAssetGroupName(asset.tagsList)}
                 key={asset.id}
+                onDownload={() => onDownload(asset)}
                 onPreview={() => onPreview(asset)}
                 onToggleSelect={() =>
                   setSelectedAssetIds((current) =>
@@ -1438,12 +1563,14 @@ function VideoGallery({
 function VideoCard({
   asset,
   groupName,
+  onDownload,
   onPreview,
   onToggleSelect,
   selected,
 }: {
   asset: VideoAsset;
   groupName: string | null;
+  onDownload: () => void;
   onPreview: () => void;
   onToggleSelect: () => void;
   selected: boolean;
@@ -1455,11 +1582,11 @@ function VideoCard({
         gap: 12,
         padding: 14,
         borderRadius: 18,
-        border: selected ? "1px solid rgba(245, 158, 11, 0.35)" : "1px solid var(--border-subtle)",
-        background: "var(--bg-elevated)",
+        border: selected ? "1.5px solid #000000" : "1px solid #e8e8e8",
+        background: "#ffffff",
         boxShadow: selected
-          ? "0 0 0 1px rgba(245, 158, 11, 0.18), 0 24px 70px rgba(0, 0, 0, 0.22)"
-          : "0 24px 70px rgba(0, 0, 0, 0.18)",
+          ? "0 0 0 1px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08)"
+          : "0 1px 3px rgba(0, 0, 0, 0.04)",
       }}
     >
       <div style={{ position: "relative" }}>
@@ -1479,34 +1606,57 @@ function VideoCard({
             minWidth: 34,
             padding: "6px 10px",
             borderRadius: 999,
-            background: selected ? "rgba(245, 158, 11, 0.92)" : "rgba(10, 10, 12, 0.72)",
-            borderColor: selected ? "rgba(245, 158, 11, 0.96)" : "rgba(255, 255, 255, 0.12)",
-            color: selected ? "#140c00" : "#f3f4f6",
+            background: selected ? "#000000" : "rgba(255, 255, 255, 0.88)",
+            borderColor: selected ? "#000000" : "rgba(0, 0, 0, 0.12)",
+            color: selected ? "#ffffff" : "#1a1c1c",
             backdropFilter: "blur(10px)",
           }}
           type="button"
         >
           {selected ? <Check size={13} /> : "Sec"}
         </button>
-        <button
-          className="btn-secondary"
-          onClick={onPreview}
+        <div
           style={{
             position: "absolute",
             top: 10,
             right: 10,
-            padding: "7px 10px",
-            borderRadius: 999,
-            background: "rgba(10, 10, 12, 0.78)",
-            borderColor: "rgba(255, 255, 255, 0.12)",
-            color: "#f3f4f6",
-            backdropFilter: "blur(10px)",
+            display: "flex",
+            gap: 8,
           }}
-          type="button"
         >
-          <Expand size={13} />
-          Buyut
-        </button>
+          <button
+            className="btn-secondary"
+            onClick={onDownload}
+            style={{
+              padding: "7px 10px",
+              borderRadius: 999,
+              background: "rgba(255, 255, 255, 0.88)",
+              borderColor: "rgba(0, 0, 0, 0.12)",
+              color: "#1a1c1c",
+              backdropFilter: "blur(10px)",
+            }}
+            type="button"
+          >
+            <Download size={13} />
+            Indir
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={onPreview}
+            style={{
+              padding: "7px 10px",
+              borderRadius: 999,
+              background: "rgba(255, 255, 255, 0.88)",
+              borderColor: "rgba(0, 0, 0, 0.12)",
+              color: "#1a1c1c",
+              backdropFilter: "blur(10px)",
+            }}
+            type="button"
+          >
+            <Expand size={13} />
+            Buyut
+          </button>
+        </div>
         {groupName ? (
           <span
             style={{
@@ -1517,10 +1667,10 @@ function VideoCard({
               alignItems: "center",
               gap: 6,
               borderRadius: 999,
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              background: "rgba(0, 0, 0, 0.58)",
+              border: "1px solid rgba(0, 0, 0, 0.12)",
+              background: "rgba(255, 255, 255, 0.88)",
               padding: "6px 10px",
-              color: "#f3f4f6",
+              color: "#1a1c1c",
               fontSize: 11,
             }}
           >
@@ -1565,6 +1715,8 @@ function buildSourcePreviewLightboxItem(
       source.sourceKind === "local"
         ? "Bu kare disaridan dosya secilerek eklendi."
         : "Bu kare proje asset library icinden secildi.",
+    downloadPath: source.absolutePath,
+    downloadName: source.filename,
   };
 }
 
@@ -1624,8 +1776,8 @@ const panelStyle: CSSProperties = {
   borderRadius: 24,
   border: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, rgba(245, 158, 11, 0.06), transparent 22%), var(--bg-surface)",
-  boxShadow: "0 30px 90px rgba(0, 0, 0, 0.24)",
+    "linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 22%), var(--bg-surface)",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
 };
 
 const eyebrowStyle: CSSProperties = {
@@ -1634,8 +1786,8 @@ const eyebrowStyle: CSSProperties = {
   alignItems: "center",
   gap: 8,
   borderRadius: 999,
-  border: "1px solid rgba(245, 158, 11, 0.24)",
-  background: "rgba(245, 158, 11, 0.1)",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "rgba(0, 0, 0, 0.04)",
   padding: "6px 10px",
   fontSize: 11,
   letterSpacing: "0.08em",

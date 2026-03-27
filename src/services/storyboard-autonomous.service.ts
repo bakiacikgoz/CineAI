@@ -234,12 +234,16 @@ async function queueVideoCandidates(
 }
 
 async function canQueueStartCandidates(shot: ShotRow): Promise<boolean> {
-  if (shot.chainStatus !== "continue" || !shot.prevShotId) {
+  if (
+    shot.chainStatus !== "continue" ||
+    !shot.prevShotId ||
+    !shot.usePreviousEndForStart
+  ) {
     return true;
   }
 
   const previousShot = await getShotById(shot.prevShotId);
-  return Boolean(previousShot?.imageEndPath);
+  return Boolean(previousShot?.imageEndPath || previousShot?.imageStartPath);
 }
 
 async function maybeQueueVideoCandidates(

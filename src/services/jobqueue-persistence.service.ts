@@ -10,6 +10,7 @@ import {
   type VideoModelId,
 } from "@/services/fal.service";
 import {
+  enqueueAudioDialogueJob,
   enqueueImageJobs,
   enqueueStoryboardFrameJob,
   enqueueUpscaleJobs,
@@ -351,6 +352,18 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       ? params.basePrompt
       : job.prompt;
 
+  if (job.type === "audio_dialogue") {
+    if (!job.shotId) {
+      return;
+    }
+
+    await enqueueAudioDialogueJob({
+      shotId: job.shotId,
+      priority: job.priority,
+    });
+    return;
+  }
+
   if (!basePrompt?.trim()) {
     return;
   }
@@ -431,6 +444,9 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       outputSuffix: params.outputSuffix as string | undefined,
       assetTags: Array.isArray(params.assetTags)
         ? (params.assetTags as string[])
+        : undefined,
+      referenceImagePaths: Array.isArray(params.referenceImagePaths)
+        ? (params.referenceImagePaths as string[])
         : undefined,
       persistToShotPath:
         typeof params.persistToShotPath === "boolean"

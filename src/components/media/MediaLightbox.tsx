@@ -1,7 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Expand, Image as ImageIcon, Video as VideoIcon, X } from "lucide-react";
+import { Download, Expand, Image as ImageIcon, LoaderCircle, Video as VideoIcon, X } from "lucide-react";
 import { Portal } from "@/components/Portal";
+import { message } from "@tauri-apps/plugin-dialog";
+import { downloadMediaFile } from "@/lib/media-download";
 
 export type MediaLightboxItem = {
   kind: "image" | "video";
@@ -9,6 +11,8 @@ export type MediaLightboxItem = {
   title: string;
   subtitle?: string;
   description?: string;
+  downloadPath?: string | null;
+  downloadName?: string | null;
 };
 
 export function MediaLightbox({
@@ -20,6 +24,8 @@ export function MediaLightbox({
   onClose: () => void;
   zIndex?: number;
 }) {
+  const [downloading, setDownloading] = useState(false);
+
   useEffect(() => {
     if (!item) {
       return;
@@ -40,6 +46,29 @@ export function MediaLightbox({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [item, onClose]);
+
+  async function handleDownload() {
+    if (!item?.downloadPath || downloading) {
+      return;
+    }
+
+    setDownloading(true);
+
+    try {
+      await downloadMediaFile({
+        sourcePath: item.downloadPath,
+        suggestedName: item.downloadName ?? item.title,
+        dialogTitle: item.title,
+      });
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Medya indirilemedi.", {
+        title: item.title,
+        kind: "error",
+      });
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
     <AnimatePresence>
@@ -68,8 +97,8 @@ export function MediaLightbox({
                 padding: 18,
                 gap: 16,
                 overflow: "hidden",
-                background:
-                  "linear-gradient(180deg, rgba(19, 19, 24, 0.98), rgba(9, 9, 12, 0.99)), radial-gradient(circle at top right, rgba(245, 158, 11, 0.12), transparent 28%)",
+                background: "#ffffff",
+                boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
               }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
@@ -90,9 +119,9 @@ export function MediaLightbox({
                       gap: 8,
                       padding: "6px 10px",
                       borderRadius: 999,
-                      border: "1px solid rgba(245, 158, 11, 0.2)",
-                      background: "rgba(245, 158, 11, 0.08)",
-                      color: "var(--accent)",
+                      border: "1px solid #e8e8e8",
+                      background: "rgba(0,0,0,0.04)",
+                      color: "var(--text-primary)",
                       fontSize: 11,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
@@ -121,6 +150,28 @@ export function MediaLightbox({
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  {item.downloadPath ? (
+                    <button
+                      onClick={() => void handleDownload()}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 8,
+                        borderRadius: 999,
+                        border: "1px solid var(--border-subtle)",
+                        background: "rgba(0,0,0,0.04)",
+                        padding: "8px 12px",
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                        cursor: downloading ? "progress" : "pointer",
+                      }}
+                      type="button"
+                      disabled={downloading}
+                    >
+                      {downloading ? <LoaderCircle className="spin-slow" size={14} /> : <Download size={14} />}
+                      {downloading ? "Indiriliyor..." : "Indir"}
+                    </button>
+                  ) : null}
                   <span
                     style={{
                       display: "inline-flex",
@@ -128,7 +179,7 @@ export function MediaLightbox({
                       gap: 8,
                       borderRadius: 999,
                       border: "1px solid var(--border-subtle)",
-                      background: "rgba(255,255,255,0.04)",
+                      background: "rgba(0,0,0,0.04)",
                       padding: "8px 12px",
                       fontSize: 12,
                       color: "var(--text-secondary)",
@@ -147,7 +198,7 @@ export function MediaLightbox({
                       justifyContent: "center",
                       borderRadius: 999,
                       border: "1px solid var(--border-subtle)",
-                      background: "rgba(255,255,255,0.04)",
+                      background: "rgba(0,0,0,0.04)",
                       color: "var(--text-muted)",
                       cursor: "pointer",
                     }}
@@ -171,9 +222,8 @@ export function MediaLightbox({
                     placeItems: "center",
                     minHeight: "min(72vh, 760px)",
                     borderRadius: 24,
-                    border: "1px solid rgba(255, 255, 255, 0.06)",
-                    background:
-                      "radial-gradient(circle at top, rgba(245, 158, 11, 0.08), transparent 34%), #050506",
+                    border: "1px solid #e8e8e8",
+                    background: "#f3f3f4",
                     overflow: "hidden",
                   }}
                 >

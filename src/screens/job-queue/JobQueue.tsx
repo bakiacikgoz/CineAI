@@ -1,5 +1,13 @@
 import type { CSSProperties, ReactNode } from "react";
-import { ArrowUpToLine, Film, Image as ImageIcon, LoaderCircle, RotateCcw, X } from "lucide-react";
+import {
+  ArrowUpToLine,
+  AudioLines,
+  Film,
+  Image as ImageIcon,
+  LoaderCircle,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { persistQueueParallelLimit } from "@/lib/store";
 import { cancelJob, resumeJobQueue, retryJob } from "@/services/jobqueue.service";
 import { useProjectStore } from "@/store/project.store";
@@ -13,6 +21,7 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   upscale: "4K Upscale",
   coverage_image: "Coverage Gorsel",
   coverage_video: "Coverage Video",
+  audio_dialogue: "Dialogue Audio",
 };
 
 export function JobQueue() {
@@ -58,7 +67,7 @@ export function JobQueue() {
             borderRadius: 24,
             border: "1px solid var(--border-subtle)",
             background:
-              "linear-gradient(140deg, rgba(245, 158, 11, 0.1), transparent 34%), var(--bg-surface)",
+              "linear-gradient(140deg, rgba(0, 0, 0, 0.02), transparent 34%), var(--bg-surface)",
           }}
         >
           <div style={{ display: "grid", gap: 6 }}>
@@ -218,6 +227,8 @@ function JobRow({ job }: { job: Job }) {
   const Icon =
     job.type === "video"
       ? Film
+      : job.type === "audio_dialogue"
+        ? AudioLines
       : job.type === "upscale"
         ? ArrowUpToLine
         : ImageIcon;
@@ -281,7 +292,7 @@ function JobRow({ job }: { job: Job }) {
               height: 4,
               overflow: "hidden",
               borderRadius: 999,
-              background: "rgba(255, 255, 255, 0.06)",
+              background: "rgba(0, 0, 0, 0.06)",
               marginTop: 4,
             }}
           >
@@ -310,7 +321,7 @@ function JobRow({ job }: { job: Job }) {
           whiteSpace: "nowrap",
           padding: "6px 10px",
           borderRadius: 999,
-          background: "rgba(255, 255, 255, 0.04)",
+          background: "rgba(0, 0, 0, 0.04)",
           color: statusColor[job.status],
           fontSize: 11,
           fontWeight: 700,

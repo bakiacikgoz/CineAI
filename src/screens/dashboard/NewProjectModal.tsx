@@ -131,7 +131,7 @@ export function NewProjectModal({ onClose, onCreate }: NewProjectModalProps) {
             width: 200,
             height: 200,
             borderRadius: "50%",
-            background: "radial-gradient(circle, rgba(245,158,11,0.12), transparent 65%)",
+            background: "radial-gradient(circle, rgba(0,0,0,0.03), transparent 65%)",
             filter: "blur(30px)",
             pointerEvents: "none",
           }}
@@ -156,7 +156,7 @@ export function NewProjectModal({ onClose, onCreate }: NewProjectModalProps) {
             height: 30,
             border: "1px solid var(--border-subtle)",
             borderRadius: 999,
-            background: "rgba(255,255,255,0.03)",
+            background: "rgba(0,0,0,0.03)",
             color: "var(--text-muted)",
             cursor: creating ? "not-allowed" : "pointer",
             transition: "color 150ms ease, border-color 150ms ease",

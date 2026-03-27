@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpToLine,
   ChevronDown,
+  Download,
   Expand,
   FolderOpen,
   Image as ImageIcon,
@@ -21,6 +22,7 @@ import {
   MediaLightbox,
   type MediaLightboxItem,
 } from "@/components/media/MediaLightbox";
+import { downloadMediaFile } from "@/lib/media-download";
 import {
   assignAssetToShot,
   getAssets,
@@ -375,7 +377,24 @@ export function AssetLibrary() {
       title: asset.filename,
       subtitle: `${asset.type.toUpperCase()} / ${(asset.model_used ?? "unknown").split("/").pop()}`,
       description: asset.prompt ?? "Prompt kaydi yok.",
+      downloadPath: asset.absolutePath,
+      downloadName: asset.filename,
     });
+  }
+
+  async function handleDownloadAsset(asset: LibraryAsset) {
+    try {
+      await downloadMediaFile({
+        sourcePath: asset.absolutePath,
+        suggestedName: asset.filename,
+        dialogTitle: asset.filename,
+      });
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Asset indirilemedi.", {
+        title: "Asset Library",
+        kind: "error",
+      });
+    }
   }
 
   /* ---- render: no project ---- */
@@ -573,11 +592,11 @@ export function AssetLibrary() {
                       style={{
                         ...cardStyle,
                         border: isSelected
-                          ? "1.5px solid rgba(245, 158, 11, 0.5)"
-                          : "1px solid var(--border-subtle)",
+                          ? "1.5px solid #000000"
+                          : "1px solid #e8e8e8",
                         boxShadow: isSelected
-                          ? "0 0 0 2px rgba(245, 158, 11, 0.15), 0 8px 24px rgba(0,0,0,0.3)"
-                          : "0 2px 8px rgba(0,0,0,0.15)",
+                          ? "0 0 0 2px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0,0,0,0.08)"
+                          : "0 1px 3px rgba(0,0,0,0.04)",
                       }}
                     >
                       {/* Media with gradient overlay */}
@@ -622,9 +641,9 @@ export function AssetLibrary() {
                             right: 8,
                             padding: "6px 10px",
                             borderRadius: 999,
-                            background: "rgba(10, 10, 12, 0.78)",
-                            borderColor: "rgba(255, 255, 255, 0.12)",
-                            color: "#f3f4f6",
+                            background: "rgba(255, 255, 255, 0.88)",
+                            borderColor: "rgba(0, 0, 0, 0.12)",
+                            color: "#1a1c1c",
                             backdropFilter: "blur(10px)",
                           }}
                           type="button"
@@ -718,9 +737,9 @@ export function AssetLibrary() {
                       right: 10,
                       padding: "7px 10px",
                       borderRadius: 999,
-                      background: "rgba(10, 10, 12, 0.78)",
-                      borderColor: "rgba(255, 255, 255, 0.12)",
-                      color: "#f3f4f6",
+                      background: "rgba(255, 255, 255, 0.88)",
+                      borderColor: "rgba(0, 0, 0, 0.12)",
+                      color: "#1a1c1c",
                       backdropFilter: "blur(10px)",
                     }}
                     type="button"
@@ -883,6 +902,15 @@ export function AssetLibrary() {
                       Storyboard'da ac
                     </button>
                   ) : null}
+
+                  <button
+                    className="btn-secondary"
+                    onClick={() => void handleDownloadAsset(selectedAsset)}
+                    type="button"
+                  >
+                    <Download size={14} />
+                    Indir
+                  </button>
 
                   <button
                     className="btn-secondary"
@@ -1070,8 +1098,8 @@ const handoffBannerStyle = {
   gap: 14,
   padding: "12px 18px",
   borderRadius: 16,
-  border: "1px solid rgba(245, 158, 11, 0.28)",
-  background: "linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04))",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "linear-gradient(135deg, rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.02))",
   color: "var(--text-secondary)",
   fontSize: 13,
   lineHeight: 1.5,
@@ -1091,7 +1119,7 @@ const headerStyle = {
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(140deg, rgba(245, 158, 11, 0.08), transparent 32%), var(--bg-surface)",
+    "linear-gradient(140deg, rgba(0, 0, 0, 0.02), transparent 32%), var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const eyebrowStyle = {
@@ -1101,8 +1129,8 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  background: "rgba(245, 158, 11, 0.1)",
-  border: "1px solid rgba(245, 158, 11, 0.24)",
+  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
   color: "var(--accent)",
   fontSize: 11,
   letterSpacing: "0.08em",
@@ -1206,7 +1234,7 @@ const cardMediaGradientStyle = {
   left: 0,
   right: 0,
   height: 40,
-  background: "linear-gradient(transparent, rgba(0,0,0,0.5))",
+  background: "linear-gradient(transparent, rgba(0,0,0,0.3))",
   pointerEvents: "none",
 } satisfies React.CSSProperties;
 
@@ -1222,7 +1250,7 @@ const cardSelectionRingStyle = {
   position: "absolute",
   inset: 0,
   borderRadius: 18,
-  border: "2px solid rgba(245, 158, 11, 0.4)",
+  border: "2px solid rgba(0, 0, 0, 0.25)",
   pointerEvents: "none",
 } satisfies React.CSSProperties;
 
@@ -1240,7 +1268,7 @@ const sidebarStyle = {
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, rgba(245, 158, 11, 0.06), transparent 24%), var(--bg-surface)",
+    "linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 24%), var(--bg-surface)",
   overflowY: "auto",
   maxHeight: "calc(100vh - var(--topbar-h) - 110px)",
 } satisfies React.CSSProperties;
@@ -1307,7 +1335,7 @@ const emptyPanelStyle = {
   borderRadius: 24,
   border: "1px dashed var(--border-default)",
   background:
-    "radial-gradient(ellipse at center, rgba(245, 158, 11, 0.04), transparent 70%), var(--bg-elevated)",
+    "radial-gradient(ellipse at center, rgba(0, 0, 0, 0.02), transparent 70%), var(--bg-elevated)",
   textAlign: "center",
   padding: 24,
 } satisfies React.CSSProperties;
@@ -1330,8 +1358,8 @@ const tagChipStyle = {
   display: "inline-flex",
   padding: "3px 8px",
   borderRadius: 999,
-  background: "rgba(245, 158, 11, 0.1)",
-  color: "var(--accent)",
+  background: "rgba(0, 0, 0, 0.06)",
+  color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 600,
 } satisfies React.CSSProperties;
@@ -1359,8 +1387,8 @@ const mutedBadgeStyle = {
   alignItems: "center",
   padding: "3px 8px",
   borderRadius: 999,
-  background: "rgba(255,255,255,0.1)",
-  color: "rgba(255,255,255,0.7)",
+  background: "rgba(0, 0, 0, 0.06)",
+  color: "rgba(0, 0, 0, 0.6)",
   fontSize: 10,
   fontWeight: 700,
   backdropFilter: "blur(8px)",

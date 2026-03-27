@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
+  AudioLines,
   BarChart3,
   Download,
   DollarSign,
@@ -102,6 +103,12 @@ export function CostDashboard() {
               value: formatUsd(overview.upscaleUsd),
               detail: `${overview.byType.find((row) => row.type === "upscale")?.count ?? 0} is`,
               icon: <TrendingUp size={16} />,
+            },
+            {
+              label: "TTS",
+              value: formatUsd(overview.ttsUsd),
+              detail: `${overview.byType.find((row) => row.type === "tts")?.count ?? 0} is`,
+              icon: <AudioLines size={16} />,
             },
             {
               label: "Asset-backed spend",
@@ -365,8 +372,8 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
       <svg style={chartStyle} viewBox={`0 0 ${width} ${height}`}>
         <defs>
           <linearGradient id="costAreaFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="rgba(245,158,11,0.42)" />
-            <stop offset="100%" stopColor="rgba(245,158,11,0.02)" />
+            <stop offset="0%" stopColor="rgba(0,0,0,0.14)" />
+            <stop offset="100%" stopColor="rgba(0,0,0,0.01)" />
           </linearGradient>
         </defs>
 
@@ -375,7 +382,7 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
           return (
             <line
               key={tick}
-              stroke="rgba(255,255,255,0.08)"
+              stroke="rgba(0,0,0,0.06)"
               strokeDasharray="4 8"
               x1={paddingX}
               x2={width - paddingX}
@@ -398,7 +405,7 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
         {points.map((point) => (
           <g key={point.day}>
             <circle cx={point.x} cy={point.y} fill="var(--accent)" r="4.5" />
-            <circle cx={point.x} cy={point.y} fill="rgba(245,158,11,0.24)" r="10" />
+            <circle cx={point.x} cy={point.y} fill="rgba(0,0,0,0.08)" r="10" />
           </g>
         ))}
       </svg>
@@ -539,7 +546,7 @@ const heroStyle = {
   padding: 24,
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(135deg, rgba(245,158,11,0.08), transparent 28%), var(--bg-surface)",
+  background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 28%), var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const eyebrowStyle = {
@@ -549,9 +556,9 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(245, 158, 11, 0.24)",
-  background: "rgba(245, 158, 11, 0.1)",
-  color: "var(--accent)",
+  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "rgba(0, 0, 0, 0.04)",
+  color: "var(--text-primary)",
   fontSize: 11,
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -582,7 +589,7 @@ const rangeButtonStyle = {
 
 const activeRangeButtonStyle = {
   ...rangeButtonStyle,
-  boxShadow: "0 12px 24px rgba(245,158,11,0.18)",
+  boxShadow: "0 12px 24px rgba(0,0,0,0.08)",
 } satisfies React.CSSProperties;
 
 const metricsGridStyle = {
@@ -606,8 +613,8 @@ const metricIconStyle = {
   width: 34,
   height: 34,
   borderRadius: 12,
-  background: "rgba(245,158,11,0.1)",
-  color: "var(--accent)",
+  background: "rgba(0,0,0,0.04)",
+  color: "var(--text-primary)",
 } satisfies React.CSSProperties;
 
 const twoColumnGridStyle = {
@@ -631,7 +638,7 @@ const chartStyle = {
   height: 220,
   borderRadius: 18,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))",
+  background: "linear-gradient(180deg, rgba(0,0,0,0.01), rgba(0,0,0,0.02))",
 } satisfies React.CSSProperties;
 
 const chartAxisStyle = {
@@ -654,14 +661,14 @@ const chartEmptyStyle = {
 const barTrackStyle = {
   height: 10,
   borderRadius: 999,
-  background: "rgba(255,255,255,0.06)",
+  background: "rgba(0,0,0,0.04)",
   overflow: "hidden",
 } satisfies React.CSSProperties;
 
 const barFillStyle = {
   height: "100%",
   borderRadius: 999,
-  background: "linear-gradient(90deg, rgba(245,158,11,0.8), rgba(245,158,11,0.32))",
+  background: "linear-gradient(90deg, rgba(0,0,0,0.7), rgba(0,0,0,0.2))",
 } satisfies React.CSSProperties;
 
 const tableWrapStyle = {
@@ -691,7 +698,7 @@ const tdPrimaryStyle = {
   padding: "12px 14px",
   fontSize: 13,
   color: "var(--text-primary)",
-  borderBottom: "1px solid rgba(255,255,255,0.04)",
+  borderBottom: "1px solid rgba(0,0,0,0.04)",
   whiteSpace: "nowrap",
 } satisfies React.CSSProperties;
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -7,6 +8,7 @@ import {
   ChevronDown,
   CopyPlus,
   Crown,
+  Download,
   Images,
   Layers,
   Plus,
@@ -22,6 +24,7 @@ import {
   type CharacterLookAttributes,
   type CharacterProfile,
 } from "@/lib/character-studio";
+import { downloadMediaFile } from "@/lib/media-download";
 import type { AssetWithTags } from "@/services/asset.service";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -60,6 +63,16 @@ export function toProjectAssetUrl(
   const base = projectFolderPath.replace(/\\/g, "/").replace(/\/$/, "");
   const rel = relativePath.replace(/\\/g, "/").replace(/^\//, "");
   return convertFileSrc(`${base}/${rel}`);
+}
+
+export function toProjectAssetAbsolutePath(
+  projectFolderPath: string,
+  relativePath: string | null,
+): string | null {
+  if (!relativePath) return null;
+  const base = projectFolderPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const rel = relativePath.replace(/\\/g, "/").replace(/^\//, "");
+  return `${base}/${rel}`;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -224,6 +237,10 @@ function CharacterPreview({
     projectFolderPath,
     activeLook?.primaryImage ?? activeLook?.refImages[0] ?? null,
   );
+  const primaryPath = toProjectAssetAbsolutePath(
+    projectFolderPath,
+    activeLook?.primaryImage ?? activeLook?.refImages[0] ?? null,
+  );
   const name = draft.name.trim() || "Yeni Karakter";
   const subtitle = [draft.profile.role, draft.profile.perceivedAge]
     .filter(Boolean)
@@ -245,6 +262,28 @@ function CharacterPreview({
             </div>
           </div>
         )}
+        {primaryPath ? (
+          <button
+            className="icon-button"
+            onClick={() =>
+              void downloadMediaFile({
+                sourcePath: primaryPath,
+                suggestedName: primaryPath.split(/[\\/]/).pop() ?? `${name}.png`,
+                dialogTitle: name,
+              }).catch(async (error) => {
+                await message(
+                  error instanceof Error ? error.message : "Karakter gorseli indirilemedi.",
+                  { title: name, kind: "error" },
+                );
+              })
+            }
+            style={{ position: "absolute", top: 10, right: 10, width: 34, height: 34, borderRadius: 999 }}
+            title="Indir"
+            type="button"
+          >
+            <Download size={14} />
+          </button>
+        ) : null}
       </div>
 
       <div style={{ padding: "14px 16px 18px", display: "grid", gap: 14 }}>
@@ -574,6 +613,7 @@ function GenerationTab({
           <div style={refGridStyle}>
             {activeLook.refImages.map((refImage) => {
               const url = toProjectAssetUrl(projectFolderPath, refImage);
+              const absolutePath = toProjectAssetAbsolutePath(projectFolderPath, refImage);
               const idx = activeLook.refImages.indexOf(refImage);
               const isPrimary = activeLook.primaryImage === refImage;
 
@@ -603,6 +643,28 @@ function GenerationTab({
                     <button className="icon-button" disabled={idx === activeLook.refImages.length - 1} onClick={() => onMoveReference(refImage, 1)} style={tinyBtnStyle} type="button">
                       <ArrowRight size={12} />
                     </button>
+                    {absolutePath ? (
+                      <button
+                        className="icon-button"
+                        onClick={() =>
+                          void downloadMediaFile({
+                            sourcePath: absolutePath,
+                            suggestedName: refImage.split(/[\\/]/).pop() ?? "reference.png",
+                            dialogTitle: "Character Studio",
+                          }).catch(async (error) => {
+                            await message(
+                              error instanceof Error ? error.message : "Referans gorseli indirilemedi.",
+                              { title: "Character Studio", kind: "error" },
+                            );
+                          })
+                        }
+                        style={tinyBtnStyle}
+                        title="Indir"
+                        type="button"
+                      >
+                        <Download size={12} />
+                      </button>
+                    ) : null}
                     <button className="icon-button" onClick={() => onRemoveReference(refImage)} style={{ ...tinyBtnStyle, marginLeft: "auto" }} type="button">
                       <Trash2 size={12} />
                     </button>
@@ -690,6 +752,28 @@ function GenerationTab({
                   <div style={{ display: "grid", gap: 6, padding: "8px 10px 10px" }}>
                     <div style={candidateFilenameStyle}>{asset.filename}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <button
+                        className="btn-secondary"
+                        onClick={() =>
+                          void downloadMediaFile({
+                            sourcePath: asset.file_path.includes(":")
+                              ? asset.file_path
+                              : toProjectAssetAbsolutePath(projectFolderPath, asset.file_path) ?? asset.file_path,
+                            suggestedName: asset.filename,
+                            dialogTitle: "Character Studio",
+                          }).catch(async (error) => {
+                            await message(
+                              error instanceof Error ? error.message : "Candidate gorseli indirilemedi.",
+                              { title: "Character Studio", kind: "error" },
+                            );
+                          })
+                        }
+                        style={candidateActionBtnStyle}
+                        type="button"
+                      >
+                        <Download size={10} />
+                        Indir
+                      </button>
                       <button className="btn-secondary" onClick={() => onUseCandidate(asset, false)} style={candidateActionBtnStyle} type="button">
                         +Ref
                       </button>
@@ -916,8 +1000,8 @@ const backdropStyle = {
   display: "grid",
   placeItems: "center",
   padding: 20,
-  background: "rgba(0, 0, 0, 0.78)",
-  backdropFilter: "blur(14px)",
+  background: "rgba(0, 0, 0, 0.4)",
+  backdropFilter: "blur(8px)",
 } satisfies React.CSSProperties;
 
 const panelStyle = {
@@ -929,7 +1013,7 @@ const panelStyle = {
   border: "1px solid var(--border-default)",
   background: "var(--bg-surface)",
   boxShadow:
-    "0 40px 120px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset",
+    "0 20px 60px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.04) inset",
   overflow: "hidden",
 } satisfies React.CSSProperties;
 
@@ -942,7 +1026,7 @@ const headerStyle = {
   padding: "14px 24px",
   borderBottom: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, rgba(245,158,11,0.04), transparent 70%)",
+    "linear-gradient(180deg, rgba(0,0,0,0.02), transparent 70%)",
   flexShrink: 0,
 } satisfies React.CSSProperties;
 
@@ -952,9 +1036,9 @@ const headerBadgeStyle = {
   gap: 6,
   padding: "5px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(245,158,11,0.2)",
-  background: "rgba(245,158,11,0.08)",
-  color: "var(--accent)",
+  border: "1px solid rgba(0,0,0,0.1)",
+  background: "rgba(0,0,0,0.04)",
+  color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 700,
   letterSpacing: "0.1em",
@@ -979,7 +1063,7 @@ const sidebarStyle = {
   overflowY: "auto",
   borderRight: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.08))",
+    "linear-gradient(180deg, #f9f9f9, #f3f3f4)",
   padding: 14,
 } satisfies React.CSSProperties;
 
@@ -1044,7 +1128,7 @@ const previewAvatarWrapStyle = {
   aspectRatio: "3 / 4",
   overflow: "hidden",
   background:
-    "linear-gradient(135deg, rgba(245,158,11,0.1), rgba(59,130,246,0.06) 70%)",
+    "linear-gradient(135deg, #f3f3f4, #eeeeee 70%)",
 } satisfies React.CSSProperties;
 
 const previewImageStyle = {
@@ -1068,7 +1152,7 @@ const previewInitialStyle = {
   placeItems: "center",
   borderRadius: 16,
   border: "1px solid var(--border-default)",
-  background: "rgba(255,255,255,0.04)",
+  background: "rgba(0,0,0,0.03)",
   fontSize: 22,
   fontWeight: 700,
   color: "var(--text-muted)",
@@ -1147,7 +1231,7 @@ const groupStyle = {
   padding: "16px 18px",
   borderRadius: 16,
   border: "1px solid var(--border-subtle)",
-  background: "rgba(255,255,255,0.01)",
+  background: "rgba(0,0,0,0.01)",
 } satisfies React.CSSProperties;
 
 const groupHeaderStyle = {
@@ -1188,8 +1272,8 @@ function lookCardStyle(active: boolean): React.CSSProperties {
     gap: 8,
     padding: "10px 14px",
     borderRadius: 12,
-    border: `1px solid ${active ? "rgba(245,158,11,0.36)" : "var(--border-subtle)"}`,
-    background: active ? "rgba(245,158,11,0.1)" : "var(--bg-elevated)",
+    border: `1px solid ${active ? "rgba(0,0,0,0.2)" : "var(--border-subtle)"}`,
+    background: active ? "rgba(0,0,0,0.05)" : "var(--bg-elevated)",
     color: active ? "var(--text-primary)" : "var(--text-secondary)",
     cursor: "pointer",
     transition: "border-color 150ms ease, background 150ms ease",
@@ -1202,8 +1286,8 @@ const defaultBadgeStyle = {
   gap: 4,
   padding: "2px 7px",
   borderRadius: 999,
-  background: "rgba(245,158,11,0.12)",
-  color: "var(--accent)",
+  background: "rgba(0,0,0,0.06)",
+  color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 600,
   letterSpacing: "0.02em",
@@ -1229,8 +1313,8 @@ const hintBoxStyle = {
   alignItems: "flex-start",
   padding: "10px 12px",
   borderRadius: 12,
-  border: "1px solid rgba(245,158,11,0.18)",
-  background: "rgba(245,158,11,0.06)",
+  border: "1px solid rgba(0,0,0,0.08)",
+  background: "rgba(0,0,0,0.03)",
   lineHeight: 1.6,
 } satisfies React.CSSProperties;
 
@@ -1255,8 +1339,8 @@ function refCardStyle(isPrimary: boolean): React.CSSProperties {
     gap: 6,
     padding: 6,
     borderRadius: 14,
-    border: `1px solid ${isPrimary ? "rgba(245,158,11,0.32)" : "var(--border-subtle)"}`,
-    background: isPrimary ? "rgba(245,158,11,0.06)" : "var(--bg-elevated)",
+    border: `1px solid ${isPrimary ? "rgba(0,0,0,0.18)" : "var(--border-subtle)"}`,
+    background: isPrimary ? "rgba(0,0,0,0.03)" : "var(--bg-elevated)",
     overflow: "hidden",
   };
 }
@@ -1305,7 +1389,7 @@ const stepperBtnStyle = {
   height: 26,
   borderRadius: 8,
   border: "1px solid var(--border-default)",
-  background: "rgba(255,255,255,0.03)",
+  background: "rgba(0,0,0,0.03)",
   color: "var(--text-secondary)",
   cursor: "pointer",
   fontSize: 15,

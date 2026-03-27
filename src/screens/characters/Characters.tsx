@@ -3,10 +3,16 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
 import { confirm, message, open } from "@tauri-apps/plugin-dialog";
 import {
+  Check,
+  Copy,
+  ImagePlus,
   Link2,
+  Lock,
   Pencil,
   Plus,
+  Search,
   Trash2,
+  Upload,
   UserRound,
 } from "lucide-react";
 import {
@@ -212,11 +218,25 @@ const DEFAULT_CHARACTERS_SCREEN_STATE: CharactersScreenState = {
   candidateAspectRatio: "3:4",
   candidateQuantity: 4,
   selectedCharacterId: null,
+  viewedLookId: null,
   showAssignModal: false,
   assignShotId: "",
   assignLookId: "",
   assignIncludePrompt: true,
   studioTab: "profile",
+};
+
+/** Attribute label map for displaying CharacterLookAttributes in Turkish */
+const ATTRIBUTE_LABELS: Record<keyof CharacterLookAttributes, string> = {
+  wardrobe: "Kiyafet",
+  palette: "Palet",
+  materials: "Materyal",
+  accessories: "Aksesuar",
+  hairOverride: "Sac",
+  makeupOverride: "Makyaj",
+  mood: "Ruh Hali",
+  sceneContext: "Sahne",
+  continuityNotes: "Sureklilik",
 };
 
 
@@ -234,6 +254,7 @@ export function Characters() {
   const [saving, setSaving] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<CharacterRecord | null>(null);
+  const [viewedLookId, setViewedLookId] = useState<string | null>(null);
   const [draft, setDraft] = useState<CharacterStudioDraft>(createEmptyDraft());
   const [activeLookId, setActiveLookId] = useState<string | null>(draft.defaultLookId);
   const [assignShotId, setAssignShotId] = useState("");
@@ -246,6 +267,7 @@ export function Characters() {
   const [generatingCandidates, setGeneratingCandidates] = useState(false);
   const [studioTab, setStudioTab] =
     useState<CharactersScreenState["studioTab"]>("profile");
+  const [promptCopied, setPromptCopied] = useState(false);
   const hasResumableStudioDraft = !showStudio && hasMeaningfulCharacterDraft(draft);
 
   const activeLook = useMemo(
@@ -299,6 +321,29 @@ export function Characters() {
     });
   }, [characters, search]);
 
+  /** Resolved look being viewed in the detail panel */
+  const viewedLook = useMemo(() => {
+    if (!selectedCharacter) return null;
+    if (viewedLookId) {
+      return selectedCharacter.looks.find((l) => l.id === viewedLookId) ?? null;
+    }
+    return null;
+  }, [selectedCharacter, viewedLookId]);
+
+  /** Generation prompt text for the viewed look */
+  const viewedLookPrompt = useMemo(() => {
+    if (!viewedLook || !selectedCharacter) return "";
+    if (viewedLook.promptLocked && viewedLook.generationPrompt.trim()) {
+      return viewedLook.generationPrompt;
+    }
+    return buildCharacterGenerationPrompt(
+      selectedCharacter.name,
+      selectedCharacter.profile,
+      viewedLook.attributes,
+    );
+  }, [viewedLook, selectedCharacter]);
+
+  // ----- Screen state hydration on project switch -----
   useEffect(() => {
     if (!activeProjectId) {
       const nextDraft = createEmptyDraft();
@@ -306,6 +351,7 @@ export function Characters() {
       setShowStudio(DEFAULT_CHARACTERS_SCREEN_STATE.showStudio);
       setShowAssignModal(DEFAULT_CHARACTERS_SCREEN_STATE.showAssignModal);
       setSelectedCharacter(null);
+      setViewedLookId(null);
       setDraft(nextDraft);
       setActiveLookId(nextDraft.defaultLookId);
       setAssignShotId(DEFAULT_CHARACTERS_SCREEN_STATE.assignShotId);
@@ -327,6 +373,7 @@ export function Characters() {
     setShowStudio(nextState?.showStudio ?? DEFAULT_CHARACTERS_SCREEN_STATE.showStudio);
     setShowAssignModal(nextState?.showAssignModal ?? DEFAULT_CHARACTERS_SCREEN_STATE.showAssignModal);
     setSelectedCharacter(null);
+    setViewedLookId(nextState?.viewedLookId ?? null);
     setDraft(nextDraft);
     setActiveLookId(nextState?.activeLookId ?? nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
     setAssignShotId(nextState?.assignShotId ?? DEFAULT_CHARACTERS_SCREEN_STATE.assignShotId);
@@ -344,6 +391,7 @@ export function Characters() {
     setStudioTab(nextState?.studioTab ?? DEFAULT_CHARACTERS_SCREEN_STATE.studioTab);
   }, [activeProjectId]);
 
+  // ----- Data loading -----
   useEffect(() => {
     if (!activeProject) {
       setCharacters([]);
@@ -390,6 +438,7 @@ export function Characters() {
     };
   }, [activeProject]);
 
+  // ----- Candidate assets loading -----
   useEffect(() => {
     if (!showStudio || !activeProject || !activeCharacterId || !activeLook?.id) {
       setCandidateAssets([]);
@@ -439,6 +488,7 @@ export function Characters() {
     };
   }, [showStudio, activeProject, activeCharacterId, activeLook?.id, candidateRefreshMarker]);
 
+  // ----- Restore selected character from persisted state -----
   useEffect(() => {
     if (!activeProjectId) {
       setSelectedCharacter(null);
@@ -459,6 +509,16 @@ export function Characters() {
     );
   }, [activeProjectId, characters]);
 
+  // ----- Auto-select first character when list loads and none is selected -----
+  useEffect(() => {
+    if (!selectedCharacter && characters.length > 0 && !loading) {
+      const first = characters[0];
+      setSelectedCharacter(first);
+      setViewedLookId(first.defaultLookId ?? first.looks[0]?.id ?? null);
+    }
+  }, [characters, loading, selectedCharacter]);
+
+  // ----- Sync activeLookId with draft looks -----
   useEffect(() => {
     if (draft.looks.length === 0) {
       setActiveLookId(null);
@@ -472,6 +532,7 @@ export function Characters() {
     setActiveLookId(draft.defaultLookId ?? draft.looks[0]?.id ?? null);
   }, [activeLookId, draft.defaultLookId, draft.looks]);
 
+  // ----- Persist screen state -----
   useEffect(() => {
     if (!activeProjectId) {
       return;
@@ -485,6 +546,7 @@ export function Characters() {
       candidateAspectRatio,
       candidateQuantity,
       selectedCharacterId: selectedCharacter?.id ?? null,
+      viewedLookId,
       showAssignModal,
       assignShotId,
       assignLookId,
@@ -506,6 +568,7 @@ export function Characters() {
     showAssignModal,
     showStudio,
     studioTab,
+    viewedLookId,
   ]);
 
   async function refreshCharacters() {
@@ -673,6 +736,11 @@ export function Characters() {
         const nextDraft = toStudioDraft(updatedCharacter);
         setDraft(nextDraft);
         setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+      }
+
+      // Also refresh selectedCharacter if it is the same one
+      if (updatedCharacter && selectedCharacter?.id === updatedCharacter.id) {
+        setSelectedCharacter(updatedCharacter);
       }
 
       await message(
@@ -869,7 +937,14 @@ export function Characters() {
 
     try {
       await deleteCharacter(characterId);
-      await refreshCharacters();
+      const nextCharacters = await refreshCharacters();
+
+      // If the deleted character was selected, clear selection
+      if (selectedCharacter?.id === characterId) {
+        const first = nextCharacters[0] ?? null;
+        setSelectedCharacter(first);
+        setViewedLookId(first?.defaultLookId ?? first?.looks[0]?.id ?? null);
+      }
     } catch (error) {
       await message(error instanceof Error ? error.message : "Karakter silinemedi.", {
         title: "Characters",
@@ -1143,7 +1218,6 @@ export function Characters() {
         kind: "info",
       });
       setShowAssignModal(false);
-      setSelectedCharacter(null);
       setAssignShotId("");
       setAssignLookId("");
       setAssignIncludePrompt(true);
@@ -1157,91 +1231,259 @@ export function Characters() {
     }
   }
 
+  /** Handle selecting a character from the left panel */
+  function handleSelectCharacter(character: CharacterRecord) {
+    setSelectedCharacter(character);
+    setViewedLookId(character.defaultLookId ?? character.looks[0]?.id ?? null);
+  }
+
+  /** Trigger generate candidates from the detail panel */
+  function handleDetailGenerateCandidates() {
+    if (!selectedCharacter || !activeProject) return;
+
+    // Set up the draft for this character and open studio on generation tab
+    const nextDraft = toStudioDraft(selectedCharacter);
+    setDraft(nextDraft);
+    setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+    setStudioTab("generation");
+    setShowStudio(true);
+  }
+
+  /** Copy prompt text to clipboard */
+  async function handleCopyPrompt() {
+    if (!viewedLookPrompt) return;
+    try {
+      await navigator.clipboard.writeText(viewedLookPrompt);
+      setPromptCopied(true);
+      setTimeout(() => setPromptCopied(false), 2000);
+    } catch {
+      // Fallback: silently fail
+    }
+  }
+
+  // ----- No project state -----
   if (!activeProject) {
-    return <CharactersState title="Characters" copy="Karakter kutuphanesini yonetmek icin once bir proje ac." />;
+    return <CharactersEmptyState title="Characters" copy="Karakter kutuphanesini yonetmek icin once bir proje ac." />;
+  }
+
+  // ----- Loading state -----
+  if (loading) {
+    return (
+      <div style={masterDetailContainerStyle}>
+        <div style={leftPanelStyle}>
+          <div style={leftPanelHeaderStyle}>
+            <span style={{ fontSize: 20, fontWeight: 700 }}>Karakterler</span>
+          </div>
+        </div>
+        <div style={rightPanelStyle}>
+          <div style={emptyDetailStyle}>
+            <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
+            <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>Yukleniyor...</div>
+            <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6 }}>
+              Karakter kayitlari okunuyor.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <section className="screen-shell">
-      <section style={{ display: "grid", gap: 18 }}>
-        <header style={heroStyle}>
-          <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
-            <span style={eyebrowStyle}>
-              <UserRound size={13} />
-              Continuity vault
-            </span>
-            <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-              Characters
+    <div style={masterDetailContainerStyle}>
+      {/* ═══════════════════════════ LEFT PANEL ═══════════════════════════ */}
+      <div style={leftPanelStyle}>
+        {/* Header */}
+        <div style={leftPanelHeaderStyle}>
+          <span style={{ fontSize: 20, fontWeight: 700 }}>Karakterler</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => void handleImportCharacterFromFiles()}
+              style={leftPanelIconBtnStyle}
+              title="Karakter Yukle"
+              type="button"
+            >
+              <Upload size={14} />
+            </button>
+            <button
+              onClick={() => void openCreateEditor(true)}
+              style={leftPanelAddBtnStyle}
+              title="Yeni Karakter"
+              type="button"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div style={{ padding: "0 16px 12px" }}>
+          <div style={searchWrapperStyle}>
+            <Search size={14} style={{ color: "#a1a1aa", flexShrink: 0 }} />
+            <input
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Karakter ara..."
+              style={leftSearchInputStyle}
+              value={search}
+            />
+          </div>
+        </div>
+
+        {/* Character list */}
+        <div style={characterListStyle}>
+          {filteredCharacters.length === 0 ? (
+            <div style={{ padding: "32px 16px", textAlign: "center" }}>
+              <p style={{ margin: 0, color: "#a1a1aa", fontSize: 12 }}>
+                {characters.length === 0 ? "Henuz karakter yok" : "Sonuc bulunamadi"}
+              </p>
             </div>
-            <p style={copyStyle}>
-              Karakter continuity profilleri, look varyantlari ve Nano Banana 2 ile uretilen referanslar burada yonetilir.
-            </p>
-          </div>
+          ) : (
+            filteredCharacters.map((character) => {
+              const isActive = selectedCharacter?.id === character.id;
+              const defaultLook =
+                character.looks.find((l) => l.id === character.defaultLookId) ??
+                character.looks[0] ??
+                null;
+              const avatarUrl = toProjectAssetUrl(
+                activeProject.folderPath,
+                defaultLook?.primaryImage ?? defaultLook?.refImages[0] ?? character.primaryImage ?? character.refImages[0] ?? null,
+              );
+              const description =
+                character.description ||
+                summarizeCharacterProfile(character.profile, character.styleNotes) ||
+                "";
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn-secondary" onClick={() => void handleImportCharacterFromFiles()} type="button">
-              <Plus size={15} />
-              Karakter Yukle
+              return (
+                <button
+                  key={character.id}
+                  onClick={() => handleSelectCharacter(character)}
+                  style={{
+                    ...charListItemStyle,
+                    background: isActive ? "rgba(228,228,231,0.4)" : "transparent",
+                    borderRadius: 12,
+                  }}
+                  type="button"
+                >
+                  {/* Active indicator bar */}
+                  {isActive ? (
+                    <div style={activeBarStyle} />
+                  ) : (
+                    <div style={{ width: 3, height: 24 }} />
+                  )}
+
+                  {/* Avatar */}
+                  <div style={avatarStyle}>
+                    {avatarUrl ? (
+                      <img
+                        alt={character.name}
+                        src={avatarUrl}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "cover",
+                          borderRadius: "50%",
+                          filter: "grayscale(1)",
+                          opacity: isActive ? 1 : 0.6,
+                          transition: "opacity 200ms ease",
+                        }}
+                      />
+                    ) : (
+                      <UserRound size={18} style={{ color: "#a1a1aa" }} />
+                    )}
+                  </div>
+
+                  {/* Name & description */}
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: isActive ? 600 : 500,
+                        color: isActive ? "#18181b" : "#3f3f46",
+                        lineHeight: 1.3,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {character.name}
+                    </div>
+                    {description ? (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: isActive ? "#71717a" : "#a1a1aa",
+                          lineHeight: 1.3,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          marginTop: 2,
+                        }}
+                      >
+                        {description}
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {/* Resume draft button at bottom (if applicable) */}
+        {hasResumableStudioDraft ? (
+          <div style={{ padding: "8px 16px 16px" }}>
+            <button
+              onClick={() => void openCreateEditor()}
+              style={resumeDraftBtnStyle}
+              type="button"
+            >
+              Taslaga Don
             </button>
-            {hasResumableStudioDraft ? (
-              <button className="btn-secondary" onClick={() => void openCreateEditor(true)} type="button">
-                <Plus size={15} />
-                Yeni Karakter
-              </button>
-            ) : null}
-            <button className="btn-primary" onClick={() => void openCreateEditor()} type="button">
-              <Plus size={15} />
-              {hasResumableStudioDraft ? "Taslaga Don" : "Character Studio"}
-            </button>
           </div>
-        </header>
+        ) : null}
+      </div>
 
-        <section style={toolbarStyle}>
-          <input
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Karakter ara"
-            style={searchInputStyle}
-            value={search}
-          />
-          <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-            {characters.length} karakter / {shots.length} ana shot
-          </div>
-        </section>
-
-        {loading ? (
-          <CharactersState title="Yukleniyor..." copy="Karakter kayitlari okunuyor." />
-        ) : filteredCharacters.length === 0 ? (
-          <CharactersState
-            title={characters.length === 0 ? "Karakter kutuphanesi bos" : "Sonuc bulunamadi"}
-            copy={
-              characters.length === 0
-                ? "Character Studio ile ilk continuity profilini olusturup referans gorseller uretebilirsin."
-                : "Arama sonucunda karakter bulunamadi."
-            }
+      {/* ═══════════════════════════ RIGHT PANEL ═══════════════════════════ */}
+      <div style={rightPanelStyle}>
+        {selectedCharacter ? (
+          <CharacterDetailPanel
+            character={selectedCharacter}
+            onAssign={() => {
+              setAssignShotId(shots[0]?.id ?? "");
+              setAssignLookId(selectedCharacter.defaultLookId ?? selectedCharacter.looks[0]?.id ?? "");
+              setAssignIncludePrompt(true);
+              setShowAssignModal(true);
+            }}
+            onCopyPrompt={() => void handleCopyPrompt()}
+            onDelete={() => void handleDelete(selectedCharacter.id)}
+            onEdit={() => void openEditEditor(selectedCharacter)}
+            onGenerateCandidates={() => handleDetailGenerateCandidates()}
+            onLookSelect={setViewedLookId}
+            onNewLook={() => {
+              const nextDraft = toStudioDraft(selectedCharacter);
+              setDraft(nextDraft);
+              setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
+              setStudioTab("looks");
+              setShowStudio(true);
+            }}
+            onUploadImages={() => void handleAttachImagesToCharacter(selectedCharacter)}
+            projectFolderPath={activeProject.folderPath}
+            promptCopied={promptCopied}
+            viewedLook={viewedLook}
+            viewedLookId={viewedLookId}
+            viewedLookPrompt={viewedLookPrompt}
           />
         ) : (
-          <div style={gridStyle}>
-            {filteredCharacters.map((character) => (
-              <CharacterCard
-                character={character}
-                key={character.id}
-                onAssign={() => {
-                  setSelectedCharacter(character);
-                  setAssignShotId(shots[0]?.id ?? "");
-                  setAssignLookId(character.defaultLookId ?? character.looks[0]?.id ?? "");
-                  setAssignIncludePrompt(true);
-                  setShowAssignModal(true);
-                }}
-                onDelete={() => void handleDelete(character.id)}
-                onEdit={() => void openEditEditor(character)}
-                onUploadImages={() => void handleAttachImagesToCharacter(character)}
-                projectFolderPath={activeProject.folderPath}
-              />
-            ))}
+          <div style={emptyDetailStyle}>
+            <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
+            <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>Karakter sec</div>
+            <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6, maxWidth: 280, textAlign: "center" }}>
+              Detaylari goruntulemek icin sol panelden bir karakter sec.
+            </p>
           </div>
         )}
-      </section>
+      </div>
 
+      {/* ═══════════════════════════ STUDIO MODAL ═══════════════════════════ */}
       {showStudio ? (
         <Portal><CharacterStudioModal
           activeLook={activeLook}
@@ -1298,6 +1540,7 @@ export function Characters() {
         /></Portal>
       ) : null}
 
+      {/* ═══════════════════════════ ASSIGN MODAL ═══════════════════════════ */}
       {showAssignModal && selectedCharacter ? (
         <Portal><AssignReferenceModal
           assigning={assigning}
@@ -1318,95 +1561,310 @@ export function Characters() {
           shots={shots}
         /></Portal>
       ) : null}
-    </section>
+    </div>
   );
 }
 
-function CharacterCard({
+
+/* ═══════════════════════════════════════════════════════════════
+   Character Detail Panel (Right Side)
+   ═══════════════════════════════════════════════════════════════ */
+
+function CharacterDetailPanel({
   character,
+  viewedLookId,
+  viewedLook,
+  viewedLookPrompt,
+  promptCopied,
+  projectFolderPath,
   onEdit,
   onDelete,
-  onAssign,
+  onGenerateCandidates,
+  onLookSelect,
+  onNewLook,
   onUploadImages,
-  projectFolderPath,
+  onAssign,
+  onCopyPrompt,
 }: {
   character: CharacterRecord;
+  viewedLookId: string | null;
+  viewedLook: CharacterRecord["looks"][number] | null;
+  viewedLookPrompt: string;
+  promptCopied: boolean;
+  projectFolderPath: string;
   onEdit: () => void;
   onDelete: () => void;
-  onAssign: () => void;
+  onGenerateCandidates: () => void;
+  onLookSelect: (lookId: string) => void;
+  onNewLook: () => void;
   onUploadImages: () => void;
-  projectFolderPath: string;
+  onAssign: () => void;
+  onCopyPrompt: () => void;
 }) {
-  const defaultLook =
-    character.looks.find((look) => look.id === character.defaultLookId) ??
-    character.looks[0] ??
-    null;
-  const previewLook =
-    defaultLook?.primaryImage || defaultLook?.refImages[0]
-      ? defaultLook
-      : character.looks.find((look) => look.primaryImage || look.refImages[0]) ?? defaultLook;
-  const primaryUrl = toProjectAssetUrl(
-    projectFolderPath,
-    previewLook?.primaryImage ??
-      previewLook?.refImages[0] ??
-      character.primaryImage ??
-      character.refImages[0] ??
-      null,
-  );
+  const description =
+    character.description ||
+    summarizeCharacterProfile(character.profile, character.styleNotes) ||
+    "";
+
+  /** Collect non-empty attributes from the viewed look */
+  const lookAttributes = useMemo(() => {
+    if (!viewedLook) return [];
+    const entries: { key: keyof CharacterLookAttributes; label: string; value: string }[] = [];
+    for (const [key, label] of Object.entries(ATTRIBUTE_LABELS)) {
+      const val = viewedLook.attributes[key as keyof CharacterLookAttributes];
+      if (val && val.trim()) {
+        entries.push({ key: key as keyof CharacterLookAttributes, label, value: val });
+      }
+    }
+    return entries;
+  }, [viewedLook]);
 
   return (
-    <article style={cardStyle}>
-      <div style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 16 }}>
-        <div style={mediaStyle}>
-          {primaryUrl ? (
-            <img alt={character.name} src={primaryUrl} style={mediaImageStyle} />
-          ) : (
-            <UserRound size={34} style={{ color: "rgba(255,255,255,0.18)" }} />
-          )}
+    <>
+      {/* Sticky header */}
+      <div style={detailHeaderStyle}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 900, letterSpacing: "-0.04em", lineHeight: 1.1 }}>
+            {character.name}
+          </h1>
         </div>
-
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <div style={{ display: "grid", gap: 6 }}>
-              <strong style={{ fontSize: 18 }}>{character.name}</strong>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {character.klingElementId ? <span style={mutedTagStyle}>{character.klingElementId}</span> : null}
-                <span style={tagStyle}>{character.looks.length} look</span>
-                <span style={mutedTagStyle}>{defaultLook?.name ?? "Default Look"}</span>
-              </div>
-            </div>
-            <button className="icon-button" onClick={onEdit} type="button">
-              <Pencil size={15} />
-            </button>
-          </div>
-
-          <div style={textBlockStyle}>
-            {character.promptHint || character.description || summarizeCharacterProfile(character.profile, character.styleNotes) || "Karakter notu eklenmedi."}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button className="btn-secondary" onClick={onUploadImages} type="button">
-              <Plus size={14} />
-              Gorsel yukle
-            </button>
-            <button className="btn-secondary" onClick={onEdit} type="button">
-              <Pencil size={14} />
-              Studyoda ac
-            </button>
-            <button className="btn-secondary" onClick={onAssign} type="button">
-              <Link2 size={14} />
-              Shot'a bagla
-            </button>
-            <button className="btn-secondary" onClick={onDelete} type="button">
-              <Trash2 size={14} />
-              Sil
-            </button>
-          </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+          <button
+            onClick={onUploadImages}
+            style={detailIconBtnStyle}
+            title="Gorsel yukle"
+            type="button"
+          >
+            <ImagePlus size={16} />
+          </button>
+          <button
+            onClick={onAssign}
+            style={detailIconBtnStyle}
+            title="Shot'a bagla"
+            type="button"
+          >
+            <Link2 size={16} />
+          </button>
+          <button
+            onClick={onEdit}
+            style={detailIconBtnStyle}
+            title="Duzenle"
+            type="button"
+          >
+            <Pencil size={16} />
+          </button>
+          <button
+            onClick={onDelete}
+            style={{ ...detailIconBtnStyle, color: "#ef4444" }}
+            title="Sil"
+            type="button"
+          >
+            <Trash2 size={16} />
+          </button>
+          <button
+            onClick={onGenerateCandidates}
+            style={generateBtnStyle}
+            type="button"
+          >
+            Aday Gorsel Uret
+          </button>
         </div>
       </div>
-    </article>
+
+      {/* Content area */}
+      <div style={{ padding: "24px 32px 48px" }}>
+        {/* Description */}
+        {description ? (
+          <p style={{ margin: "0 0 32px", color: "#71717a", fontSize: 14, lineHeight: 1.7 }}>
+            {description}
+          </p>
+        ) : null}
+
+        {/* Looks Grid */}
+        <div style={{ marginBottom: 32 }}>
+          <div style={sectionTitleStyle}>Gorunumler</div>
+          <div style={looksGridStyle}>
+            {character.looks.map((look) => {
+              const isActive = look.id === viewedLookId;
+              const isDefault = look.id === character.defaultLookId;
+              const imageUrl = toProjectAssetUrl(
+                projectFolderPath,
+                look.primaryImage ?? look.refImages[0] ?? null,
+              );
+
+              return (
+                <div key={look.id}>
+                  <button
+                    onClick={() => onLookSelect(look.id)}
+                    style={{
+                      ...lookCardStyle,
+                      outline: isActive ? "2px solid #000000" : "none",
+                      outlineOffset: isActive ? -2 : 0,
+                      filter: isActive ? "none" : "grayscale(1)",
+                      opacity: isActive ? 1 : 0.4,
+                    }}
+                    type="button"
+                  >
+                    {imageUrl ? (
+                      <img
+                        alt={look.name}
+                        src={imageUrl}
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                      />
+                    ) : (
+                      <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", background: "#f4f4f5" }}>
+                        <UserRound size={28} style={{ color: "#d4d4d8" }} />
+                      </div>
+                    )}
+
+                    {/* Check badge for active/default */}
+                    {(isActive || isDefault) ? (
+                      <div style={lookBadgeStyle}>
+                        <Check size={12} strokeWidth={3} />
+                      </div>
+                    ) : null}
+                  </button>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 12,
+                      fontWeight: isActive ? 600 : 400,
+                      color: isActive ? "#18181b" : "#71717a",
+                      textAlign: "center",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {look.name}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* New Look card */}
+            <div>
+              <button
+                onClick={onNewLook}
+                style={newLookCardStyle}
+                type="button"
+              >
+                <ImagePlus size={24} style={{ color: "#a1a1aa" }} />
+              </button>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#a1a1aa", textAlign: "center" }}>
+                Yeni Gorunum
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Look Details Section */}
+        {viewedLook ? (
+          <div style={lookDetailContainerStyle}>
+            {/* Look detail header */}
+            <div style={{ marginBottom: 20 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#18181b" }}>
+                Gorunum Detayi: {viewedLook.name}
+              </h3>
+              {viewedLook.promptHint ? (
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#71717a", lineHeight: 1.6 }}>
+                  {viewedLook.promptHint}
+                </p>
+              ) : null}
+            </div>
+
+            {/* Reference images */}
+            {viewedLook.refImages.length > 0 ? (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ ...sectionSubTitleStyle, marginBottom: 10 }}>Referans Gorselleri</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {viewedLook.refImages.map((refImage) => {
+                    const imageUrl = toProjectAssetUrl(projectFolderPath, refImage);
+                    const isPrimary = refImage === viewedLook.primaryImage;
+                    return (
+                      <div
+                        key={refImage}
+                        style={{
+                          position: "relative",
+                          width: 80,
+                          height: 80,
+                          borderRadius: 12,
+                          overflow: "hidden",
+                          outline: isPrimary ? "2px solid #22c55e" : "1px solid #e4e4e7",
+                          outlineOffset: isPrimary ? -2 : -1,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {imageUrl ? (
+                          <img
+                            alt="ref"
+                            src={imageUrl}
+                            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                          />
+                        ) : (
+                          <div style={{ width: "100%", height: "100%", background: "#f4f4f5" }} />
+                        )}
+                        {isPrimary ? (
+                          <div style={refPrimaryBadgeStyle}>
+                            <Check size={10} strokeWidth={3} />
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Attributes */}
+            {lookAttributes.length > 0 ? (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ ...sectionSubTitleStyle, marginBottom: 10 }}>Ozellikler</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {lookAttributes.map(({ key, label, value }) => (
+                    <span key={key} style={attributeChipStyle}>
+                      <strong style={{ fontWeight: 600 }}>{label}:</strong> {value}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Generation prompt */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <Lock size={13} style={{ color: "#a1a1aa" }} />
+                <span style={sectionSubTitleStyle}>Uretim Promptu</span>
+              </div>
+              <div style={{ position: "relative" }}>
+                <textarea
+                  readOnly
+                  style={promptTextareaStyle}
+                  value={viewedLookPrompt || "Prompt henuz olusturulmadi."}
+                />
+                {viewedLookPrompt ? (
+                  <button
+                    onClick={onCopyPrompt}
+                    style={copyPromptBtnStyle}
+                    title="Kopyala"
+                    type="button"
+                  >
+                    {promptCopied ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   Assign Reference Modal
+   ═══════════════════════════════════════════════════════════════ */
 
 function AssignReferenceModal({
   character,
@@ -1444,17 +1902,27 @@ function AssignReferenceModal({
 
   return (
     <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(event) => event.stopPropagation()} style={{ ...modalPanelStyle, width: "min(560px, 100%)" }}>
+      <div onClick={(event) => event.stopPropagation()} style={modalPanelStyle}>
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>Shot'a karakter bagla</div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#18181b" }}>Shot'a karakter bagla</div>
+          <p style={{ margin: 0, color: "#71717a", fontSize: 13, lineHeight: 1.7 }}>
             Secilen look'un primary referansi shot'a baglanacak. Istersen promptlara continuity hint'i de eklenir.
           </p>
         </div>
 
-        {previewUrl ? <img alt={character.name} src={previewUrl} style={{ ...thumbStyle, width: "100%", height: 220 }} /> : null}
+        {previewUrl ? (
+          <img
+            alt={character.name}
+            src={previewUrl}
+            style={{ width: "100%", height: 220, objectFit: "cover", borderRadius: 16, display: "block" }}
+          />
+        ) : null}
 
-        <select onChange={(event) => onLookChange(event.target.value)} style={formInputStyle} value={selectedLookId}>
+        <select
+          onChange={(event) => onLookChange(event.target.value)}
+          style={modalSelectStyle}
+          value={selectedLookId}
+        >
           {character.looks.map((look) => (
             <option key={look.id} value={look.id}>
               {look.name}
@@ -1462,7 +1930,12 @@ function AssignReferenceModal({
           ))}
         </select>
 
-        <select disabled={shots.length === 0} onChange={(event) => onShotChange(event.target.value)} style={formInputStyle} value={selectedShotId}>
+        <select
+          disabled={shots.length === 0}
+          onChange={(event) => onShotChange(event.target.value)}
+          style={modalSelectStyle}
+          value={selectedShotId}
+        >
           <option value="">Shot sec</option>
           {shots.map((shot) => (
             <option key={shot.id} value={shot.id}>
@@ -1471,16 +1944,30 @@ function AssignReferenceModal({
           ))}
         </select>
 
-        <label style={toggleRowStyle}>
-          <input checked={includePrompt} onChange={(event) => onIncludePromptChange(event.target.checked)} type="checkbox" />
+        <label style={modalToggleStyle}>
+          <input
+            checked={includePrompt}
+            onChange={(event) => onIncludePromptChange(event.target.checked)}
+            type="checkbox"
+          />
           <span>Karakter continuity hint'ini promptlara ekle</span>
         </label>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button className="btn-secondary" disabled={assigning} onClick={onClose} type="button">
+          <button
+            disabled={assigning}
+            onClick={onClose}
+            style={modalSecondaryBtnStyle}
+            type="button"
+          >
             Iptal
           </button>
-          <button className="btn-primary" disabled={!selectedShotId || !selectedLook?.primaryImage || assigning} onClick={onAssign} type="button">
+          <button
+            disabled={!selectedShotId || !selectedLook?.primaryImage || assigning}
+            onClick={onAssign}
+            style={modalPrimaryBtnStyle}
+            type="button"
+          >
             {assigning ? "Ataniyor..." : "Bagla"}
           </button>
         </div>
@@ -1489,139 +1976,351 @@ function AssignReferenceModal({
   );
 }
 
-function CharactersState({ title, copy }: { title: string; copy: string }) {
+
+/* ═══════════════════════════════════════════════════════════════
+   Empty State Component
+   ═══════════════════════════════════════════════════════════════ */
+
+function CharactersEmptyState({ title, copy }: { title: string; copy: string }) {
   return (
-    <section className="screen-shell">
-      <div style={emptyStateStyle}>
-        <div style={{ display: "grid", gap: 10, justifyItems: "center", maxWidth: 420, textAlign: "center" }}>
-          <UserRound size={34} style={{ color: "var(--accent)" }} />
-          <div style={{ fontSize: 20, fontWeight: 600 }}>{title}</div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>{copy}</p>
+    <div style={masterDetailContainerStyle}>
+      <div style={{ ...leftPanelStyle, minHeight: "100%" }}>
+        <div style={leftPanelHeaderStyle}>
+          <span style={{ fontSize: 20, fontWeight: 700 }}>Karakterler</span>
         </div>
       </div>
-    </section>
+      <div style={rightPanelStyle}>
+        <div style={emptyDetailStyle}>
+          <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
+          <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>{title}</div>
+          <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6, maxWidth: 320, textAlign: "center" }}>
+            {copy}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
 
-const heroStyle = {
+/* ═══════════════════════════════════════════════════════════════
+   STYLES
+   ═══════════════════════════════════════════════════════════════ */
+
+const masterDetailContainerStyle = {
   display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: 18,
-  flexWrap: "wrap",
-  padding: 24,
-  borderRadius: 28,
-  border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(135deg, rgba(245,158,11,0.08), transparent 28%), var(--bg-surface)",
+  height: "calc(100vh - var(--topbar-h, 56px))",
+  overflow: "hidden",
 } satisfies React.CSSProperties;
 
-const eyebrowStyle = {
-  display: "inline-flex",
-  width: "fit-content",
+const leftPanelStyle = {
+  width: 300,
+  minWidth: 300,
+  maxWidth: 300,
+  display: "flex",
+  flexDirection: "column",
+  borderRight: "1px solid #e4e4e7",
+  background: "#FAFAFA",
+  overflow: "hidden",
+} satisfies React.CSSProperties;
+
+const leftPanelHeaderStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "18px 16px 14px",
+  flexShrink: 0,
+} satisfies React.CSSProperties;
+
+const rightPanelStyle = {
+  flex: 1,
+  background: "#ffffff",
+  overflowY: "auto",
+  position: "relative",
+} satisfies React.CSSProperties;
+
+const searchWrapperStyle = {
+  display: "flex",
   alignItems: "center",
   gap: 8,
-  padding: "6px 10px",
+  padding: "8px 14px",
   borderRadius: 999,
-  border: "1px solid rgba(245, 158, 11, 0.24)",
-  background: "rgba(245, 158, 11, 0.1)",
-  color: "var(--accent)",
-  fontSize: 11,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
+  border: "1px solid #e4e4e7",
+  background: "#ffffff",
 } satisfies React.CSSProperties;
 
-const copyStyle = {
-  margin: 0,
-  color: "var(--text-secondary)",
-  lineHeight: 1.7,
-} satisfies React.CSSProperties;
-
-const toolbarStyle = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 12,
-  flexWrap: "wrap",
-  alignItems: "center",
-  padding: 18,
-  borderRadius: 20,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
-} satisfies React.CSSProperties;
-
-const searchInputStyle = {
-  minWidth: 260,
+const leftSearchInputStyle = {
   flex: 1,
-  padding: "12px 14px",
-  borderRadius: 14,
-  border: "1px solid var(--border-default)",
-  background: "var(--bg-elevated)",
-  color: "var(--text-primary)",
+  border: "none",
   outline: "none",
+  background: "transparent",
+  fontSize: 13,
+  color: "#18181b",
+  lineHeight: 1.4,
 } satisfies React.CSSProperties;
 
-const gridStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))",
-  gap: 16,
+const characterListStyle = {
+  flex: 1,
+  overflowY: "auto",
+  padding: "0 8px",
 } satisfies React.CSSProperties;
 
-const cardStyle = {
-  display: "grid",
-  gap: 16,
-  padding: 18,
-  borderRadius: 22,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
+const charListItemStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  width: "100%",
+  padding: "10px 8px",
+  border: "none",
+  cursor: "pointer",
+  textAlign: "left" as const,
+  transition: "background 150ms ease",
 } satisfies React.CSSProperties;
 
-const mediaStyle = {
+const activeBarStyle = {
+  width: 3,
+  height: 24,
+  borderRadius: "0 999px 999px 0",
+  background: "#000000",
+  flexShrink: 0,
+} satisfies React.CSSProperties;
+
+const avatarStyle = {
+  width: 40,
+  height: 40,
+  borderRadius: "50%",
+  overflow: "hidden",
+  background: "#f4f4f5",
   display: "grid",
   placeItems: "center",
-  minHeight: 164,
-  borderRadius: 18,
-  overflow: "hidden",
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-elevated)",
+  flexShrink: 0,
 } satisfies React.CSSProperties;
 
-const mediaImageStyle = {
+const leftPanelAddBtnStyle = {
+  width: 32,
+  height: 32,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 10,
+  border: "none",
+  background: "#000000",
+  color: "#ffffff",
+  cursor: "pointer",
+  transition: "background 150ms ease",
+} satisfies React.CSSProperties;
+
+const leftPanelIconBtnStyle = {
+  width: 32,
+  height: 32,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 10,
+  border: "1px solid #e4e4e7",
+  background: "transparent",
+  color: "#71717a",
+  cursor: "pointer",
+  transition: "all 150ms ease",
+} satisfies React.CSSProperties;
+
+const resumeDraftBtnStyle = {
   width: "100%",
-  height: "100%",
-  objectFit: "cover",
-  display: "block",
+  padding: "10px 16px",
+  borderRadius: 10,
+  border: "1px solid #e4e4e7",
+  background: "#ffffff",
+  color: "#18181b",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+  textAlign: "center" as const,
+  transition: "all 150ms ease",
 } satisfies React.CSSProperties;
 
-const tagStyle = {
+const detailHeaderStyle = {
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+  display: "flex",
+  alignItems: "center",
+  gap: 16,
+  height: 80,
+  padding: "0 32px",
+  background: "rgba(255,255,255,0.8)",
+  backdropFilter: "blur(20px)",
+  WebkitBackdropFilter: "blur(20px)",
+  borderBottom: "1px solid #e4e4e7",
+} satisfies React.CSSProperties;
+
+const detailIconBtnStyle = {
+  width: 36,
+  height: 36,
   display: "inline-flex",
-  padding: "4px 8px",
-  borderRadius: 999,
-  background: "rgba(245,158,11,0.1)",
-  color: "var(--accent)",
-  fontSize: 11,
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 10,
+  border: "1px solid #e4e4e7",
+  background: "transparent",
+  color: "#a1a1aa",
+  cursor: "pointer",
+  transition: "all 150ms ease",
 } satisfies React.CSSProperties;
 
-const mutedTagStyle = {
+const generateBtnStyle = {
   display: "inline-flex",
-  padding: "4px 8px",
-  borderRadius: 999,
-  background: "rgba(255,255,255,0.04)",
-  color: "var(--text-secondary)",
-  fontSize: 11,
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+  height: 36,
+  padding: "0 18px",
+  borderRadius: 12,
+  border: "none",
+  background: "#22C55E",
+  color: "#ffffff",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+  transition: "all 150ms ease",
+  whiteSpace: "nowrap",
 } satisfies React.CSSProperties;
 
-const textBlockStyle = {
-  minHeight: 70,
-  padding: 12,
+const sectionTitleStyle = {
+  fontSize: 11,
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  color: "#a1a1aa",
+  marginBottom: 14,
+} satisfies React.CSSProperties;
+
+const sectionSubTitleStyle = {
+  fontSize: 11,
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  color: "#a1a1aa",
+} satisfies React.CSSProperties;
+
+const looksGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, 1fr)",
+  gap: 14,
+} satisfies React.CSSProperties;
+
+const lookCardStyle = {
+  position: "relative",
+  width: "100%",
+  aspectRatio: "160 / 180",
+  borderRadius: 16,
+  overflow: "hidden",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  transition: "all 200ms ease",
+  background: "#f4f4f5",
+} satisfies React.CSSProperties;
+
+const lookBadgeStyle = {
+  position: "absolute",
+  top: 8,
+  right: 8,
+  width: 22,
+  height: 22,
+  borderRadius: "50%",
+  background: "#22c55e",
+  color: "#ffffff",
+  display: "grid",
+  placeItems: "center",
+} satisfies React.CSSProperties;
+
+const newLookCardStyle = {
+  width: "100%",
+  aspectRatio: "160 / 180",
+  borderRadius: 16,
+  border: "2px dashed #d4d4d8",
+  background: "transparent",
+  display: "grid",
+  placeItems: "center",
+  cursor: "pointer",
+  transition: "all 150ms ease",
+} satisfies React.CSSProperties;
+
+const lookDetailContainerStyle = {
+  background: "#f3f3f4",
+  borderRadius: 24,
+  padding: 32,
+} satisfies React.CSSProperties;
+
+const refPrimaryBadgeStyle = {
+  position: "absolute",
+  top: 4,
+  right: 4,
+  width: 18,
+  height: 18,
+  borderRadius: "50%",
+  background: "#22c55e",
+  color: "#ffffff",
+  display: "grid",
+  placeItems: "center",
+} satisfies React.CSSProperties;
+
+const attributeChipStyle = {
+  display: "inline-flex",
+  gap: 4,
+  padding: "6px 14px",
+  borderRadius: 999,
+  background: "#ffffff",
+  border: "1px solid #e4e4e7",
+  fontSize: 12,
+  color: "#3f3f46",
+  lineHeight: 1.3,
+} satisfies React.CSSProperties;
+
+const promptTextareaStyle = {
+  width: "100%",
+  minHeight: 120,
+  padding: "14px 16px",
+  paddingRight: 44,
   borderRadius: 14,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-elevated)",
-  color: "var(--text-secondary)",
+  border: "1px solid #e4e4e7",
+  background: "#ffffff",
+  color: "#3f3f46",
   fontSize: 12,
   lineHeight: 1.7,
-  whiteSpace: "pre-wrap",
+  resize: "none" as const,
+  outline: "none",
+  fontFamily: "inherit",
 } satisfies React.CSSProperties;
 
+const copyPromptBtnStyle = {
+  position: "absolute",
+  top: 10,
+  right: 10,
+  width: 30,
+  height: 30,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 8,
+  border: "1px solid #e4e4e7",
+  background: "#ffffff",
+  color: "#71717a",
+  cursor: "pointer",
+  transition: "all 150ms ease",
+} satisfies React.CSSProperties;
+
+const emptyDetailStyle = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 12,
+  height: "100%",
+  minHeight: 400,
+} satisfies React.CSSProperties;
+
+/* Modal styles */
 const modalBackdropStyle = {
   position: "fixed",
   inset: 0,
@@ -1629,52 +2328,70 @@ const modalBackdropStyle = {
   display: "grid",
   placeItems: "center",
   padding: 20,
-  background: "rgba(0, 0, 0, 0.72)",
-  backdropFilter: "blur(10px)",
+  background: "rgba(0, 0, 0, 0.3)",
+  backdropFilter: "blur(8px)",
 } satisfies React.CSSProperties;
 
 const modalPanelStyle = {
-  width: "min(760px, 100%)",
+  width: "min(520px, 100%)",
   display: "grid",
   gap: 18,
-  padding: 24,
-  borderRadius: 24,
-  border: "1px solid var(--border-default)",
-  background: "var(--bg-surface)",
+  padding: 28,
+  borderRadius: 20,
+  border: "1px solid #e4e4e7",
+  background: "#ffffff",
+  boxShadow: "0 25px 50px -12px rgba(0,0,0,0.15)",
 } satisfies React.CSSProperties;
 
-const formInputStyle = {
+const modalSelectStyle = {
   width: "100%",
   padding: "12px 14px",
-  borderRadius: 14,
-  border: "1px solid var(--border-default)",
-  background: "var(--bg-elevated)",
-  color: "var(--text-primary)",
+  borderRadius: 12,
+  border: "1px solid #e4e4e7",
+  background: "#fafafa",
+  color: "#18181b",
+  fontSize: 13,
   outline: "none",
 } satisfies React.CSSProperties;
 
-const toggleRowStyle = {
+const modalToggleStyle = {
   display: "flex",
   alignItems: "center",
   gap: 10,
-  color: "var(--text-secondary)",
+  color: "#71717a",
   fontSize: 13,
 } satisfies React.CSSProperties;
 
-const thumbStyle = {
-  width: "100%",
-  height: 112,
-  objectFit: "cover",
-  display: "block",
-  borderRadius: 12,
+const modalSecondaryBtnStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+  minHeight: 40,
+  padding: "10px 20px",
+  borderRadius: 10,
+  border: "1px solid #e4e4e7",
+  background: "transparent",
+  color: "#3f3f46",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+  transition: "all 150ms ease",
 } satisfies React.CSSProperties;
 
-const emptyStateStyle = {
-  display: "grid",
-  placeItems: "center",
-  minHeight: 360,
-  padding: 24,
-  borderRadius: 24,
-  border: "1px dashed var(--border-default)",
-  background: "var(--bg-surface)",
+const modalPrimaryBtnStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+  minHeight: 40,
+  padding: "10px 20px",
+  borderRadius: 10,
+  border: "none",
+  background: "#000000",
+  color: "#ffffff",
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: "pointer",
+  transition: "all 150ms ease",
 } satisfies React.CSSProperties;

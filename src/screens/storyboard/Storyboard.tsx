@@ -83,6 +83,7 @@ export function Storyboard() {
     .filter((job) => job.projectId === activeProjectId)
     .map((job) => `${job.id}:${job.status}:${job.resultPath ?? ""}`)
     .join("|");
+  const hasImportedShots = shots.length > 0;
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -263,13 +264,19 @@ export function Storyboard() {
     setImporting(true);
 
     try {
+      const currentPreview = importPreviewData;
       await executeImport(importFolder);
       await loadShots();
       setShowImportModal(false);
-      await message("Storyboard import tamamlandi.", {
-        title: "Storyboard",
-        kind: "info",
-      });
+      await message(
+        currentPreview
+          ? `${currentPreview.matchedShotCount} shot guncellendi, ${currentPreview.newShotCount} yeni shot eklendi.`
+          : "Storyboard import tamamlandi.",
+        {
+          title: "Storyboard",
+          kind: "info",
+        },
+      );
     } catch (error) {
       console.error("Failed to import storyboard", error);
       await message(
@@ -584,9 +591,8 @@ export function Storyboard() {
           padding: 28,
           borderRadius: 32,
           border: "1px solid var(--border-default)",
-          background:
-            "radial-gradient(circle at top left, rgba(245, 158, 11, 0.14), transparent 28%), linear-gradient(135deg, rgba(24, 24, 28, 0.97), rgba(10, 10, 12, 0.98))",
-          boxShadow: "0 30px 100px rgba(0, 0, 0, 0.34)",
+          background: "#ffffff",
+          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
         }}
       >
         <div
@@ -645,8 +651,8 @@ export function Storyboard() {
                 gap: 8,
                 padding: "7px 12px",
                 borderRadius: 999,
-                border: "1px solid rgba(245, 158, 11, 0.24)",
-                background: "rgba(245, 158, 11, 0.08)",
+                border: "1px solid rgba(0, 0, 0, 0.12)",
+                background: "rgba(0, 0, 0, 0.04)",
                 color: "var(--accent)",
                 fontSize: 11,
                 fontWeight: 800,
@@ -682,9 +688,8 @@ export function Storyboard() {
               gap: 18,
               padding: 20,
               borderRadius: 24,
-              border: "1px solid rgba(255, 255, 255, 0.08)",
-              background:
-                "linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015))",
+              border: "1px solid rgba(0, 0, 0, 0.06)",
+              background: "#f9f9f9",
             }}
           >
             <div style={{ display: "grid", gap: 8 }}>
@@ -700,7 +705,7 @@ export function Storyboard() {
                 Production Controls
               </span>
               <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.03em" }}>
-                Import, archive ve toplu uretim ayni board yuzeyinde.
+                Import, guncelleme, archive ve toplu uretim ayni board yuzeyinde.
               </div>
               <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
                 Bu panel storyboard akisini daha net okuturken mevcut islevleri aynen
@@ -715,7 +720,7 @@ export function Storyboard() {
               </SurfaceActionButton>
               <SurfaceActionButton onClick={() => void handleImportClick()} type="secondary">
                 <Download size={15} />
-                Film-kit Import
+                {hasImportedShots ? "Film-kit Guncelle" : "Film-kit Import"}
               </SurfaceActionButton>
               <SurfaceActionButton
                 disabled={mainShots.length === 0}
@@ -818,7 +823,7 @@ export function Storyboard() {
                     height: 8,
                     borderRadius: 999,
                     background: "var(--accent)",
-                    boxShadow: "0 0 16px rgba(245, 158, 11, 0.7)",
+                    boxShadow: "0 0 8px rgba(0, 0, 0, 0.3)",
                   }}
                 />
                 Auto-saving storyboard changes
@@ -830,8 +835,8 @@ export function Storyboard() {
                   gap: 6,
                   padding: "6px",
                   borderRadius: 999,
-                  border: "1px solid rgba(255, 255, 255, 0.08)",
-                  background: "rgba(255, 255, 255, 0.03)",
+                  border: "1px solid rgba(0, 0, 0, 0.06)",
+                  background: "rgba(0, 0, 0, 0.03)",
                 }}
               >
                 <ZoomControlButton label="Zoom out" onClick={() => changeZoom(-ZOOM_STEP)}>
@@ -894,9 +899,9 @@ export function Storyboard() {
                     width: boardWidth,
                     minHeight: boardHeight,
                     borderRadius: 30,
-                    border: "1px solid rgba(255, 255, 255, 0.05)",
+                    border: "1px solid rgba(0, 0, 0, 0.06)",
                     background:
-                      "linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px), linear-gradient(180deg, rgba(17,17,19,0.96), rgba(8,8,10,0.98))",
+                      "linear-gradient(rgba(0,0,0,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.018) 1px, transparent 1px), #f9f9f9",
                     backgroundSize: "108px 108px, 108px 108px, auto",
                     overflow: "hidden",
                     transform: `scale(${zoom})`,
@@ -912,7 +917,7 @@ export function Storyboard() {
                       height: 8,
                       margin: `-${BOARD_SIDE_PADDING}px -${BOARD_SIDE_PADDING}px 0`,
                       background:
-                        "linear-gradient(90deg, rgba(245, 158, 11, 0.22), transparent 22%, transparent 78%, rgba(59, 130, 246, 0.14))",
+                        "linear-gradient(90deg, rgba(0, 0, 0, 0.1), transparent 22%, transparent 78%, rgba(0, 0, 0, 0.06))",
                     }}
                   />
 
@@ -1093,20 +1098,20 @@ function SurfaceActionButton({
         borderRadius: 14,
         border:
           type === "primary"
-            ? "1px solid rgba(245, 158, 11, 0.28)"
-            : "1px solid rgba(255, 255, 255, 0.08)",
+            ? "1px solid rgba(0, 0, 0, 0.2)"
+            : "1px solid rgba(0, 0, 0, 0.08)",
         background:
           type === "primary"
-            ? "linear-gradient(135deg, #f59e0b, #f6c453)"
-            : "rgba(255, 255, 255, 0.04)",
-        color: type === "primary" ? "#140b00" : "var(--text-primary)",
+            ? "#000000"
+            : "rgba(0, 0, 0, 0.04)",
+        color: type === "primary" ? "#ffffff" : "var(--text-primary)",
         fontSize: 13,
         fontWeight: type === "primary" ? 800 : 700,
         letterSpacing: "0.02em",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.48 : 1,
         boxShadow:
-          type === "primary" && !disabled ? "0 14px 32px rgba(245, 158, 11, 0.24)" : "none",
+          type === "primary" && !disabled ? "0 4px 12px rgba(0, 0, 0, 0.12)" : "none",
       }}
       type="button"
     >
@@ -1133,9 +1138,9 @@ function HeroInfoPill({
         padding: "8px 12px",
         borderRadius: 999,
         border: `1px solid ${
-          accent ? "rgba(245, 158, 11, 0.26)" : "rgba(255, 255, 255, 0.08)"
+          accent ? "rgba(0, 0, 0, 0.12)" : "rgba(0, 0, 0, 0.06)"
         }`,
-        background: accent ? "rgba(245, 158, 11, 0.08)" : "rgba(255, 255, 255, 0.04)",
+        background: accent ? "rgba(0, 0, 0, 0.04)" : "rgba(0, 0, 0, 0.02)",
       }}
     >
       <span
@@ -1179,9 +1184,9 @@ function BoardMetaPill({
         padding: "9px 12px",
         borderRadius: 999,
         border: `1px solid ${
-          accent ? "rgba(245, 158, 11, 0.24)" : "rgba(255, 255, 255, 0.08)"
+          accent ? "rgba(0, 0, 0, 0.12)" : "rgba(0, 0, 0, 0.06)"
         }`,
-        background: accent ? "rgba(245, 158, 11, 0.08)" : "rgba(255, 255, 255, 0.04)",
+        background: accent ? "rgba(0, 0, 0, 0.04)" : "rgba(0, 0, 0, 0.02)",
         color: accent ? "var(--accent)" : "var(--text-secondary)",
         fontSize: 12,
         fontWeight: 600,
@@ -1212,8 +1217,8 @@ function ZoomControlButton({
         width: 34,
         height: 34,
         borderRadius: 999,
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        background: "rgba(8, 8, 10, 0.55)",
+        border: "1px solid rgba(0, 0, 0, 0.08)",
+        background: "#ffffff",
         color: "var(--text-secondary)",
         cursor: "pointer",
       }}
@@ -1257,8 +1262,8 @@ function MetricCard({
               text: "var(--status-success)",
             }
           : {
-              border: "rgba(245, 158, 11, 0.24)",
-              glow: "rgba(245, 158, 11, 0.12)",
+              border: "rgba(0, 0, 0, 0.12)",
+              glow: "rgba(0, 0, 0, 0.04)",
               text: "var(--accent)",
             };
 
@@ -1273,8 +1278,8 @@ function MetricCard({
         border: `1px solid ${tokens.border}`,
         background:
           emphasized
-            ? `linear-gradient(180deg, ${tokens.glow}, rgba(255,255,255,0.02) 48%), rgba(17, 17, 19, 0.86)`
-            : "rgba(17, 17, 19, 0.82)",
+            ? `linear-gradient(180deg, ${tokens.glow}, transparent 48%), #ffffff`
+            : "#ffffff",
         boxShadow: emphasized ? `0 18px 44px ${tokens.glow}` : "none",
       }}
     >
@@ -1317,7 +1322,7 @@ function TrackHeader({
             padding: "7px 12px",
             borderRadius: 999,
             background:
-              tone === "accent" ? "rgba(245, 158, 11, 0.12)" : "rgba(255,255,255,0.04)",
+              tone === "accent" ? "rgba(0, 0, 0, 0.06)" : "rgba(0, 0, 0, 0.03)",
             color: tone === "accent" ? "var(--accent)" : "var(--text-secondary)",
             fontSize: 10,
             fontWeight: 800,
@@ -1333,8 +1338,8 @@ function TrackHeader({
             height: 1,
             background:
               tone === "accent"
-                ? "linear-gradient(90deg, rgba(245, 158, 11, 0.28), rgba(255,255,255,0.04))"
-                : "linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03))",
+                ? "linear-gradient(90deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.02))"
+                : "linear-gradient(90deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.02))",
           }}
         />
       </div>
@@ -1363,7 +1368,7 @@ function SequenceBadge({ caption, index }: { caption: string; index: number }) {
             width: 72,
             height: 2,
             borderRadius: 999,
-            background: "linear-gradient(90deg, rgba(245, 158, 11, 0.58), rgba(255,255,255,0.1))",
+            background: "linear-gradient(90deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.04))",
           }}
         />
         <span
@@ -1411,8 +1416,8 @@ function InlineConnector({ isLinked }: { isLinked: boolean }) {
             height: 2,
             borderRadius: 999,
             background: isLinked
-              ? "linear-gradient(90deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.96))"
-              : "linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.24))",
+              ? "linear-gradient(90deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4))"
+              : "linear-gradient(90deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.14))",
           }}
         />
         <div
@@ -1422,8 +1427,8 @@ function InlineConnector({ isLinked }: { isLinked: boolean }) {
             top: 14,
             width: 12,
             height: 12,
-            borderTop: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
-            borderRight: `2px solid ${isLinked ? "var(--accent)" : "rgba(255,255,255,0.24)"}`,
+            borderTop: `2px solid ${isLinked ? "var(--accent)" : "rgba(0,0,0,0.14)"}`,
+            borderRight: `2px solid ${isLinked ? "var(--accent)" : "rgba(0,0,0,0.14)"}`,
             transform: "rotate(45deg)",
           }}
         />
@@ -1455,8 +1460,8 @@ function CoverageEmptyState() {
         display: "grid",
         placeItems: "center",
         borderRadius: 22,
-        border: "1px dashed rgba(255,255,255,0.1)",
-        background: "rgba(255,255,255,0.02)",
+        border: "1px dashed rgba(0,0,0,0.1)",
+        background: "rgba(0,0,0,0.02)",
         color: "var(--text-muted)",
         textAlign: "center",
       }}
@@ -1505,7 +1510,7 @@ function StoryboardEmptyState({ onImport }: { onImport: () => void }) {
             display: "grid",
             placeItems: "center",
             borderRadius: 999,
-            background: "rgba(245, 158, 11, 0.08)",
+            background: "rgba(0, 0, 0, 0.04)",
             color: "var(--accent)",
           }}
         >

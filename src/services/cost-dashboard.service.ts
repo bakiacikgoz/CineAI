@@ -14,6 +14,7 @@ export interface CostOverview {
   videoUsd: number;
   upscaleUsd: number;
   llmUsd: number;
+  ttsUsd: number;
   assetBackedUsd: number;
   avgDailyUsd: number;
   spendDays: number;
@@ -129,6 +130,7 @@ export async function getCostOverview(
     videoUsd: number | null;
     upscaleUsd: number | null;
     llmUsd: number | null;
+    ttsUsd: number | null;
     assetBackedUsd: number | null;
   }>>(
     `SELECT
@@ -137,6 +139,7 @@ export async function getCostOverview(
        COALESCE(SUM(CASE WHEN type = 'video' THEN amount_usd ELSE 0 END), 0) AS videoUsd,
        COALESCE(SUM(CASE WHEN type = 'upscale' THEN amount_usd ELSE 0 END), 0) AS upscaleUsd,
        COALESCE(SUM(CASE WHEN type = 'llm' THEN amount_usd ELSE 0 END), 0) AS llmUsd,
+       COALESCE(SUM(CASE WHEN type = 'tts' THEN amount_usd ELSE 0 END), 0) AS ttsUsd,
        COALESCE(SUM(CASE
          WHEN EXISTS (
            SELECT 1
@@ -233,6 +236,7 @@ export async function getCostOverview(
     videoUsd: totalsRow?.videoUsd ?? 0,
     upscaleUsd: totalsRow?.upscaleUsd ?? 0,
     llmUsd: totalsRow?.llmUsd ?? 0,
+    ttsUsd: totalsRow?.ttsUsd ?? 0,
     assetBackedUsd: totalsRow?.assetBackedUsd ?? 0,
     avgDailyUsd,
     spendDays,

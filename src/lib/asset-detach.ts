@@ -24,25 +24,35 @@ export interface AssetDetachUpdate {
   }>;
 }
 
+function normalizeAssetPath(path: string | null | undefined): string | null {
+  return path ? path.replace(/\\/g, "/") : null;
+}
+
 export function buildAssetDetachUpdates(
   shots: AssetDetachShot[],
   assetPath: string,
 ): AssetDetachUpdate[] {
+  const normalizedAssetPath = normalizeAssetPath(assetPath);
   const updates: AssetDetachUpdate[] = [];
 
   for (const shot of shots) {
     const slots: AssetDetachUpdate["slots"] = [];
     const nextUpdates: AssetDetachUpdate["updates"] = {};
-    const nextImageStartPath = shot.imageStartPath === assetPath ? null : shot.imageStartPath;
-    const nextImageEndPath = shot.imageEndPath === assetPath ? null : shot.imageEndPath;
-    const nextVideo4kPath = shot.video4kPath === assetPath ? null : shot.video4kPath;
+    const startPath = normalizeAssetPath(shot.imageStartPath);
+    const endPath = normalizeAssetPath(shot.imageEndPath);
+    const videoPath = normalizeAssetPath(shot.videoPath);
+    const video4kPath = normalizeAssetPath(shot.video4kPath);
+    const referencePath = normalizeAssetPath(shot.externalReferencePath);
+    const nextImageStartPath = startPath === normalizedAssetPath ? null : shot.imageStartPath;
+    const nextImageEndPath = endPath === normalizedAssetPath ? null : shot.imageEndPath;
+    const nextVideo4kPath = video4kPath === normalizedAssetPath ? null : shot.video4kPath;
 
-    if (shot.imageStartPath === assetPath) {
+    if (startPath === normalizedAssetPath) {
       slots.push("start");
       nextUpdates.imageStartPath = null;
     }
 
-    if (shot.imageEndPath === assetPath) {
+    if (endPath === normalizedAssetPath) {
       slots.push("end");
       nextUpdates.imageEndPath = null;
     }
@@ -53,7 +63,7 @@ export function buildAssetDetachUpdates(
       }
     }
 
-    if (shot.videoPath === assetPath) {
+    if (videoPath === normalizedAssetPath) {
       slots.push("video");
       nextUpdates.videoPath = null;
       if (!nextVideo4kPath) {
@@ -61,13 +71,13 @@ export function buildAssetDetachUpdates(
       }
     }
 
-    if (shot.video4kPath === assetPath) {
+    if (video4kPath === normalizedAssetPath) {
       slots.push("video4k");
       nextUpdates.video4kPath = null;
       nextUpdates.upscaleStatus = "none";
     }
 
-    if (shot.externalReferencePath === assetPath) {
+    if (referencePath === normalizedAssetPath) {
       slots.push("reference");
       nextUpdates.externalReferencePath = null;
     }

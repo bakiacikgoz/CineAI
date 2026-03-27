@@ -1,8 +1,17 @@
 import { join } from "@tauri-apps/api/path";
-import { exists, mkdir, readDir, readFile, readTextFile, writeFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, readDir, readFile, readTextFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { v4 as uuidv4 } from "uuid";
 import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
+import {
+  applyDialogueLineOverride,
+  createAudioContentHash,
+  resolveAudioShotStatus,
+  type AudioShotStatus,
+  type ParsedAudioDirection,
+  type ParsedDialogueLine,
+} from "@/lib/audio-direction-parser";
 import { parseShot, type ParsedShot } from "@/lib/markdown-parser";
+import { createDialogueOptimizationSourceHash } from "@/services/llm.service";
 import { syncActiveProjectPresentation } from "@/services/project-presentation.service";
 import { useProjectStore } from "@/store/project.store";
 
@@ -12,6 +21,9 @@ export interface ImportPreview {
   chainLinks: number;
   parsedShotCount: number;
   files: string[];
+  existingShotCount: number;
+  matchedShotCount: number;
+  newShotCount: number;
 }
 
 export interface ShotRow {
@@ -25,6 +37,7 @@ export interface ShotRow {
   durationS: number | null;
   tensionLevel: number | null;
   chainStatus: string;
+  usePreviousEndForStart: boolean;
   prevShotId: string | null;
   promptStart: string | null;
   promptEnd: string | null;
@@ -51,6 +64,24 @@ export interface ShotRow {
   characterId: string | null;
   characterLookId: string | null;
   includeCharacterPrompt: boolean;
+  audioDirectionJson: string | null;
+  audioDialoguePreview: string | null;
+  audioStatus: AudioShotStatus;
+  audioMasterPath: string | null;
+  audioModelUsed: string | null;
+  audioOutputFormat: string | null;
+  audioCharacterCount: number | null;
+  audioCostUsd: number | null;
+  audioTimestampsJson: string | null;
+  audioContentHash: string | null;
+  audioError: string | null;
+  audioOptimizedDialogueJson: string | null;
+  audioOptimizedDialoguePreview: string | null;
+  audioOptimizerModel: string | null;
+  audioOptimizerSourceHash: string | null;
+  audioGenerationProfileJson: string | null;
+  audioDialogueOverrideJson: string | null;
+  audioTakeHistoryJson: string | null;
   sourceFile: string | null;
   createdAt: number;
   updatedAt: number;
@@ -67,6 +98,7 @@ const SHOT_SELECT_SQL = `SELECT
   duration_s AS durationS,
   tension_level AS tensionLevel,
   chain_status AS chainStatus,
+  COALESCE(use_previous_end_for_start, 1) AS usePreviousEndForStart,
   prev_shot_id AS prevShotId,
   prompt_start AS promptStart,
   prompt_end AS promptEnd,
@@ -131,6 +163,24 @@ const SHOT_SELECT_SQL = `SELECT
   character_id AS characterId,
   character_look_id AS characterLookId,
   COALESCE(include_character_prompt, 1) AS includeCharacterPrompt,
+  audio_direction_json AS audioDirectionJson,
+  audio_dialogue_preview AS audioDialoguePreview,
+  COALESCE(audio_status, 'none') AS audioStatus,
+  audio_master_path AS audioMasterPath,
+  audio_model_used AS audioModelUsed,
+  audio_output_format AS audioOutputFormat,
+  audio_character_count AS audioCharacterCount,
+  audio_cost_usd AS audioCostUsd,
+  audio_timestamps_json AS audioTimestampsJson,
+  audio_content_hash AS audioContentHash,
+  audio_error AS audioError,
+  audio_optimized_dialogue_json AS audioOptimizedDialogueJson,
+  audio_optimized_dialogue_preview AS audioOptimizedDialoguePreview,
+  audio_optimizer_model AS audioOptimizerModel,
+  audio_optimizer_source_hash AS audioOptimizerSourceHash,
+  audio_generation_profile_json AS audioGenerationProfileJson,
+  audio_dialogue_override_json AS audioDialogueOverrideJson,
+  audio_take_history_json AS audioTakeHistoryJson,
   source_file AS sourceFile,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -143,12 +193,286 @@ export type ShotMediaAssignmentTarget =
   | "video"
   | "external-reference";
 
+type ImportedAudioState = {
+  audioDirectionJson: string | null;
+  audioDialoguePreview: string | null;
+  audioStatus: AudioShotStatus;
+  audioMasterPath: string | null;
+  audioModelUsed: string | null;
+  audioOutputFormat: string | null;
+  audioCharacterCount: number | null;
+  audioCostUsd: number | null;
+  audioTimestampsJson: string | null;
+  audioContentHash: string | null;
+  audioError: string | null;
+  audioOptimizedDialogueJson: string | null;
+  audioOptimizedDialoguePreview: string | null;
+  audioOptimizerModel: string | null;
+  audioOptimizerSourceHash: string | null;
+  audioGenerationProfileJson: string | null;
+  audioDialogueOverrideJson: string | null;
+  audioTakeHistoryJson: string | null;
+};
+
+function getAudioBlockedMessage(audioDirection: ParsedAudioDirection | null): string | null {
+  if (!audioDirection?.dialogueTranscript) {
+    return null;
+  }
+
+  if (!audioDirection.speakerTagged || audioDirection.dialogueLines.length === 0) {
+    return "Dialogue transcript speaker-tagged format istemeli: Konusmaci: replik";
+  }
+
+  return null;
+}
+
+function extractAudioTakePaths(value: string | null | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as {
+      takes?: Array<{ relativePath?: string | null }>;
+    };
+
+    if (!Array.isArray(parsed.takes)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        parsed.takes
+          .map((take) => take.relativePath?.trim() ?? "")
+          .filter(Boolean),
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseStoredAudioDirection(value: string | null | undefined): ParsedAudioDirection | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as ParsedAudioDirection;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredDialogueOverride(
+  value: string | null | undefined,
+): ParsedDialogueLine[] | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as {
+      lines?: Array<{
+        speaker?: string;
+        speakerKey?: string;
+        text?: string;
+      }>;
+    };
+
+    if (!Array.isArray(parsed.lines) || parsed.lines.length === 0) {
+      return null;
+    }
+
+    const lines = parsed.lines
+      .map((line) => ({
+        speaker: line.speaker?.trim() ?? "",
+        speakerKey: line.speakerKey?.trim() ?? "",
+        text: line.text?.trim() ?? "",
+      }))
+      .filter((line) => line.speaker && line.speakerKey && line.text);
+
+    return lines.length > 0 ? lines : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredAudioGenerationProfile(
+  value: string | null | undefined,
+): {
+  useOptimizer?: boolean;
+  performancePreset?: string | null;
+  performanceNote?: string | null;
+} | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as {
+      useOptimizer?: boolean;
+      performancePreset?: string | null;
+      performanceNote?: string | null;
+    };
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryRemoveProjectRelativeFile(
+  projectFolderPath: string,
+  relativePath: string | null | undefined,
+): Promise<void> {
+  if (!relativePath) {
+    return;
+  }
+
+  try {
+    const absolutePath = await join(
+      projectFolderPath,
+      ...relativePath.split(/[\\/]+/).filter(Boolean),
+    );
+
+    if (await exists(absolutePath)) {
+      await remove(absolutePath);
+    }
+  } catch (error) {
+    console.warn("Failed to remove stale project-relative file.", {
+      projectFolderPath,
+      relativePath,
+      error,
+    });
+  }
+}
+
+async function buildImportedAudioState(
+  projectFolderPath: string,
+  existingShot: ShotRow | undefined,
+  shot: ParsedShot,
+): Promise<ImportedAudioState> {
+  const audioDirection = shot.audioDirection;
+  const audioDirectionJson = audioDirection ? JSON.stringify(audioDirection) : null;
+  const baseAudioContentHash = createAudioContentHash(audioDirection);
+  const existingBaseAudioDirection = parseStoredAudioDirection(existingShot?.audioDirectionJson);
+  const existingBaseAudioContentHash = createAudioContentHash(existingBaseAudioDirection);
+  const preservedOverrideJson =
+    existingShot?.audioDialogueOverrideJson &&
+    existingBaseAudioContentHash &&
+    existingBaseAudioContentHash === baseAudioContentHash
+      ? existingShot.audioDialogueOverrideJson
+      : null;
+  const effectiveAudioDirection = applyDialogueLineOverride(
+    audioDirection,
+    parseStoredDialogueOverride(preservedOverrideJson),
+  );
+  const existingGenerationProfile = parseStoredAudioGenerationProfile(
+    existingShot?.audioGenerationProfileJson,
+  );
+  const audioDialoguePreview = effectiveAudioDirection?.dialoguePreview ?? null;
+  const audioContentHash = createAudioContentHash(effectiveAudioDirection);
+  const audioOptimizerSourceHash = createDialogueOptimizationSourceHash({
+    shotNumber: shot.shotNumber,
+    durationS: shot.durationS,
+    summaryTr: shot.summaryTr,
+    promptVideo: shot.promptVideo,
+    dialogueTranscript: effectiveAudioDirection?.dialogueTranscript ?? null,
+    audioContentHash,
+    useOptimizer: existingGenerationProfile?.useOptimizer ?? true,
+    performancePreset: existingGenerationProfile?.performancePreset ?? "auto",
+    performanceNote: existingGenerationProfile?.performanceNote ?? null,
+  });
+  const baseStatus = resolveAudioShotStatus(effectiveAudioDirection);
+  const audioError = getAudioBlockedMessage(effectiveAudioDirection);
+  const shouldRemoveExistingMaster =
+    Boolean(existingShot?.audioMasterPath) &&
+    (
+      existingShot?.audioContentHash !== audioContentHash ||
+      existingShot?.audioOptimizerSourceHash !== audioOptimizerSourceHash
+    );
+
+  if (shouldRemoveExistingMaster) {
+    await tryRemoveProjectRelativeFile(projectFolderPath, existingShot?.audioMasterPath);
+    for (const takePath of extractAudioTakePaths(existingShot?.audioTakeHistoryJson)) {
+      if (takePath !== existingShot?.audioMasterPath) {
+        await tryRemoveProjectRelativeFile(projectFolderPath, takePath);
+      }
+    }
+  }
+
+  const canPreserveExistingMaster =
+    Boolean(audioContentHash) &&
+    existingShot?.audioContentHash === audioContentHash &&
+    existingShot?.audioOptimizerSourceHash === audioOptimizerSourceHash &&
+    existingShot?.audioStatus === "done" &&
+    Boolean(existingShot.audioMasterPath);
+
+  if (canPreserveExistingMaster && existingShot?.audioMasterPath) {
+    const absoluteMasterPath = await join(
+      projectFolderPath,
+      ...existingShot.audioMasterPath.split(/[\\/]+/).filter(Boolean),
+    );
+
+    if (await exists(absoluteMasterPath)) {
+      return {
+        audioDirectionJson,
+        audioDialoguePreview,
+        audioStatus: "done",
+        audioMasterPath: existingShot.audioMasterPath,
+        audioModelUsed: existingShot.audioModelUsed,
+        audioOutputFormat: existingShot.audioOutputFormat,
+        audioCharacterCount: existingShot.audioCharacterCount,
+        audioCostUsd: existingShot.audioCostUsd,
+        audioTimestampsJson: existingShot.audioTimestampsJson,
+        audioContentHash,
+        audioError: null,
+        audioOptimizedDialogueJson: existingShot.audioOptimizedDialogueJson,
+        audioOptimizedDialoguePreview: existingShot.audioOptimizedDialoguePreview,
+        audioOptimizerModel: existingShot.audioOptimizerModel,
+        audioOptimizerSourceHash,
+        audioGenerationProfileJson: existingShot.audioGenerationProfileJson,
+        audioDialogueOverrideJson: preservedOverrideJson,
+        audioTakeHistoryJson: existingShot.audioTakeHistoryJson,
+      };
+    }
+  }
+
+  return {
+    audioDirectionJson,
+    audioDialoguePreview,
+    audioStatus: baseStatus,
+    audioMasterPath: null,
+    audioModelUsed: null,
+    audioOutputFormat: null,
+    audioCharacterCount: null,
+    audioCostUsd: null,
+    audioTimestampsJson: null,
+    audioContentHash,
+    audioError,
+    audioOptimizedDialogueJson: null,
+    audioOptimizedDialoguePreview: null,
+    audioOptimizerModel: null,
+    audioOptimizerSourceHash,
+    audioGenerationProfileJson: existingShot?.audioGenerationProfileJson ?? null,
+    audioDialogueOverrideJson: preservedOverrideJson,
+    audioTakeHistoryJson:
+      existingShot?.audioContentHash === audioContentHash &&
+      existingShot?.audioOptimizerSourceHash === audioOptimizerSourceHash
+        ? existingShot.audioTakeHistoryJson
+        : null,
+  };
+}
+
 export async function previewImport(outputsFolder: string): Promise<ImportPreview> {
+  const project = useProjectStore.getState().activeProject;
   const files = await collectMdFiles(outputsFolder);
   let totalShots = 0;
   let coverageShots = 0;
   let chainLinks = 0;
   let parsedShotCount = 0;
+  const parsedShotNumbers = new Set<string>();
 
   for (const file of files) {
     const raw = await readTextFile(file);
@@ -156,6 +480,8 @@ export async function previewImport(outputsFolder: string): Promise<ImportPrevie
     parsedShotCount += parsedShots.length;
 
     for (const shot of parsedShots) {
+      parsedShotNumbers.add(shot.shotNumber.toUpperCase());
+
       if (shot.parentShotNum) {
         coverageShots += 1;
       } else {
@@ -168,12 +494,24 @@ export async function previewImport(outputsFolder: string): Promise<ImportPrevie
     }
   }
 
+  const existingShots = project ? await getShots(project.id, { includeArchived: true }) : [];
+  const existingShotNumbers = new Set(
+    existingShots.map((shot) => shot.shotNumber.toUpperCase()),
+  );
+  const matchedShotCount = Array.from(parsedShotNumbers).filter((shotNumber) =>
+    existingShotNumbers.has(shotNumber),
+  ).length;
+  const newShotCount = parsedShotNumbers.size - matchedShotCount;
+
   return {
     totalShots,
     coverageShots,
     chainLinks,
     parsedShotCount,
     files,
+    existingShotCount: existingShots.length,
+    matchedShotCount,
+    newShotCount,
   };
 }
 
@@ -238,24 +576,38 @@ export async function executeImport(outputsFolder: string): Promise<void> {
     const prevShotId = shot.prevShotRef
       ? (persistedIdsByShotNumber.get(shot.prevShotRef.toUpperCase()) ?? null)
       : null;
+    const audioState = await buildImportedAudioState(
+      project.folderPath,
+      existingShot,
+      shot,
+    );
 
     await db.execute(
       `INSERT INTO shots (
         id, project_id, shot_number, parent_shot_id,
         act, scene, shot_type, camera_angle,
-        duration_s, tension_level, chain_status, prev_shot_id,
+        duration_s, tension_level, chain_status, use_previous_end_for_start, prev_shot_id,
         prompt_start, prompt_end, prompt_video, summary_tr,
         model, cfg, kling_preset, transition_mode,
         requires_external_reference, external_reference_name, external_reference_notes,
         external_reference_path, character_id, character_look_id, include_character_prompt,
         image_start_path, image_end_path, video_path, video_4k_path,
         image_status, video_status, upscale_status,
-        is_archived, source_file, created_at, updated_at
+        is_archived,
+        audio_direction_json, audio_dialogue_preview, audio_status, audio_master_path,
+        audio_model_used, audio_output_format, audio_character_count, audio_cost_usd,
+        audio_timestamps_json, audio_content_hash, audio_error,
+        audio_optimized_dialogue_json, audio_optimized_dialogue_preview,
+        audio_optimizer_model, audio_optimizer_source_hash,
+        audio_generation_profile_json,
+        audio_dialogue_override_json, audio_take_history_json, source_file, created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
         $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-        $31, $32, $33, $34, $35, $36, $37, $38
+        $31, $32, $33, $34, $35, $36, $37, $38, $39, $40,
+        $41, $42, $43, $44, $45, $46, $47, $48, $49, $50,
+        $51, $52, $53, $54, $55, $56, $57, $58
       )`,
       [
         id,
@@ -269,6 +621,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         shot.durationS,
         shot.tensionLevel,
         shot.chainStatus,
+        (existingShot?.usePreviousEndForStart ?? true) ? 1 : 0,
         prevShotId,
         shot.promptStart,
         shot.promptEnd,
@@ -284,7 +637,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         existingShot?.externalReferencePath ?? sharedExternalReferencePath ?? null,
         existingShot?.characterId ?? null,
         existingShot?.characterLookId ?? null,
-        existingShot?.includeCharacterPrompt ? 1 : 0,
+        (existingShot?.includeCharacterPrompt ?? true) ? 1 : 0,
         existingShot?.imageStartPath ?? null,
         existingShot?.imageEndPath ?? null,
         existingShot?.videoPath ?? null,
@@ -293,6 +646,24 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         existingShot?.videoStatus ?? "pending",
         existingShot?.upscaleStatus ?? "none",
         existingShot?.isArchived ? 1 : 0,
+        audioState.audioDirectionJson,
+        audioState.audioDialoguePreview,
+        audioState.audioStatus,
+        audioState.audioMasterPath,
+        audioState.audioModelUsed,
+        audioState.audioOutputFormat,
+        audioState.audioCharacterCount,
+        audioState.audioCostUsd,
+        audioState.audioTimestampsJson,
+        audioState.audioContentHash,
+        audioState.audioError,
+        audioState.audioOptimizedDialogueJson,
+        audioState.audioOptimizedDialoguePreview,
+        audioState.audioOptimizerModel,
+        audioState.audioOptimizerSourceHash,
+        audioState.audioGenerationProfileJson,
+        audioState.audioDialogueOverrideJson,
+        audioState.audioTakeHistoryJson,
         shot.sourceFile,
         existingShot?.createdAt ?? now,
         now,
@@ -409,6 +780,155 @@ export async function updateShotPaths(
   await syncActiveProjectPresentation();
 }
 
+export async function updateShotAudioFields(
+  shotId: string,
+  updates: Partial<{
+    audioDirectionJson: string | null;
+    audioDialoguePreview: string | null;
+    audioStatus: AudioShotStatus;
+    audioMasterPath: string | null;
+    audioModelUsed: string | null;
+    audioOutputFormat: string | null;
+    audioCharacterCount: number | null;
+    audioCostUsd: number | null;
+    audioTimestampsJson: string | null;
+    audioContentHash: string | null;
+    audioError: string | null;
+    audioOptimizedDialogueJson: string | null;
+    audioOptimizedDialoguePreview: string | null;
+    audioOptimizerModel: string | null;
+    audioOptimizerSourceHash: string | null;
+    audioGenerationProfileJson: string | null;
+    audioDialogueOverrideJson: string | null;
+    audioTakeHistoryJson: string | null;
+  }>,
+): Promise<void> {
+  const db = await getProjectDb();
+  const setClauses: string[] = ["updated_at = $1"];
+  const values: Array<string | number | null> = [Date.now()];
+  let parameterIndex = values.length + 1;
+
+  if (updates.audioDirectionJson !== undefined) {
+    setClauses.push(`audio_direction_json = $${parameterIndex}`);
+    values.push(updates.audioDirectionJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioDialoguePreview !== undefined) {
+    setClauses.push(`audio_dialogue_preview = $${parameterIndex}`);
+    values.push(updates.audioDialoguePreview);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioStatus !== undefined) {
+    setClauses.push(`audio_status = $${parameterIndex}`);
+    values.push(updates.audioStatus);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioMasterPath !== undefined) {
+    setClauses.push(`audio_master_path = $${parameterIndex}`);
+    values.push(updates.audioMasterPath);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioModelUsed !== undefined) {
+    setClauses.push(`audio_model_used = $${parameterIndex}`);
+    values.push(updates.audioModelUsed);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioOutputFormat !== undefined) {
+    setClauses.push(`audio_output_format = $${parameterIndex}`);
+    values.push(updates.audioOutputFormat);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioCharacterCount !== undefined) {
+    setClauses.push(`audio_character_count = $${parameterIndex}`);
+    values.push(updates.audioCharacterCount);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioCostUsd !== undefined) {
+    setClauses.push(`audio_cost_usd = $${parameterIndex}`);
+    values.push(updates.audioCostUsd);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioTimestampsJson !== undefined) {
+    setClauses.push(`audio_timestamps_json = $${parameterIndex}`);
+    values.push(updates.audioTimestampsJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioContentHash !== undefined) {
+    setClauses.push(`audio_content_hash = $${parameterIndex}`);
+    values.push(updates.audioContentHash);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioError !== undefined) {
+    setClauses.push(`audio_error = $${parameterIndex}`);
+    values.push(updates.audioError);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioOptimizedDialogueJson !== undefined) {
+    setClauses.push(`audio_optimized_dialogue_json = $${parameterIndex}`);
+    values.push(updates.audioOptimizedDialogueJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioOptimizedDialoguePreview !== undefined) {
+    setClauses.push(`audio_optimized_dialogue_preview = $${parameterIndex}`);
+    values.push(updates.audioOptimizedDialoguePreview);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioOptimizerModel !== undefined) {
+    setClauses.push(`audio_optimizer_model = $${parameterIndex}`);
+    values.push(updates.audioOptimizerModel);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioOptimizerSourceHash !== undefined) {
+    setClauses.push(`audio_optimizer_source_hash = $${parameterIndex}`);
+    values.push(updates.audioOptimizerSourceHash);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioGenerationProfileJson !== undefined) {
+    setClauses.push(`audio_generation_profile_json = $${parameterIndex}`);
+    values.push(updates.audioGenerationProfileJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioDialogueOverrideJson !== undefined) {
+    setClauses.push(`audio_dialogue_override_json = $${parameterIndex}`);
+    values.push(updates.audioDialogueOverrideJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioTakeHistoryJson !== undefined) {
+    setClauses.push(`audio_take_history_json = $${parameterIndex}`);
+    values.push(updates.audioTakeHistoryJson);
+    parameterIndex += 1;
+  }
+
+  values.push(shotId);
+
+  await db.execute(
+    `UPDATE shots
+     SET ${setClauses.join(", ")}
+     WHERE id = $${parameterIndex}`,
+    values,
+  );
+
+  await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
+}
+
 export async function updateShotPromptFields(
   shotId: string,
   updates: Partial<{
@@ -458,6 +978,34 @@ export async function updateShotPromptFields(
   );
 
   await syncProjectDbMirror();
+}
+
+export async function updateShotContinuitySettings(
+  shotId: string,
+  updates: Partial<{
+    usePreviousEndForStart: boolean;
+  }>,
+): Promise<void> {
+  const db = await getProjectDb();
+  const clauses = ["updated_at = $1"];
+  const values: Array<string | number | null> = [Date.now()];
+
+  if (updates.usePreviousEndForStart !== undefined) {
+    clauses.push(`use_previous_end_for_start = $${values.length + 1}`);
+    values.push(updates.usePreviousEndForStart ? 1 : 0);
+  }
+
+  values.push(shotId);
+
+  await db.execute(
+    `UPDATE shots
+     SET ${clauses.join(", ")}
+     WHERE id = $${values.length}`,
+    values,
+  );
+
+  await syncProjectDbMirror();
+  await syncActiveProjectPresentation();
 }
 
 export async function updateShotCharacterBinding(
@@ -559,7 +1107,10 @@ export async function setShotArchived(
 export function shotNeedsExternalReferenceForMode(
   shot: Pick<
     ShotRow,
-    "requiresExternalReference" | "externalReferencePath" | "chainStatus"
+    | "requiresExternalReference"
+    | "externalReferencePath"
+    | "chainStatus"
+    | "usePreviousEndForStart"
   >,
   mode: StoryboardReferenceMode,
 ): boolean {
@@ -567,7 +1118,11 @@ export function shotNeedsExternalReferenceForMode(
     return false;
   }
 
-  if (mode === "start" && shot.chainStatus === "continue") {
+  if (
+    mode === "start" &&
+    shot.chainStatus === "continue" &&
+    shot.usePreviousEndForStart
+  ) {
     return false;
   }
 
@@ -577,7 +1132,12 @@ export function shotNeedsExternalReferenceForMode(
 export function getShotMissingExternalReferenceMessage(
   shot: Pick<
     ShotRow,
-    "shotNumber" | "requiresExternalReference" | "externalReferencePath" | "chainStatus" | "externalReferenceName"
+    | "shotNumber"
+    | "requiresExternalReference"
+    | "externalReferencePath"
+    | "chainStatus"
+    | "usePreviousEndForStart"
+    | "externalReferenceName"
   >,
   mode: StoryboardReferenceMode,
 ): string | null {

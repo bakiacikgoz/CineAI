@@ -174,17 +174,16 @@ export function ShotCard({
         gridTemplateRows: "auto auto",
         borderRadius: isCoverage ? 20 : 26,
         overflow: "hidden",
-        border: `1px solid ${selected ? accentColor : "rgba(255,255,255,0.08)"}`,
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012) 18%, rgba(12,12,14,0.96) 100%)",
+        border: `1px solid ${selected ? accentColor : "#e8e8e8"}`,
+        background: "#ffffff",
         color: "inherit",
         cursor: "pointer",
         opacity: archived ? 0.58 : 1,
         boxShadow: selected
-          ? `0 0 0 1px ${accentColor}33, 0 26px 60px rgba(0, 0, 0, 0.34)`
+          ? `0 0 0 1px ${accentColor}33, 0 4px 16px rgba(0, 0, 0, 0.12)`
           : hovered
-            ? "0 30px 72px rgba(0, 0, 0, 0.32)"
-            : "0 18px 44px rgba(0, 0, 0, 0.22)",
+            ? "0 4px 12px rgba(0, 0, 0, 0.08)"
+            : "0 2px 8px rgba(0, 0, 0, 0.06)",
         transform: selected ? "translateY(-2px)" : hovered ? "translateY(-3px)" : "translateY(0)",
         transition: "transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease",
         textAlign: "left",
@@ -198,7 +197,7 @@ export function ShotCard({
           overflow: "hidden",
           background: resolvedThumbUrl
             ? "linear-gradient(180deg, transparent 22%, rgba(0, 0, 0, 0.62))"
-            : "linear-gradient(160deg, rgba(245, 158, 11, 0.14), transparent 58%), var(--bg-overlay)",
+            : "#f3f3f4",
         }}
       >
         {resolvedThumbUrl ? (
@@ -233,7 +232,7 @@ export function ShotCard({
               inset: 0,
               display: "grid",
               placeItems: "center",
-              color: "rgba(240, 238, 232, 0.18)",
+              color: "rgba(26, 28, 28, 0.2)",
             }}
           >
             <Clapperboard size={isCoverage ? 24 : 34} strokeWidth={1.6} />
@@ -259,8 +258,8 @@ export function ShotCard({
                   padding: isCoverage ? "4px 6px" : "6px 9px",
                   borderRadius: 999,
                   background: "rgba(0, 0, 0, 0.62)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "#f8f7f2",
+                  border: "1px solid rgba(0,0,0,0.06)",
+                  color: "#ffffff",
                   fontSize: isCoverage ? 8 : 10,
                   fontWeight: 800,
                   letterSpacing: "0.08em",
@@ -293,8 +292,8 @@ export function ShotCard({
                   padding: isCoverage ? "4px 6px" : "6px 9px",
                   borderRadius: 999,
                   background: "rgba(0, 0, 0, 0.62)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "var(--text-secondary)",
+                  border: "1px solid rgba(0,0,0,0.06)",
+                  color: "#ffffff",
                   fontSize: isCoverage ? 7 : 9,
                   fontWeight: 700,
                   letterSpacing: "0.08em",
@@ -349,8 +348,8 @@ export function ShotCard({
                       padding: isCoverage ? "3px 6px" : "4px 8px",
                       borderRadius: 999,
                       background: "rgba(0, 0, 0, 0.62)",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      color: "var(--text-secondary)",
+                      border: "1px solid rgba(0,0,0,0.06)",
+                      color: "#ffffff",
                       fontSize: isCoverage ? 7 : 9,
                       fontWeight: 700,
                       letterSpacing: "0.08em",
@@ -365,8 +364,8 @@ export function ShotCard({
                     style={{
                       padding: isCoverage ? "3px 6px" : "4px 8px",
                       borderRadius: 999,
-                      background: "rgba(245, 158, 11, 0.16)",
-                      border: "1px solid rgba(245, 158, 11, 0.26)",
+                      background: "rgba(0, 0, 0, 0.06)",
+                      border: "1px solid rgba(0, 0, 0, 0.12)",
                       color: "var(--accent)",
                       fontSize: isCoverage ? 7 : 9,
                       fontWeight: 800,
@@ -418,7 +417,7 @@ export function ShotCard({
           display: "grid",
           gap: isCoverage ? 6 : 10,
           padding: isCoverage ? "10px 12px 12px" : "14px 16px 16px",
-          borderTop: "1px solid rgba(255,255,255,0.06)",
+          borderTop: "1px solid rgba(0,0,0,0.06)",
         }}
       >
         {!isCoverage ? (
@@ -515,8 +514,8 @@ function MetadataChip({ label, value }: { label: string; value: string }) {
         gap: 10,
         padding: "8px 10px",
         borderRadius: 14,
-        border: "1px solid rgba(255,255,255,0.06)",
-        background: "rgba(255,255,255,0.025)",
+        border: "1px solid rgba(0,0,0,0.06)",
+        background: "rgba(0,0,0,0.02)",
       }}
     >
       <span
@@ -571,8 +570,8 @@ function HoverActionButton({
         height: compact ? 24 : 28,
         padding: compact ? "0 8px" : "0 10px",
         borderRadius: 999,
-        border: `1px solid ${active ? "rgba(245, 158, 11, 0.28)" : "rgba(255,255,255,0.08)"}`,
-        background: active ? "rgba(8, 8, 10, 0.84)" : "rgba(8, 8, 10, 0.6)",
+        border: `1px solid ${active ? "rgba(0, 0, 0, 0.28)" : "rgba(0,0,0,0.06)"}`,
+        background: active ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.72)",
         color: active ? "var(--text-primary)" : "var(--text-muted)",
         cursor: "pointer",
         fontSize: compact ? 8 : 9,
@@ -662,8 +661,8 @@ function StatusPill({
             }
           : {
               color: "var(--text-muted)",
-              background: "rgba(255, 255, 255, 0.04)",
-              border: "rgba(255, 255, 255, 0.08)",
+              background: "rgba(0, 0, 0, 0.04)",
+              border: "rgba(0, 0, 0, 0.08)",
             };
 
   return (

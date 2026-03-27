@@ -77,4 +77,30 @@ describe("asset detach planning", () => {
       },
     });
   });
+
+  it("matches paths even when slash styles differ", () => {
+    const updates = buildAssetDetachUpdates(
+      [
+        {
+          id: "shot-4",
+          shotNumber: "A04",
+          imageStartPath: "assets\\images\\start.png",
+          imageEndPath: "assets/images/end.png",
+          videoPath: "assets\\videos\\clip.mp4",
+          video4kPath: null,
+          externalReferencePath: "assets\\images\\ref.png",
+        },
+      ],
+      "assets/images/start.png",
+    );
+
+    expect(updates[0]).toEqual({
+      shotId: "shot-4",
+      shotNumber: "A04",
+      slots: ["start"],
+      updates: {
+        imageStartPath: null,
+      },
+    });
+  });
 });

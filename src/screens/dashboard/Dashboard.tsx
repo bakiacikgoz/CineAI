@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FolderOpen, Layers, Plus, Search, Sparkles, Video, Image as ImageIcon, Users } from "lucide-react";
+import { FolderOpen, Layers, Plus, Search, Sparkles, Video, Image as ImageIcon, Users, X } from "lucide-react";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -17,6 +17,7 @@ import {
 import { Portal } from "@/components/Portal";
 import { activateProject } from "@/services/project-session.service";
 import { useProjectStore } from "@/store/project.store";
+import { MetricCard } from "@/components/ui";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -42,32 +43,6 @@ const cardVariants = {
     },
   },
 } as const;
-
-function AnimatedCounter({ value }: { value: number }) {
-  const [displayed, setDisplayed] = useState(0);
-
-  useEffect(() => {
-    if (displayed === value) return;
-
-    const step = value > displayed ? 1 : -1;
-    const interval = Math.max(30, 200 / Math.abs(value - displayed));
-
-    const timer = setInterval(() => {
-      setDisplayed((prev) => {
-        const next = prev + step;
-        if ((step > 0 && next >= value) || (step < 0 && next <= value)) {
-          clearInterval(timer);
-          return value;
-        }
-        return next;
-      });
-    }, interval);
-
-    return () => clearInterval(timer);
-  }, [value, displayed]);
-
-  return <>{displayed}</>;
-}
 
 export function Dashboard() {
   const navigate = useNavigate();
@@ -116,6 +91,47 @@ export function Dashboard() {
 
     return { totalShots, totalReadyVideo, totalCharacters, totalAssets };
   }, [recentProjects]);
+
+  const metricCards = useMemo(
+    () => [
+      {
+        icon: Layers,
+        label: "Projeler",
+        value: recentProjects.length,
+        description: "Kayitli produksiyonlar",
+        accentColor: "var(--surface-active)",
+      },
+      {
+        icon: ImageIcon,
+        label: "Toplam sahne",
+        value: aggregatedStats.totalShots,
+        description: "Tum projelerdeki main shot sayisi",
+        accentColor: "rgba(59,130,246,0.12)",
+      },
+      {
+        icon: Video,
+        label: "Hazir video",
+        value: aggregatedStats.totalReadyVideo,
+        description: "Video uretimi tamamlanan sahneler",
+        accentColor: "rgba(34,197,94,0.12)",
+      },
+      {
+        icon: Users,
+        label: "Karakterler",
+        value: aggregatedStats.totalCharacters,
+        description: "Tanimlanan karakter referanslari",
+        accentColor: "rgba(167,139,250,0.12)",
+      },
+      {
+        icon: FolderOpen,
+        label: "Assetler",
+        value: aggregatedStats.totalAssets,
+        description: "Kutuphane ve storyboard medya kayitlari",
+        accentColor: "var(--surface-active)",
+      },
+    ],
+    [recentProjects.length, aggregatedStats],
+  );
 
   async function loadProjects() {
     setLoading(true);
@@ -200,48 +216,7 @@ export function Dashboard() {
         transition={{ duration: 0.4, ease: "easeOut" }}
       >
         {/* --- Hero Section with gradient mesh --- */}
-        <section className="dashboard-hero" style={{ position: "relative", overflow: "hidden" }}>
-          {/* Gradient mesh orbs */}
-          <div
-            style={{
-              position: "absolute",
-              top: "-30%",
-              left: "-10%",
-              width: 340,
-              height: 340,
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(0,0,0,0.04), transparent 65%)",
-              filter: "blur(40px)",
-              pointerEvents: "none",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              bottom: "-40%",
-              right: "10%",
-              width: 280,
-              height: 280,
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(59,130,246,0.08), transparent 65%)",
-              filter: "blur(36px)",
-              pointerEvents: "none",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              top: "20%",
-              right: "-5%",
-              width: 200,
-              height: 200,
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(167,139,250,0.06), transparent 60%)",
-              filter: "blur(30px)",
-              pointerEvents: "none",
-            }}
-          />
-
+        <section className="dashboard-hero">
           <div className="dashboard-hero-copy">
             <motion.span
               className="dashboard-eyebrow"
@@ -300,125 +275,16 @@ export function Dashboard() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3, duration: 0.4 }}
         >
-          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
-            <div
-              style={{
-                position: "absolute",
-                top: -8,
-                right: -8,
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: "rgba(0,0,0,0.04)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Layers size={18} style={{ color: "var(--accent)", opacity: 0.6 }} />
-            </div>
-            <span className="dashboard-metric-label">Projeler</span>
-            <strong className="dashboard-metric-value">
-              <AnimatedCounter value={recentProjects.length} />
-            </strong>
-            <span className="dashboard-metric-copy">Kayitli produksiyonlar</span>
-          </article>
-
-          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
-            <div
-              style={{
-                position: "absolute",
-                top: -8,
-                right: -8,
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: "rgba(59,130,246,0.08)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <ImageIcon size={18} style={{ color: "var(--status-info)", opacity: 0.6 }} />
-            </div>
-            <span className="dashboard-metric-label">Toplam sahne</span>
-            <strong className="dashboard-metric-value">
-              <AnimatedCounter value={aggregatedStats.totalShots} />
-            </strong>
-            <span className="dashboard-metric-copy">Tum projelerdeki main shot sayisi</span>
-          </article>
-
-          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
-            <div
-              style={{
-                position: "absolute",
-                top: -8,
-                right: -8,
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: "rgba(34,197,94,0.08)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Video size={18} style={{ color: "var(--status-success)", opacity: 0.6 }} />
-            </div>
-            <span className="dashboard-metric-label">Hazir video</span>
-            <strong className="dashboard-metric-value">
-              <AnimatedCounter value={aggregatedStats.totalReadyVideo} />
-            </strong>
-            <span className="dashboard-metric-copy">Video uretimi tamamlanan sahneler</span>
-          </article>
-
-          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
-            <div
-              style={{
-                position: "absolute",
-                top: -8,
-                right: -8,
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: "rgba(167,139,250,0.08)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Users size={18} style={{ color: "var(--status-purple)", opacity: 0.6 }} />
-            </div>
-            <span className="dashboard-metric-label">Karakterler</span>
-            <strong className="dashboard-metric-value">
-              <AnimatedCounter value={aggregatedStats.totalCharacters} />
-            </strong>
-            <span className="dashboard-metric-copy">Tanimlanan karakter referanslari</span>
-          </article>
-
-          <article className="dashboard-metric-card" style={{ position: "relative", overflow: "hidden" }}>
-            <div
-              style={{
-                position: "absolute",
-                top: -8,
-                right: -8,
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: "rgba(0,0,0,0.04)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <FolderOpen size={18} style={{ color: "var(--accent)", opacity: 0.6 }} />
-            </div>
-            <span className="dashboard-metric-label">Assetler</span>
-            <strong className="dashboard-metric-value">
-              <AnimatedCounter value={aggregatedStats.totalAssets} />
-            </strong>
-            <span className="dashboard-metric-copy">Kutuphane ve storyboard medya kayitlari</span>
-          </article>
+          {metricCards.map((m) => (
+            <MetricCard
+              key={m.label}
+              icon={m.icon}
+              label={m.label}
+              value={m.value}
+              description={m.description}
+              accentColor={m.accentColor}
+            />
+          ))}
         </motion.section>
 
         {/* --- Search Bar (only when projects exist) --- */}
@@ -460,9 +326,36 @@ export function Dashboard() {
                 style={{
                   width: "100%",
                   paddingLeft: 38,
+                  paddingRight: searchQuery ? 34 : 14,
                   fontSize: 13,
                 }}
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 20,
+                    height: 20,
+                    borderRadius: 999,
+                    border: "none",
+                    background: "var(--surface-active)",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                  aria-label="Aramayi temizle"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
             <span
               style={{

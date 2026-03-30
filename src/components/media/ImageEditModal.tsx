@@ -8,7 +8,18 @@ import {
 import { join } from "@tauri-apps/api/path";
 import { message } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
-import { LoaderCircle, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import {
+  LoaderCircle,
+  Minus,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+  X,
+  ZoomIn,
+} from "lucide-react";
+
+/* ═══════════ EXPORTED TYPES ═══════════ */
 
 export type ImageEditAspectRatio = "1:1" | "16:9" | "9:16" | "4:3" | "3:2";
 
@@ -27,17 +38,10 @@ export type ImageEditSubmitPayload = {
   referenceImagePaths: string[];
 };
 
-type ImageEditPoint = {
-  x: number;
-  y: number;
-};
+/* ═══════════ INTERNAL TYPES ═══════════ */
 
-type ImageEditStroke = {
-  id: string;
-  color: string;
-  size: number;
-  points: ImageEditPoint[];
-};
+type Point = { x: number; y: number };
+type Stroke = { id: string; color: string; size: number; points: Point[] };
 
 type ImageEditModalProps = {
   draft: ImageEditModalDraft | null;
@@ -49,822 +53,351 @@ type ImageEditModalProps = {
   onSubmit: (payload: ImageEditSubmitPayload) => Promise<void>;
 };
 
-const IMAGE_EDIT_COLORS = [
-  "rgba(245,158,11,0.96)",
-  "rgba(59,130,246,0.94)",
-  "rgba(239,68,68,0.94)",
-  "rgba(34,197,94,0.94)",
-  "rgba(255,255,255,0.96)",
-] as const;
+/* ═══════════ CONSTANTS ═══════════ */
 
-const IMAGE_ASPECT_RATIOS: ImageEditAspectRatio[] = ["1:1", "16:9", "9:16", "4:3", "3:2"];
-const IMAGE_ASPECT_RATIO_VALUES: Record<ImageEditAspectRatio, number> = {
-  "1:1": 1,
-  "16:9": 16 / 9,
-  "9:16": 9 / 16,
-  "4:3": 4 / 3,
-  "3:2": 3 / 2,
+const COLORS: Array<{ value: string; label: string }> = [
+  { value: "rgba(245,158,11,0.96)", label: "Amber" },
+  { value: "rgba(59,130,246,0.94)", label: "Mavi" },
+  { value: "rgba(239,68,68,0.94)", label: "Kirmizi" },
+  { value: "rgba(34,197,94,0.94)", label: "Yesil" },
+  { value: "rgba(168,85,247,0.94)", label: "Mor" },
+  { value: "rgba(236,72,153,0.94)", label: "Pembe" },
+  { value: "rgba(255,255,255,0.96)", label: "Beyaz" },
+  { value: "rgba(30,30,30,0.96)", label: "Siyah" },
+];
+
+const ASPECT_RATIOS: ImageEditAspectRatio[] = ["1:1", "16:9", "9:16", "4:3", "3:2"];
+const ASPECT_RATIO_VALUES: Record<ImageEditAspectRatio, number> = {
+  "1:1": 1, "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:2": 3 / 2,
 };
 
-function createLocalId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
+const PRESET_PROMPTS: Array<{ label: string; prompts: string[] }> = [
+  { label: "Duzeltme", prompts: ["Isigi dogal hale getir", "Renkleri canlandir", "Kontrasti artir", "Lens bozulmasini duzelt"] },
+  { label: "Ekleme", prompts: ["Atmosferik sis ekle", "Lens flare ekle", "Doku ve grain ekle", "Dramatik gokyuzu ekle"] },
+  { label: "Cikarma", prompts: ["Isaretli nesneyi kaldir", "Golgeleri temizle", "Dagitici ogeleri sil", "Logo veya metin kaldir"] },
+  { label: "Karakter", prompts: ["Yuz detayini iyilestir", "Goz parlakligi artir", "Cilt tonunu duzelt", "Sac detayi artir"] },
+];
 
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+const MIN_BRUSH = 4;
+const MAX_BRUSH = 48;
+
+/* ═══════════ HELPERS ═══════════ */
+
+function createId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function clampNormalizedCoordinate(value: number): number {
-  return Math.min(1, Math.max(0, value));
+function clamp01(v: number): number { return Math.min(1, Math.max(0, v)); }
+
+function svgPts(pts: Point[]): string { return pts.map((p) => `${p.x},${p.y}`).join(" "); }
+
+function d2b(dataUrl: string): Uint8Array {
+  const b = atob(dataUrl.split(",")[1] ?? "");
+  const u = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+  return u;
 }
 
-function strokePointsToSvgPoints(points: ImageEditPoint[]): string {
-  return points.map((point) => `${point.x},${point.y}`).join(" ");
-}
-
-function dataUrlToBytes(dataUrl: string): Uint8Array {
-  const base64 = dataUrl.split(",")[1] ?? "";
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
-function inferImageMimeType(path: string): string {
-  const normalizedPath = path.toLowerCase();
-
-  if (normalizedPath.endsWith(".png")) {
-    return "image/png";
-  }
-
-  if (normalizedPath.endsWith(".jpg") || normalizedPath.endsWith(".jpeg")) {
-    return "image/jpeg";
-  }
-
-  if (normalizedPath.endsWith(".webp")) {
-    return "image/webp";
-  }
-
-  if (normalizedPath.endsWith(".gif")) {
-    return "image/gif";
-  }
-
+function mime(p: string): string {
+  const l = p.toLowerCase();
+  if (l.endsWith(".png")) return "image/png";
+  if (l.endsWith(".jpg") || l.endsWith(".jpeg")) return "image/jpeg";
+  if (l.endsWith(".webp")) return "image/webp";
   return "application/octet-stream";
 }
 
-function inferAspectRatioFromDimensions(
-  width: number | null,
-  height: number | null,
-): ImageEditAspectRatio {
-  if (!width || !height) {
-    return "16:9";
-  }
-
-  const assetRatio = width / height;
-  let bestMatch: ImageEditAspectRatio = "16:9";
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  for (const ratio of IMAGE_ASPECT_RATIOS) {
-    const distance = Math.abs(IMAGE_ASPECT_RATIO_VALUES[ratio] - assetRatio);
-
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestMatch = ratio;
-    }
-  }
-
-  return bestMatch;
+function inferAR(w: number | null, h: number | null): ImageEditAspectRatio {
+  if (!w || !h) return "16:9";
+  const r = w / h;
+  let best: ImageEditAspectRatio = "16:9";
+  let d = Infinity;
+  for (const ar of ASPECT_RATIOS) { const dd = Math.abs(ASPECT_RATIO_VALUES[ar] - r); if (dd < d) { d = dd; best = ar; } }
+  return best;
 }
 
 export function buildDefaultImageEditPrompt(prompt: string): string {
-  const trimmedPrompt = prompt.trim();
-  const preserveInstruction =
-    "Preserve the original image composition, subject identity, camera angle, lighting, and all unmarked regions. Apply only subtle local edits that follow the markup and keep the rest of the frame unchanged.";
-
-  return trimmedPrompt.length > 0
-    ? `${trimmedPrompt}\n${preserveInstruction}`
-    : "Apply only the local changes indicated by the markup overlay and keep the rest of the image exactly as it is. Do not redesign the frame.";
+  const t = prompt.trim();
+  const p = "Preserve the original image composition, subject identity, camera angle, lighting, and all unmarked regions. Apply only subtle local edits that follow the markup and keep the rest of the frame unchanged.";
+  return t.length > 0 ? `${t}\n${p}` : "Apply only the local changes indicated by the markup overlay and keep the rest of the image exactly as it is. Do not redesign the frame.";
 }
 
+/* ═══════════ COMPONENT ═══════════ */
+
 export function ImageEditModal({
-  draft,
-  projectFolderPath,
-  dialogTitle,
-  submitting,
-  guideFilePrefix = "guide_still",
-  onClose,
-  onSubmit,
+  draft, projectFolderPath, dialogTitle, submitting, guideFilePrefix = "guide_still", onClose, onSubmit,
 }: ImageEditModalProps) {
   const [prompt, setPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<ImageEditAspectRatio>("16:9");
-  const [strokes, setStrokes] = useState<ImageEditStroke[]>([]);
-  const [brushColor, setBrushColor] = useState<string>(IMAGE_EDIT_COLORS[0]);
-  const [brushSize, setBrushSize] = useState(18);
-  const [resolvedWidth, setResolvedWidth] = useState<number | null>(draft?.width ?? null);
-  const [resolvedHeight, setResolvedHeight] = useState<number | null>(draft?.height ?? null);
-  const activeStrokeIdRef = useRef<string | null>(null);
+  const [ar, setAr] = useState<ImageEditAspectRatio>("16:9");
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [color, setColor] = useState(COLORS[0].value);
+  const [size, setSize] = useState(16);
+  const [zoom, setZoom] = useState(1);
+  const [rw, setRw] = useState<number | null>(null);
+  const [rh, setRh] = useState<number | null>(null);
+  const [presetCat, setPresetCat] = useState("Duzeltme");
+  const ref = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!draft) {
-      return;
-    }
-
-    setPrompt("");
-    setAspectRatio(inferAspectRatioFromDimensions(draft.width, draft.height));
-    setStrokes([]);
-    setBrushColor(IMAGE_EDIT_COLORS[0]);
-    setBrushSize(18);
-    setResolvedWidth(draft.width);
-    setResolvedHeight(draft.height);
-  }, [draft?.absolutePath, draft?.height, draft?.id, draft?.width]);
+    if (!draft) return;
+    setPrompt(""); setAr(inferAR(draft.width, draft.height)); setStrokes([]); setColor(COLORS[0].value); setSize(16); setZoom(1); setRw(draft.width); setRh(draft.height);
+  }, [draft?.id, draft?.absolutePath, draft?.width, draft?.height]);
 
   useEffect(() => {
-    if (!draft) {
-      return;
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape" || submitting) {
-        return;
-      }
-
-      onClose();
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    if (!draft) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !submitting) onClose();
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !submitting) { e.preventDefault(); setStrokes((c) => c.slice(0, -1)); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
   }, [draft, onClose, submitting]);
 
-  if (!draft) {
-    return null;
-  }
-
-  const activeDraft = draft;
+  if (!draft) return null;
+  const d = draft;
   const canSubmit = prompt.trim().length > 0 || strokes.length > 0;
+  const dims = rw && rh ? `${rw} x ${rh}` : null;
+  const presets = PRESET_PROMPTS.find((c) => c.label === presetCat)?.prompts ?? [];
 
-  function getPoint(event: ReactPointerEvent<HTMLDivElement>): ImageEditPoint | null {
-    const rect = event.currentTarget.getBoundingClientRect();
-
-    if (rect.width <= 0 || rect.height <= 0) {
-      return null;
-    }
-
-    return {
-      x: clampNormalizedCoordinate((event.clientX - rect.left) / rect.width),
-      y: clampNormalizedCoordinate((event.clientY - rect.top) / rect.height),
-    };
+  function gp(e: ReactPointerEvent<HTMLDivElement>): Point | null {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
   }
 
-  function handlePreviewLoad(event: SyntheticEvent<HTMLImageElement>) {
-    const nextWidth = event.currentTarget.naturalWidth;
-    const nextHeight = event.currentTarget.naturalHeight;
-
-    if (!nextWidth || !nextHeight) {
-      return;
-    }
-
-    setResolvedWidth(nextWidth);
-    setResolvedHeight(nextHeight);
-    setAspectRatio((current) =>
-      strokes.length > 0 || prompt.trim().length > 0
-        ? current
-        : inferAspectRatioFromDimensions(nextWidth, nextHeight),
-    );
+  function pd(e: ReactPointerEvent<HTMLDivElement>) {
+    if (submitting) return;
+    const pt = gp(e); if (!pt) return;
+    const rc = e.currentTarget.getBoundingClientRect();
+    const id = createId(); ref.current = id;
+    setStrokes((c) => [...c, { id, color, size: size / Math.max(rc.width, rc.height), points: [pt] }]);
+    e.currentTarget.setPointerCapture(e.pointerId);
   }
 
-  function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (submitting) {
-      return;
-    }
-
-    const point = getPoint(event);
-
-    if (!point) {
-      return;
-    }
-
-    const rect = event.currentTarget.getBoundingClientRect();
-    const strokeId = createLocalId();
-    activeStrokeIdRef.current = strokeId;
-
-    setStrokes((current) => [
-      ...current,
-      {
-        id: strokeId,
-        color: brushColor,
-        size: brushSize / Math.max(rect.width, rect.height),
-        points: [point],
-      },
-    ]);
-
-    event.currentTarget.setPointerCapture(event.pointerId);
+  function pm(e: ReactPointerEvent<HTMLDivElement>) {
+    const id = ref.current; if (!id || submitting) return;
+    const pt = gp(e); if (!pt) return;
+    setStrokes((c) => c.map((s) => s.id === id ? { ...s, points: [...s.points, pt] } : s));
   }
 
-  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const activeStrokeId = activeStrokeIdRef.current;
-
-    if (!activeStrokeId || submitting) {
-      return;
-    }
-
-    const point = getPoint(event);
-
-    if (!point) {
-      return;
-    }
-
-    setStrokes((current) =>
-      current.map((stroke) =>
-        stroke.id === activeStrokeId
-          ? { ...stroke, points: [...stroke.points, point] }
-          : stroke,
-      ),
-    );
+  function pu(e: ReactPointerEvent<HTMLDivElement>) {
+    ref.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
-  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    activeStrokeIdRef.current = null;
-
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+  function ol(e: SyntheticEvent<HTMLImageElement>) {
+    const w = e.currentTarget.naturalWidth, h = e.currentTarget.naturalHeight;
+    if (!w || !h) return;
+    setRw(w); setRh(h);
+    setAr((c) => strokes.length > 0 || prompt.trim().length > 0 ? c : inferAR(w, h));
   }
 
-  async function buildReferenceImagePaths(): Promise<string[]> {
-    if (strokes.length === 0) {
-      return [activeDraft.absolutePath];
-    }
-
-    const imageBytes = await readFile(activeDraft.absolutePath);
-    const sourceUrl = URL.createObjectURL(
-      new Blob([imageBytes], { type: inferImageMimeType(activeDraft.absolutePath) }),
-    );
-
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const nextImage = new window.Image();
-      nextImage.onload = () => resolve(nextImage);
-      nextImage.onerror = () => reject(new Error("Referans gorseli yuklenemedi."));
-      nextImage.src = sourceUrl;
-    });
-
+  async function buildRefs(): Promise<string[]> {
+    if (strokes.length === 0) return [d.absolutePath];
+    const bytes = await readFile(d.absolutePath);
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime(d.absolutePath) }));
+    const img = await new Promise<HTMLImageElement>((ok, no) => { const i = new window.Image(); i.onload = () => ok(i); i.onerror = () => no(new Error("Gorsel yuklenemedi.")); i.src = url; });
     try {
-      const width = resolvedWidth ?? image.naturalWidth;
-      const height = resolvedHeight ?? image.naturalHeight;
-
-      if (!width || !height) {
-        throw new Error("Referans gorsel boyutu okunamadi.");
+      const w = rw ?? img.naturalWidth, h = rh ?? img.naturalHeight;
+      if (!w || !h) throw new Error("Boyut okunamadi.");
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const ctx = c.getContext("2d"); if (!ctx) throw new Error("Tuval olusturulamadi.");
+      ctx.drawImage(img, 0, 0, w, h); ctx.lineCap = "round"; ctx.lineJoin = "round";
+      for (const s of strokes) {
+        if (s.points.length === 0) continue;
+        ctx.beginPath(); ctx.strokeStyle = s.color; ctx.lineWidth = Math.max(3, s.size * Math.max(w, h));
+        ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
+        for (const p of s.points.slice(1)) ctx.lineTo(p.x * w, p.y * h);
+        if (s.points.length === 1) ctx.lineTo(s.points[0].x * w, s.points[0].y * h);
+        ctx.stroke();
       }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-
-      if (!context) {
-        throw new Error("Gorsel duzenleme tuvali hazirlanamadi.");
-      }
-
-      context.drawImage(image, 0, 0, width, height);
-      context.lineCap = "round";
-      context.lineJoin = "round";
-
-      for (const stroke of strokes) {
-        if (stroke.points.length === 0) {
-          continue;
-        }
-
-        context.beginPath();
-        context.strokeStyle = stroke.color;
-        context.lineWidth = Math.max(3, stroke.size * Math.max(width, height));
-        context.moveTo(stroke.points[0].x * width, stroke.points[0].y * height);
-
-        for (const point of stroke.points.slice(1)) {
-          context.lineTo(point.x * width, point.y * height);
-        }
-
-        if (stroke.points.length === 1) {
-          context.lineTo(stroke.points[0].x * width, stroke.points[0].y * height);
-        }
-
-        context.stroke();
-      }
-
-      const guideFolder = await join(projectFolderPath, "assets", "images", "_edit-guides");
-      await mkdir(guideFolder, { recursive: true });
-      const guidePath = await join(
-        guideFolder,
-        `${guideFilePrefix}_${createLocalId().slice(0, 8)}.png`,
-      );
-      const bytes = dataUrlToBytes(canvas.toDataURL("image/png"));
-      await writeFile(guidePath, bytes);
-
-      return [activeDraft.absolutePath, guidePath];
-    } finally {
-      URL.revokeObjectURL(sourceUrl);
-    }
+      const folder = await join(projectFolderPath, "assets", "images", "_edit-guides");
+      await mkdir(folder, { recursive: true });
+      const path = await join(folder, `${guideFilePrefix}_${createId().slice(0, 8)}.png`);
+      await writeFile(path, d2b(c.toDataURL("image/png")));
+      return [d.absolutePath, path];
+    } finally { URL.revokeObjectURL(url); }
   }
 
   async function handleSubmit() {
-    if (!canSubmit) {
-      return;
-    }
-
+    if (!canSubmit) return;
     try {
-      const referenceImagePaths = await buildReferenceImagePaths();
-      await onSubmit({
-        prompt: buildDefaultImageEditPrompt(prompt),
-        aspectRatio,
-        referenceImagePaths,
-      });
-    } catch (error) {
-      await message(error instanceof Error ? error.message : "Gorsel duzenleme kuyruga eklenemedi.", {
-        title: dialogTitle,
-        kind: "error",
-      });
+      const refs = await buildRefs();
+      await onSubmit({ prompt: buildDefaultImageEditPrompt(prompt), aspectRatio: ar, referenceImagePaths: refs });
+    } catch (err) {
+      await message(err instanceof Error ? err.message : "Duzenleme kuyruga eklenemedi.", { title: dialogTitle, kind: "error" });
     }
   }
 
+  /* ═══════════ RENDER ═══════════ */
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 210,
-        display: "grid",
-        placeItems: "center",
-        padding: 24,
-        background: "rgba(0,0,0,0.4)",
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <div
-        style={{
-          width: "min(1120px, calc(100vw - 48px))",
-          maxHeight: "min(860px, calc(100vh - 48px))",
-          borderRadius: 28,
-          border: "1px solid var(--border-default)",
-          background: "#ffffff",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
-          overflow: "hidden",
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1.28fr) minmax(320px, 360px)",
-        }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateRows: "auto auto minmax(0, 1fr) auto",
-            borderRight: "1px solid var(--border-subtle)",
-            minWidth: 0,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "18px 20px 14px",
-              borderBottom: "1px solid var(--border-subtle)",
-            }}
-          >
-            <div style={{ display: "grid", gap: 4 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--accent)",
-                }}
-              >
-                Nano Banana 2 Edit
-              </div>
-              <strong style={{ fontSize: 18, letterSpacing: "-0.03em" }}>
-                Isaretleyerek duzenle
-              </strong>
-              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                Referans: {activeDraft.label}
-              </span>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 210, display: "grid", placeItems: "center", padding: 16, background: "var(--backdrop-bg)", backdropFilter: "blur(14px)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(1340px, calc(100vw - 32px))", height: "min(920px, calc(100vh - 32px))", borderRadius: 20, border: "1px solid var(--glass-border)", background: "var(--bg-base)", boxShadow: "var(--shadow-modal)", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+
+        {/* ── HEADER ── */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "10px 16px", borderBottom: "1px solid var(--surface-active)", background: "var(--surface-tint)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 8, background: "var(--surface-hover)", display: "grid", placeItems: "center" }}><Pencil size={13} style={{ color: "var(--text-secondary)" }} /></div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Gorsel Duzenleme</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.label}{dims ? ` · ${dims}` : ""}</div>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="icon-button"
-              style={{ width: 38, height: 38, borderRadius: 999 }}
-              aria-label="Duzenleme modalini kapat"
-              disabled={submitting}
-            >
-              <X size={15} />
-            </button>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 4px", borderRadius: 8, border: "1px solid var(--glass-border)", background: "var(--bg-base)" }}>
+              <button type="button" onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))} style={hdrBtn}><Minus size={12} /></button>
+              <button type="button" onClick={() => setZoom(1)} style={{ ...hdrBtn, width: 42, fontSize: 10, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{Math.round(zoom * 100)}%</button>
+              <button type="button" onClick={() => setZoom((z) => Math.min(3, +(z + 0.25).toFixed(2)))} style={hdrBtn}><Plus size={12} /></button>
+              <button type="button" onClick={() => setZoom(1)} title="Sigdir" style={hdrBtn}><ZoomIn size={12} /></button>
+            </div>
+            <button type="button" onClick={onClose} disabled={submitting} className="icon-button" style={{ width: 32, height: 32, borderRadius: 8 }} aria-label="Kapat"><X size={14} /></button>
+          </div>
+        </div>
+
+        {/* ── BODY ── */}
+        <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px" }}>
+
+          {/* Canvas */}
+          <div style={{ position: "relative", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--canvas-bg)" }}>
+
+            {/* Floating toolbar */}
+            <div style={{ position: "absolute", left: 12, top: 12, zIndex: 2, display: "grid", gap: 8, padding: 10, borderRadius: 14, background: "var(--glass-bg)", border: "1px solid var(--glass-border)", backdropFilter: "blur(12px)", boxShadow: "var(--shadow-lg)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 3 }}>
+                {COLORS.map((c) => (
+                  <button key={c.value} type="button" onClick={() => setColor(c.value)} title={c.label} style={{ width: 22, height: 22, borderRadius: 6, border: c.value === color ? "2px solid var(--accent)" : "1px solid var(--border-default)", background: c.value, cursor: "pointer", transition: "transform 80ms ease", transform: c.value === color ? "scale(1.15)" : "scale(1)" }} />
+                ))}
+              </div>
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--text-muted)" }}><span>Boyut</span><span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>{size}px</span></div>
+                <input type="range" min={MIN_BRUSH} max={MAX_BRUSH} step={1} value={size} onChange={(e) => setSize(Number(e.target.value))} disabled={submitting} style={{ width: "100%", accentColor: "var(--accent)" }} />
+              </div>
+              <div style={{ height: 1, background: "var(--surface-active)" }} />
+              <button type="button" onClick={() => setStrokes((c) => c.slice(0, -1))} disabled={strokes.length === 0 || submitting} style={toolBtn}><RotateCcw size={11} />Geri al</button>
+              <button type="button" onClick={() => { ref.current = null; setStrokes([]); }} disabled={strokes.length === 0 || submitting} style={toolBtn}><Trash2 size={11} />Temizle</button>
+            </div>
+
+            {/* Stroke counter */}
+            {strokes.length > 0 ? (
+              <div style={{ position: "absolute", right: 12, top: 12, zIndex: 2, display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, background: "var(--glass-bg)", border: "1px solid var(--glass-border)", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>{strokes.length} isaret</span>
+              </div>
+            ) : null}
+
+            {/* Canvas */}
+            <div style={{ position: "absolute", inset: 0, overflow: "auto", display: "grid", placeItems: zoom <= 1 ? "center" : "start", padding: zoom > 1 ? 20 : 16 }}>
+              <div
+                onPointerDown={pd}
+                onPointerMove={pm}
+                onPointerUp={pu}
+                onPointerCancel={pu}
+                style={{ position: "relative", maxWidth: zoom <= 1 ? "100%" : undefined, maxHeight: zoom <= 1 ? "100%" : undefined, width: zoom <= 1 ? "fit-content" : undefined, display: "grid", placeItems: "center", borderRadius: 10, overflow: "hidden", cursor: submitting ? "progress" : "crosshair", touchAction: "none", transform: `scale(${zoom})`, transformOrigin: zoom <= 1 ? "center" : "top left", boxShadow: "var(--shadow-lg)" }}
+              >
+                <img src={d.previewUrl} alt={d.label} onLoad={ol} draggable={false} style={{ display: "block", width: "auto", height: "auto", maxWidth: zoom <= 1 ? "calc(100vw - 420px)" : undefined, maxHeight: zoom <= 1 ? "calc(100vh - 140px)" : undefined, userSelect: "none", pointerEvents: "none" }} />
+                <svg viewBox="0 0 1 1" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible", pointerEvents: "none" }}>
+                  {strokes.map((s) =>
+                    s.points.length === 1
+                      ? <circle key={s.id} cx={s.points[0].x} cy={s.points[0].y} r={s.size * 0.5} fill={s.color} />
+                      : <polyline key={s.id} points={svgPts(s.points)} fill="none" stroke={s.color} strokeWidth={s.size} strokeLinecap="round" strokeLinejoin="round" />,
+                  )}
+                </svg>
+              </div>
+            </div>
+
+            {/* Hint */}
+            {strokes.length === 0 && !submitting ? (
+              <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", zIndex: 2, padding: "7px 14px", borderRadius: 10, background: "var(--glass-bg)", border: "1px solid var(--surface-active)", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", pointerEvents: "none" }}>
+                Gorselin uzerine cizerek degisiklik bolgesini isaretleyin · <strong style={{ color: "var(--text-secondary)" }}>Cmd+Z</strong> geri al
+              </div>
+            ) : null}
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "auto auto 1fr auto auto",
-              gap: 12,
-              alignItems: "center",
-              padding: "14px 20px",
-              borderBottom: "1px solid var(--border-subtle)",
-              background: "rgba(0,0,0,0.02)",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 11,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "var(--text-muted)",
-              }}
-            >
-              Markup
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {IMAGE_EDIT_COLORS.map((color) => {
-                const active = color === brushColor;
-                return (
-                  <button
-                    key={color}
-                    type="button"
-                    onClick={() => setBrushColor(color)}
-                    aria-label={`Renk sec ${color}`}
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 999,
-                      border: active
-                        ? "2px solid rgba(0,0,0,0.8)"
-                        : "1px solid rgba(0,0,0,0.12)",
-                      boxShadow: active ? "0 0 0 2px rgba(0,0,0,0.18)" : "none",
-                      background: color,
-                      cursor: "pointer",
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <div style={{ display: "grid", gap: 4 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                Firca boyutu: {brushSize}px
-              </div>
-              <input
-                type="range"
-                min={8}
-                max={38}
-                step={1}
-                value={brushSize}
-                onChange={(event) => setBrushSize(Number(event.target.value))}
-                disabled={submitting}
-              />
-            </div>
-            <button
-              className="btn-secondary"
-              type="button"
-              onClick={() => setStrokes((current) => current.slice(0, -1))}
-              disabled={strokes.length === 0 || submitting}
-              style={{ padding: "8px 12px", fontSize: 11 }}
-            >
-              <RefreshCw size={13} />
-              Geri al
-            </button>
-            <button
-              className="btn-secondary"
-              type="button"
-              onClick={() => {
-                activeStrokeIdRef.current = null;
-                setStrokes([]);
-              }}
-              disabled={strokes.length === 0 || submitting}
-              style={{ padding: "8px 12px", fontSize: 11 }}
-            >
-              <Trash2 size={13} />
-              Isaretleri temizle
-            </button>
-          </div>
+          {/* Right panel */}
+          <div style={{ display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", borderLeft: "1px solid var(--surface-active)", background: "var(--surface-tint)", minWidth: 0 }}>
+            <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: 16, display: "grid", gap: 16, alignContent: "start" }}>
 
-          <div style={{ minHeight: 0, padding: 20, display: "grid" }}>
-            <div
-              style={{
-                position: "relative",
-                width: "100%",
-                height: "100%",
-                minHeight: 380,
-                borderRadius: 24,
-                overflow: "hidden",
-                border: "1px solid #e8e8e8",
-                background: "#f3f3f4",
-                cursor: "default",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  display: "grid",
-                  placeItems: "center",
-                  padding: 18,
-                }}
-              >
-                <div
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                  style={{
-                    position: "relative",
-                    maxWidth: "100%",
-                    maxHeight: "100%",
-                    width: "fit-content",
-                    height: "fit-content",
-                    display: "grid",
-                    placeItems: "center",
-                    overflow: "hidden",
-                    borderRadius: 18,
-                    cursor: submitting ? "progress" : "crosshair",
-                    touchAction: "none",
-                  }}
-                >
-                  <img
-                    src={activeDraft.previewUrl}
-                    alt={activeDraft.label}
-                    onLoad={handlePreviewLoad}
-                    style={{
-                      display: "block",
-                      width: "auto",
-                      height: "auto",
-                      maxWidth: "100%",
-                      maxHeight: "100%",
-                      userSelect: "none",
-                      pointerEvents: "none",
-                    }}
-                  />
-                  <svg
-                    viewBox="0 0 1 1"
-                    preserveAspectRatio="none"
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: "100%",
-                      height: "100%",
-                      overflow: "visible",
-                      pointerEvents: "none",
-                    }}
-                  >
-                    {strokes.map((stroke) =>
-                      stroke.points.length === 1 ? (
-                        <circle
-                          key={stroke.id}
-                          cx={stroke.points[0].x}
-                          cy={stroke.points[0].y}
-                          r={stroke.size * 0.5}
-                          fill={stroke.color}
-                        />
-                      ) : (
-                        <polyline
-                          key={stroke.id}
-                          points={strokePointsToSvgPoints(stroke.points)}
-                          fill="none"
-                          stroke={stroke.color}
-                          strokeWidth={stroke.size}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ),
-                    )}
-                  </svg>
+              {/* Presets */}
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Hazir talimatlar</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {PRESET_PROMPTS.map((cat) => (
+                    <button key={cat.label} type="button" onClick={() => setPresetCat(cat.label)} style={{ padding: "4px 10px", borderRadius: 7, border: "1px solid " + (presetCat === cat.label ? "var(--accent)" : "var(--glass-border)"), background: presetCat === cat.label ? "var(--surface-hover)" : "var(--bg-base)", color: presetCat === cat.label ? "var(--accent)" : "var(--text-muted)", fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 100ms ease" }}>
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  {presets.map((p) => (
+                    <button key={p} type="button" onClick={() => setPrompt((prev) => prev ? `${prev}\n${p}` : p)} disabled={submitting} style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", borderRadius: 9, border: "1px solid var(--surface-active)", background: "var(--bg-base)", color: "var(--text-secondary)", fontSize: 11, lineHeight: 1.4, cursor: "pointer", transition: "background 80ms ease" }}>
+                      {p}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              <div
-                style={{
-                  position: "absolute",
-                  left: 16,
-                  top: 16,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  background: "rgba(255,255,255,0.88)",
-                  border: "1px solid #e8e8e8",
-                  color: "#1a1c1c",
-                  fontSize: 11,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                }}
-              >
-                {strokes.length} markup
+              {/* Prompt */}
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Ozel talimat</div>
+                <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Degisiklik talimatini yaz veya hazir talimatlardan sec..." disabled={submitting} style={{ width: "100%", minHeight: 100, resize: "vertical", padding: "12px 14px", borderRadius: 10, border: "1px solid var(--glass-border)", background: "var(--bg-base)", color: "var(--text-primary)", fontSize: 12, lineHeight: 1.7, fontFamily: '"IBM Plex Mono", "Menlo", monospace', outline: "none" }} />
+                <div style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.5 }}>Bos birakirsan sistem otomatik koruma talimati olusturur.</div>
               </div>
 
-              <div
-                style={{
-                  position: "absolute",
-                  right: 16,
-                  bottom: 16,
-                  padding: "10px 12px",
-                  borderRadius: 14,
-                  background: "rgba(255,255,255,0.88)",
-                  border: "1px solid #e8e8e8",
-                  color: "#6b7280",
-                  fontSize: 11,
-                  lineHeight: 1.55,
-                  maxWidth: 280,
-                }}
-              >
-                Foto ustune serbestce ciz. Isaretler ikinci referans olarak gonderilir; model
-                sadece bu bolgelerde lokal degisiklik yapmaya zorlanir.
+              {/* Aspect ratio */}
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>En boy orani</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {ASPECT_RATIOS.map((r) => (
+                    <button key={r} type="button" onClick={() => setAr(r)} disabled={submitting} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid " + (r === ar ? "var(--accent)" : "var(--glass-border)"), background: r === ar ? "var(--surface-hover)" : "var(--bg-base)", color: r === ar ? "var(--accent)" : "var(--text-muted)", fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 100ms ease" }}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Info */}
+              <div style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid var(--surface-active)", background: "var(--bg-base)" }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Nasil calisir?</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>Kaynak gorsel korunur. Isaretler rehber olarak gonderilir. Model yalnizca isaretli bolgelerde degisiklik yapar.</div>
               </div>
             </div>
-          </div>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "14px 20px 18px",
-              borderTop: "1px solid var(--border-subtle)",
-              background: "rgba(0,0,0,0.02)",
-            }}
-          >
-            <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              Yeni sonuc galeriye yeni bir kare olarak eklenir; ister yeniden referans yapabilir
-              ister ayarlari geri yukleyebilirsin.
-            </span>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 11,
-                color: "var(--text-muted)",
-              }}
-            >
-              <span>Mod</span>
-              <strong style={{ color: "var(--accent)" }}>Preserve edit</strong>
+            {/* Footer */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--surface-active)" }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{strokes.length > 0 ? `${strokes.length} isaret` : "Koruyarak duzenle"}</span>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button type="button" onClick={onClose} disabled={submitting} className="btn-secondary" style={{ padding: "8px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}>Vazgec</button>
+                <button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting} className="btn-primary" style={{ padding: "8px 18px", fontSize: 12, fontWeight: 600, borderRadius: 8 }}>
+                  {submitting ? <LoaderCircle className="spin-slow" size={14} /> : <Pencil size={14} />}
+                  {submitting ? "Kuyrukta..." : "Duzenleme uret"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateRows: "auto minmax(0, 1fr) auto",
-            minWidth: 0,
-            background: "#f9f9f9",
-          }}
-        >
-          <div
-            style={{
-              padding: "18px 20px 14px",
-              borderBottom: "1px solid var(--border-subtle)",
-              display: "grid",
-              gap: 6,
-            }}
-          >
-            <strong style={{ fontSize: 16, letterSpacing: "-0.02em" }}>Degisiklik talimati</strong>
-            <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              Prompt alani bilerek bos gelir. Sadece kucuk degisiklik notunu yazabilir veya hic
-              yazmadan yalnizca markup ile devam edebilirsin.
-            </span>
-          </div>
-
-          <div style={{ padding: 20, display: "grid", gap: 16, minHeight: 0, alignContent: "start" }}>
-            <div style={{ display: "grid", gap: 8 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--text-muted)",
-                }}
-              >
-                Edit prompt
-              </div>
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder="Ornek: Sol taraftaki sis yogunlugunu azalt. Koprunun neonlarini biraz daha belirginlestir. Kadraji koru."
-                style={{
-                  width: "100%",
-                  minHeight: 220,
-                  resize: "vertical",
-                  padding: "14px 16px",
-                  borderRadius: 16,
-                  border: "1px solid var(--border-default)",
-                  background: "var(--bg-surface)",
-                  color: "var(--text-secondary)",
-                  fontSize: 12,
-                  lineHeight: 1.75,
-                  fontFamily: '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-                  outline: "none",
-                }}
-                disabled={submitting}
-              />
-              <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                Bos birakirsan sistem arka planda otomatik olarak sadece isaretli bolgeleri
-                degistirip diger her seyi koruyan bir talimat kurar.
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--text-muted)",
-                }}
-              >
-                Aspect ratio
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {IMAGE_ASPECT_RATIOS.map((ratio) => {
-                  const active = ratio === aspectRatio;
-                  return (
-                    <button
-                      key={ratio}
-                      type="button"
-                      className={active ? "btn-primary" : "btn-secondary"}
-                      onClick={() => setAspectRatio(ratio)}
-                      style={{ minWidth: 62, padding: "8px 12px", fontSize: 11 }}
-                      disabled={submitting}
-                    >
-                      {ratio}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gap: 10,
-                padding: "14px 14px 16px",
-                borderRadius: 18,
-                border: "1px solid var(--border-subtle)",
-                background: "rgba(0,0,0,0.02)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--text-muted)",
-                }}
-              >
-                Edit behavior
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                Kaynak kare ana referans olarak kalir. Markup varsa ayni kareye cizilmis ikinci bir
-                guide da gonderilir. Bu sayede model kompozisyonu yeniden kurmak yerine lokal
-                degisiklige odaklanir.
-              </div>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "16px 20px 20px",
-              borderTop: "1px solid var(--border-subtle)",
-            }}
-          >
-            <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              {strokes.length > 0 ? `${strokes.length} isaret cizildi.` : "Henuz isaret yok."}
-            </span>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn-secondary"
-                type="button"
-                onClick={onClose}
-                disabled={submitting}
-              >
-                Vazgec
-              </button>
-              <button
-                className="btn-primary"
-                type="button"
-                onClick={() => void handleSubmit()}
-                disabled={!canSubmit || submitting}
-              >
-                {submitting ? <LoaderCircle className="spin-slow" size={14} /> : <Pencil size={14} />}
-                {submitting ? "Queueing..." : "Duzenleme uret"}
-              </button>
-            </div>
-          </div>
+        {/* ── STATUS BAR ── */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 16px", borderTop: "1px solid var(--surface-hover)", background: "var(--surface-tint)", fontSize: 10, color: "var(--text-muted)" }}>
+          <div style={{ display: "flex", gap: 12 }}><span>Nano Banana 2</span>{dims ? <span>{dims}</span> : null}<span>{ar}</span></div>
+          <div style={{ display: "flex", gap: 12 }}><span>{strokes.length} isaret</span><span>Zum {Math.round(zoom * 100)}%</span></div>
         </div>
       </div>
     </div>
   );
 }
+
+/* ═══════════ STYLES ═══════════ */
+
+const hdrBtn: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", justifyContent: "center",
+  width: 26, height: 26, borderRadius: 6, border: "none", background: "transparent",
+  color: "var(--text-secondary)", cursor: "pointer", padding: 0,
+};
+
+const toolBtn: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 6,
+  padding: "5px 8px", borderRadius: 7, border: "none",
+  background: "var(--surface-hover)", color: "var(--text-secondary)",
+  cursor: "pointer", fontSize: 10, fontWeight: 500, width: "100%",
+  transition: "background 80ms ease",
+};

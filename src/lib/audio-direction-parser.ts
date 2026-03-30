@@ -1,6 +1,7 @@
 export type AudioDirectionLanguage = "turkish" | "english" | "none" | "mixed";
 export type AudioDirectionType =
   | "dialogue"
+  | "voiceover"
   | "sfx"
   | "mixed"
   | "sfx_only"
@@ -171,8 +172,20 @@ function normalizeType(value: string | null): AudioDirectionType {
     return "none";
   }
 
-  if (normalized.includes("sfx only")) {
+  if (normalized.includes("voiceover") || normalized.includes("narration") || normalized.includes("seslendirme")) {
+    return "voiceover";
+  }
+
+  if (normalized.includes("sfx only") || normalized.includes("sfx-only")) {
     return "sfx_only";
+  }
+
+  if (normalized.includes("sfx/ambience") || normalized.includes("sfx/ambiance")) {
+    return "mixed";
+  }
+
+  if (normalized.includes("amplified sfx") || normalized.includes("amplified-sfx")) {
+    return "sfx";
   }
 
   if (normalized.includes("mixed")) {
@@ -181,6 +194,10 @@ function normalizeType(value: string | null): AudioDirectionType {
 
   if (normalized.includes("dialogue")) {
     return "dialogue";
+  }
+
+  if (normalized.includes("ambience only") || normalized.includes("ambiance only")) {
+    return "ambience";
   }
 
   if (normalized.includes("ambience") || normalized.includes("ambiance")) {
@@ -586,14 +603,38 @@ export function parseAudioDirection(promptVideo: string): ParsedAudioDirection |
     }
   }
 
+  const resolvedType = normalizeType(fields.type);
   const normalizedTranscript = isNoneValue(fields.dialogueTranscript)
     ? null
     : trimWrappedQuotes(fields.dialogueTranscript ?? "");
-  const { dialogueLines, speakerTagged } = parseDialogueLines(normalizedTranscript);
+  let { dialogueLines, speakerTagged } = parseDialogueLines(normalizedTranscript);
+
+  const isVoiceableType =
+    resolvedType === "voiceover" ||
+    resolvedType === "dialogue" ||
+    resolvedType === "mixed";
+
+  if (isVoiceableType && normalizedTranscript && !speakerTagged) {
+    const paragraphs = normalizedTranscript
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\n/g, " ").trim())
+      .filter(Boolean);
+    const voiceoverLines =
+      paragraphs.length > 0
+        ? paragraphs
+        : [normalizedTranscript.trim()];
+
+    dialogueLines = voiceoverLines.map((text) => ({
+      speaker: "Anlatici",
+      speakerKey: "anlatici",
+      text,
+    }));
+    speakerTagged = true;
+  }
 
   return {
     language: normalizeLanguage(fields.language),
-    type: normalizeType(fields.type),
+    type: resolvedType,
     dialogueTranscript: normalizedTranscript,
     dialogueLines,
     dialoguePreview: buildDialoguePreview(normalizedTranscript, dialogueLines),
@@ -674,11 +715,55 @@ export function createAudioContentHash(
   return Math.abs(hash >>> 0).toString(16).padStart(8, "0");
 }
 
+export function buildVoiceoverAudioDirection(
+  voiceoverText: string,
+  existingDirection?: ParsedAudioDirection | null,
+): ParsedAudioDirection {
+  const paragraphs = voiceoverText
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\n/g, " ").trim())
+    .filter(Boolean);
+  const lines: ParsedDialogueLine[] =
+    paragraphs.length > 0
+      ? paragraphs.map((text) => ({
+          speaker: "Anlatici",
+          speakerKey: "anlatici",
+          text,
+        }))
+      : [
+          {
+            speaker: "Anlatici",
+            speakerKey: "anlatici",
+            text: voiceoverText.trim(),
+          },
+        ];
+  const transcript = lines.map((l) => `${l.speaker}: ${l.text}`).join("\n");
+
+  return {
+    language: inferLanguageFromDialogue(lines),
+    type: "voiceover",
+    dialogueTranscript: transcript,
+    dialogueLines: lines,
+    dialoguePreview: buildDialoguePreview(transcript, lines),
+    speakerTagged: true,
+    sfx: existingDirection?.sfx ?? [],
+    ambience: existingDirection?.ambience ?? [],
+    music: existingDirection?.music ?? null,
+    mixTarget: existingDirection?.mixTarget ?? null,
+    hasSubtitles: false,
+    blockText: voiceoverText,
+  };
+}
+
 export function resolveAudioShotStatus(
   audioDirection: ParsedAudioDirection | null,
 ): AudioShotStatus {
   if (!audioDirection?.dialogueTranscript) {
     return "none";
+  }
+
+  if (audioDirection.type === "voiceover") {
+    return "pending";
   }
 
   if (!audioDirection.speakerTagged || audioDirection.dialogueLines.length === 0) {

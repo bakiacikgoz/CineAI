@@ -1277,9 +1277,9 @@ export function Characters() {
         </div>
         <div style={rightPanelStyle}>
           <div style={emptyDetailStyle}>
-            <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
-            <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>Yukleniyor...</div>
-            <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6 }}>
+            <UserRound size={48} strokeWidth={1.2} style={{ color: "var(--text-muted)" }} />
+            <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-muted)" }}>Yukleniyor...</div>
+            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6 }}>
               Karakter kayitlari okunuyor.
             </p>
           </div>
@@ -1318,7 +1318,7 @@ export function Characters() {
         {/* Search */}
         <div style={{ padding: "0 16px 12px" }}>
           <div style={searchWrapperStyle}>
-            <Search size={14} style={{ color: "#a1a1aa", flexShrink: 0 }} />
+            <Search size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
             <input
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Karakter ara..."
@@ -1332,7 +1332,7 @@ export function Characters() {
         <div style={characterListStyle}>
           {filteredCharacters.length === 0 ? (
             <div style={{ padding: "32px 16px", textAlign: "center" }}>
-              <p style={{ margin: 0, color: "#a1a1aa", fontSize: 12 }}>
+              <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12 }}>
                 {characters.length === 0 ? "Henuz karakter yok" : "Sonuc bulunamadi"}
               </p>
             </div>
@@ -1358,7 +1358,7 @@ export function Characters() {
                   onClick={() => handleSelectCharacter(character)}
                   style={{
                     ...charListItemStyle,
-                    background: isActive ? "rgba(228,228,231,0.4)" : "transparent",
+                    background: isActive ? "var(--surface-hover)" : "transparent",
                     borderRadius: 12,
                   }}
                   type="button"
@@ -1387,7 +1387,7 @@ export function Characters() {
                         }}
                       />
                     ) : (
-                      <UserRound size={18} style={{ color: "#a1a1aa" }} />
+                      <UserRound size={18} style={{ color: "var(--text-muted)" }} />
                     )}
                   </div>
 
@@ -1397,7 +1397,7 @@ export function Characters() {
                       style={{
                         fontSize: 13,
                         fontWeight: isActive ? 600 : 500,
-                        color: isActive ? "#18181b" : "#3f3f46",
+                        color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
                         lineHeight: 1.3,
                         whiteSpace: "nowrap",
                         overflow: "hidden",
@@ -1410,7 +1410,7 @@ export function Characters() {
                       <div
                         style={{
                           fontSize: 11,
-                          color: isActive ? "#71717a" : "#a1a1aa",
+                          color: isActive ? "var(--text-muted)" : "var(--text-muted)",
                           lineHeight: 1.3,
                           whiteSpace: "nowrap",
                           overflow: "hidden",
@@ -1474,9 +1474,9 @@ export function Characters() {
           />
         ) : (
           <div style={emptyDetailStyle}>
-            <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
-            <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>Karakter sec</div>
-            <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6, maxWidth: 280, textAlign: "center" }}>
+            <UserRound size={48} strokeWidth={1.2} style={{ color: "var(--text-muted)" }} />
+            <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-muted)" }}>Karakter sec</div>
+            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, maxWidth: 280, textAlign: "center" }}>
               Detaylari goruntulemek icin sol panelden bir karakter sec.
             </p>
           </div>
@@ -1655,7 +1655,7 @@ function CharacterDetailPanel({
           </button>
           <button
             onClick={onDelete}
-            style={{ ...detailIconBtnStyle, color: "#ef4444" }}
+            style={{ ...detailIconBtnStyle, color: "var(--status-error)" }}
             title="Sil"
             type="button"
           >
@@ -1675,7 +1675,7 @@ function CharacterDetailPanel({
       <div style={{ padding: "24px 32px 48px" }}>
         {/* Description */}
         {description ? (
-          <p style={{ margin: "0 0 32px", color: "#71717a", fontSize: 14, lineHeight: 1.7 }}>
+          <p style={{ margin: "0 0 32px", color: "var(--text-muted)", fontSize: 14, lineHeight: 1.7 }}>
             {description}
           </p>
         ) : null}
@@ -1698,7 +1698,7 @@ function CharacterDetailPanel({
                     onClick={() => onLookSelect(look.id)}
                     style={{
                       ...lookCardStyle,
-                      outline: isActive ? "2px solid #000000" : "none",
+                      outline: isActive ? "2px solid var(--accent)" : "none",
                       outlineOffset: isActive ? -2 : 0,
                       filter: isActive ? "none" : "grayscale(1)",
                       opacity: isActive ? 1 : 0.4,
@@ -1712,8 +1712,8 @@ function CharacterDetailPanel({
                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                       />
                     ) : (
-                      <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", background: "#f4f4f5" }}>
-                        <UserRound size={28} style={{ color: "#d4d4d8" }} />
+                      <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", background: "var(--bg-elevated)" }}>
+                        <UserRound size={28} style={{ color: "var(--text-muted)" }} />
                       </div>
                     )}
 
@@ -1729,7 +1729,7 @@ function CharacterDetailPanel({
                       marginTop: 6,
                       fontSize: 12,
                       fontWeight: isActive ? 600 : 400,
-                      color: isActive ? "#18181b" : "#71717a",
+                      color: isActive ? "var(--text-primary)" : "var(--text-muted)",
                       textAlign: "center",
                       whiteSpace: "nowrap",
                       overflow: "hidden",
@@ -1749,9 +1749,9 @@ function CharacterDetailPanel({
                 style={newLookCardStyle}
                 type="button"
               >
-                <ImagePlus size={24} style={{ color: "#a1a1aa" }} />
+                <ImagePlus size={24} style={{ color: "var(--text-muted)" }} />
               </button>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#a1a1aa", textAlign: "center" }}>
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-muted)", textAlign: "center" }}>
                 Yeni Gorunum
               </div>
             </div>
@@ -1763,11 +1763,11 @@ function CharacterDetailPanel({
           <div style={lookDetailContainerStyle}>
             {/* Look detail header */}
             <div style={{ marginBottom: 20 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#18181b" }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
                 Gorunum Detayi: {viewedLook.name}
               </h3>
               {viewedLook.promptHint ? (
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#71717a", lineHeight: 1.6 }}>
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
                   {viewedLook.promptHint}
                 </p>
               ) : null}
@@ -1790,7 +1790,7 @@ function CharacterDetailPanel({
                           height: 80,
                           borderRadius: 12,
                           overflow: "hidden",
-                          outline: isPrimary ? "2px solid #22c55e" : "1px solid #e4e4e7",
+                          outline: isPrimary ? "2px solid var(--status-success)" : "1px solid var(--border-default)",
                           outlineOffset: isPrimary ? -2 : -1,
                           flexShrink: 0,
                         }}
@@ -1802,7 +1802,7 @@ function CharacterDetailPanel({
                             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                           />
                         ) : (
-                          <div style={{ width: "100%", height: "100%", background: "#f4f4f5" }} />
+                          <div style={{ width: "100%", height: "100%", background: "var(--bg-elevated)" }} />
                         )}
                         {isPrimary ? (
                           <div style={refPrimaryBadgeStyle}>
@@ -1833,7 +1833,7 @@ function CharacterDetailPanel({
             {/* Generation prompt */}
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <Lock size={13} style={{ color: "#a1a1aa" }} />
+                <Lock size={13} style={{ color: "var(--text-muted)" }} />
                 <span style={sectionSubTitleStyle}>Uretim Promptu</span>
               </div>
               <div style={{ position: "relative" }}>
@@ -1904,8 +1904,8 @@ function AssignReferenceModal({
     <div onClick={onClose} style={modalBackdropStyle}>
       <div onClick={(event) => event.stopPropagation()} style={modalPanelStyle}>
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: "#18181b" }}>Shot'a karakter bagla</div>
-          <p style={{ margin: 0, color: "#71717a", fontSize: 13, lineHeight: 1.7 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)" }}>Shot'a karakter bagla</div>
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13, lineHeight: 1.7 }}>
             Secilen look'un primary referansi shot'a baglanacak. Istersen promptlara continuity hint'i de eklenir.
           </p>
         </div>
@@ -1991,9 +1991,9 @@ function CharactersEmptyState({ title, copy }: { title: string; copy: string }) 
       </div>
       <div style={rightPanelStyle}>
         <div style={emptyDetailStyle}>
-          <UserRound size={48} strokeWidth={1.2} style={{ color: "#d4d4d8" }} />
-          <div style={{ fontSize: 18, fontWeight: 600, color: "#71717a" }}>{title}</div>
-          <p style={{ margin: 0, color: "#a1a1aa", fontSize: 13, lineHeight: 1.6, maxWidth: 320, textAlign: "center" }}>
+          <UserRound size={48} strokeWidth={1.2} style={{ color: "var(--text-muted)" }} />
+          <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-muted)" }}>{title}</div>
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, maxWidth: 320, textAlign: "center" }}>
             {copy}
           </p>
         </div>
@@ -2019,8 +2019,8 @@ const leftPanelStyle = {
   maxWidth: 300,
   display: "flex",
   flexDirection: "column",
-  borderRight: "1px solid #e4e4e7",
-  background: "#FAFAFA",
+  borderRight: "1px solid var(--border-default)",
+  background: "var(--surface-tint)",
   overflow: "hidden",
 } satisfies React.CSSProperties;
 
@@ -2034,7 +2034,7 @@ const leftPanelHeaderStyle = {
 
 const rightPanelStyle = {
   flex: 1,
-  background: "#ffffff",
+  background: "var(--bg-base)",
   overflowY: "auto",
   position: "relative",
 } satisfies React.CSSProperties;
@@ -2045,8 +2045,8 @@ const searchWrapperStyle = {
   gap: 8,
   padding: "8px 14px",
   borderRadius: 999,
-  border: "1px solid #e4e4e7",
-  background: "#ffffff",
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
 } satisfies React.CSSProperties;
 
 const leftSearchInputStyle = {
@@ -2055,7 +2055,7 @@ const leftSearchInputStyle = {
   outline: "none",
   background: "transparent",
   fontSize: 13,
-  color: "#18181b",
+  color: "var(--text-primary)",
   lineHeight: 1.4,
 } satisfies React.CSSProperties;
 
@@ -2081,7 +2081,7 @@ const activeBarStyle = {
   width: 3,
   height: 24,
   borderRadius: "0 999px 999px 0",
-  background: "#000000",
+  background: "var(--accent)",
   flexShrink: 0,
 } satisfies React.CSSProperties;
 
@@ -2090,7 +2090,7 @@ const avatarStyle = {
   height: 40,
   borderRadius: "50%",
   overflow: "hidden",
-  background: "#f4f4f5",
+  background: "var(--bg-elevated)",
   display: "grid",
   placeItems: "center",
   flexShrink: 0,
@@ -2104,8 +2104,8 @@ const leftPanelAddBtnStyle = {
   justifyContent: "center",
   borderRadius: 10,
   border: "none",
-  background: "#000000",
-  color: "#ffffff",
+  background: "var(--accent)",
+  color: "var(--on-accent)",
   cursor: "pointer",
   transition: "background 150ms ease",
 } satisfies React.CSSProperties;
@@ -2117,9 +2117,9 @@ const leftPanelIconBtnStyle = {
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 10,
-  border: "1px solid #e4e4e7",
+  border: "1px solid var(--border-default)",
   background: "transparent",
-  color: "#71717a",
+  color: "var(--text-muted)",
   cursor: "pointer",
   transition: "all 150ms ease",
 } satisfies React.CSSProperties;
@@ -2128,9 +2128,9 @@ const resumeDraftBtnStyle = {
   width: "100%",
   padding: "10px 16px",
   borderRadius: 10,
-  border: "1px solid #e4e4e7",
-  background: "#ffffff",
-  color: "#18181b",
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-primary)",
   fontSize: 12,
   fontWeight: 600,
   cursor: "pointer",
@@ -2147,10 +2147,10 @@ const detailHeaderStyle = {
   gap: 16,
   height: 80,
   padding: "0 32px",
-  background: "rgba(255,255,255,0.8)",
+  background: "var(--glass-bg)",
   backdropFilter: "blur(20px)",
   WebkitBackdropFilter: "blur(20px)",
-  borderBottom: "1px solid #e4e4e7",
+  borderBottom: "1px solid var(--border-default)",
 } satisfies React.CSSProperties;
 
 const detailIconBtnStyle = {
@@ -2160,9 +2160,9 @@ const detailIconBtnStyle = {
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 10,
-  border: "1px solid #e4e4e7",
+  border: "1px solid var(--border-default)",
   background: "transparent",
-  color: "#a1a1aa",
+  color: "var(--text-muted)",
   cursor: "pointer",
   transition: "all 150ms ease",
 } satisfies React.CSSProperties;
@@ -2176,8 +2176,8 @@ const generateBtnStyle = {
   padding: "0 18px",
   borderRadius: 12,
   border: "none",
-  background: "#22C55E",
-  color: "#ffffff",
+  background: "var(--status-success)",
+  color: "var(--on-accent)",
   fontSize: 13,
   fontWeight: 600,
   cursor: "pointer",
@@ -2190,7 +2190,7 @@ const sectionTitleStyle = {
   fontWeight: 700,
   textTransform: "uppercase",
   letterSpacing: "0.1em",
-  color: "#a1a1aa",
+  color: "var(--text-muted)",
   marginBottom: 14,
 } satisfies React.CSSProperties;
 
@@ -2199,7 +2199,7 @@ const sectionSubTitleStyle = {
   fontWeight: 700,
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  color: "#a1a1aa",
+  color: "var(--text-muted)",
 } satisfies React.CSSProperties;
 
 const looksGridStyle = {
@@ -2218,7 +2218,7 @@ const lookCardStyle = {
   padding: 0,
   cursor: "pointer",
   transition: "all 200ms ease",
-  background: "#f4f4f5",
+  background: "var(--bg-elevated)",
 } satisfies React.CSSProperties;
 
 const lookBadgeStyle = {
@@ -2228,8 +2228,8 @@ const lookBadgeStyle = {
   width: 22,
   height: 22,
   borderRadius: "50%",
-  background: "#22c55e",
-  color: "#ffffff",
+  background: "var(--status-success)",
+  color: "var(--on-accent)",
   display: "grid",
   placeItems: "center",
 } satisfies React.CSSProperties;
@@ -2238,7 +2238,7 @@ const newLookCardStyle = {
   width: "100%",
   aspectRatio: "160 / 180",
   borderRadius: 16,
-  border: "2px dashed #d4d4d8",
+  border: "2px dashed var(--border-default)",
   background: "transparent",
   display: "grid",
   placeItems: "center",
@@ -2247,7 +2247,7 @@ const newLookCardStyle = {
 } satisfies React.CSSProperties;
 
 const lookDetailContainerStyle = {
-  background: "#f3f3f4",
+  background: "var(--bg-elevated)",
   borderRadius: 24,
   padding: 32,
 } satisfies React.CSSProperties;
@@ -2259,8 +2259,8 @@ const refPrimaryBadgeStyle = {
   width: 18,
   height: 18,
   borderRadius: "50%",
-  background: "#22c55e",
-  color: "#ffffff",
+  background: "var(--status-success)",
+  color: "var(--on-accent)",
   display: "grid",
   placeItems: "center",
 } satisfies React.CSSProperties;
@@ -2270,10 +2270,10 @@ const attributeChipStyle = {
   gap: 4,
   padding: "6px 14px",
   borderRadius: 999,
-  background: "#ffffff",
-  border: "1px solid #e4e4e7",
+  background: "var(--bg-base)",
+  border: "1px solid var(--border-default)",
   fontSize: 12,
-  color: "#3f3f46",
+  color: "var(--text-secondary)",
   lineHeight: 1.3,
 } satisfies React.CSSProperties;
 
@@ -2283,9 +2283,9 @@ const promptTextareaStyle = {
   padding: "14px 16px",
   paddingRight: 44,
   borderRadius: 14,
-  border: "1px solid #e4e4e7",
-  background: "#ffffff",
-  color: "#3f3f46",
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-secondary)",
   fontSize: 12,
   lineHeight: 1.7,
   resize: "none" as const,
@@ -2303,9 +2303,9 @@ const copyPromptBtnStyle = {
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 8,
-  border: "1px solid #e4e4e7",
-  background: "#ffffff",
-  color: "#71717a",
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  color: "var(--text-muted)",
   cursor: "pointer",
   transition: "all 150ms ease",
 } satisfies React.CSSProperties;
@@ -2328,7 +2328,7 @@ const modalBackdropStyle = {
   display: "grid",
   placeItems: "center",
   padding: 20,
-  background: "rgba(0, 0, 0, 0.3)",
+  background: "var(--backdrop-bg)",
   backdropFilter: "blur(8px)",
 } satisfies React.CSSProperties;
 
@@ -2338,18 +2338,18 @@ const modalPanelStyle = {
   gap: 18,
   padding: 28,
   borderRadius: 20,
-  border: "1px solid #e4e4e7",
-  background: "#ffffff",
-  boxShadow: "0 25px 50px -12px rgba(0,0,0,0.15)",
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-base)",
+  boxShadow: "var(--shadow-modal)",
 } satisfies React.CSSProperties;
 
 const modalSelectStyle = {
   width: "100%",
   padding: "12px 14px",
   borderRadius: 12,
-  border: "1px solid #e4e4e7",
-  background: "#fafafa",
-  color: "#18181b",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-tint)",
+  color: "var(--text-primary)",
   fontSize: 13,
   outline: "none",
 } satisfies React.CSSProperties;
@@ -2358,7 +2358,7 @@ const modalToggleStyle = {
   display: "flex",
   alignItems: "center",
   gap: 10,
-  color: "#71717a",
+  color: "var(--text-muted)",
   fontSize: 13,
 } satisfies React.CSSProperties;
 
@@ -2370,9 +2370,9 @@ const modalSecondaryBtnStyle = {
   minHeight: 40,
   padding: "10px 20px",
   borderRadius: 10,
-  border: "1px solid #e4e4e7",
+  border: "1px solid var(--border-default)",
   background: "transparent",
-  color: "#3f3f46",
+  color: "var(--text-secondary)",
   fontSize: 13,
   fontWeight: 600,
   cursor: "pointer",
@@ -2388,8 +2388,8 @@ const modalPrimaryBtnStyle = {
   padding: "10px 20px",
   borderRadius: 10,
   border: "none",
-  background: "#000000",
-  color: "#ffffff",
+  background: "var(--accent)",
+  color: "var(--on-accent)",
   fontSize: 13,
   fontWeight: 700,
   cursor: "pointer",

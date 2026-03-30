@@ -21,6 +21,25 @@ function getProgress(ready: number, total: number): number {
   return Math.round((ready / total) * 100);
 }
 
+const relativeFormatter = new Intl.RelativeTimeFormat("tr-TR", { numeric: "auto" });
+
+function getRelativeTime(timestamp: number): string {
+  const now = Date.now();
+  const then = timestamp;
+  const diffMs = then - now;
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (Math.abs(diffDays) < 1) {
+    const diffHours = Math.round(diffMs / (1000 * 60 * 60));
+    if (Math.abs(diffHours) < 1) {
+      return relativeFormatter.format(Math.round(diffMs / (1000 * 60)), "minute");
+    }
+    return relativeFormatter.format(diffHours, "hour");
+  }
+
+  return relativeFormatter.format(diffDays, "day");
+}
+
 export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCardProps) {
   const [removing, setRemoving] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -96,7 +115,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
           style={{
             position: "absolute",
             inset: 0,
-            background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 50%)",
+            background: "linear-gradient(135deg, var(--surface-hover), transparent 50%)",
             pointerEvents: "none",
             zIndex: 0,
           }}
@@ -146,12 +165,12 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
               gap: 5,
               padding: "4px 10px",
               borderRadius: 999,
-              background: "rgba(255,255,255,0.85)",
+              background: "var(--glass-bg)",
               backdropFilter: "blur(8px)",
               fontSize: 11,
               fontWeight: 600,
-              color: "#1a1c1c",
-              border: "1px solid rgba(0,0,0,0.06)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--surface-active)",
               boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
             }}
           >
@@ -165,13 +184,24 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
       <div className="project-card-body">
         <div className="project-card-topline">
           <span className="project-card-name">{project.name}</span>
-          <span className="project-card-date">
-            {new Date(project.updatedAt).toLocaleDateString("tr-TR", {
-              day: "numeric",
-              month: "long",
-              year: "numeric",
-            })}
-          </span>
+          <div style={{ display: "grid", gap: 1, textAlign: "right" }}>
+            <span className="project-card-date">
+              {new Date(project.updatedAt).toLocaleDateString("tr-TR", {
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+              })}
+            </span>
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--text-muted)",
+                opacity: 0.7,
+              }}
+            >
+              {getRelativeTime(project.updatedAt)}
+            </span>
+          </div>
         </div>
 
         <p className="project-card-path">{project.folderPath}</p>
@@ -201,9 +231,9 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
               <div
                 style={{
                   width: "100%",
-                  height: 3,
+                  height: 6,
                   borderRadius: 999,
-                  background: "rgba(0,0,0,0.06)",
+                  background: "var(--surface-active)",
                   overflow: "hidden",
                 }}
               >
@@ -214,7 +244,7 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
                   style={{
                     height: "100%",
                     borderRadius: 999,
-                    background: "linear-gradient(90deg, #000000, #333333)",
+                    background: "linear-gradient(90deg, var(--accent), var(--text-secondary))",
                   }}
                 />
               </div>
@@ -242,9 +272,9 @@ export function ProjectCard({ project, onClick, onRemove, index = 0 }: ProjectCa
               <div
                 style={{
                   width: "100%",
-                  height: 3,
+                  height: 6,
                   borderRadius: 999,
-                  background: "rgba(0,0,0,0.06)",
+                  background: "var(--surface-active)",
                   overflow: "hidden",
                 }}
               >

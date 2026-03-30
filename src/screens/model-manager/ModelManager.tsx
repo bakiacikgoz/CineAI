@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { Bot, Copy, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 import { Portal } from "@/components/Portal";
+import { ModalShell, ProEmptyState } from "@/components/ui";
 import { useNavigate } from "react-router-dom";
 import { IMAGE_MODELS, VIDEO_MODELS } from "@/services/fal.service";
 import {
@@ -113,7 +114,7 @@ export function ModelManager() {
         if (!cancelled) {
           setError(error instanceof Error ? error.message : "Model presetleri yuklenemedi.");
           await message(error instanceof Error ? error.message : "Model presetleri yuklenemedi.", {
-            title: "Model Manager",
+            title: "Model Yonetici",
             kind: "error",
           });
         }
@@ -167,7 +168,7 @@ export function ModelManager() {
   async function handleSave() {
     if (!editor.name.trim()) {
       await message("Preset adi zorunludur.", {
-        title: "Model Manager",
+        title: "Model Yonetici",
         kind: "warning",
       });
       return;
@@ -188,7 +189,7 @@ export function ModelManager() {
     } catch (error) {
       console.error("Failed to save model preset", error);
       await message(error instanceof Error ? error.message : "Preset kaydedilemedi.", {
-        title: "Model Manager",
+        title: "Model Yonetici",
         kind: "error",
       });
     } finally {
@@ -202,7 +203,7 @@ export function ModelManager() {
       await refreshPresets();
     } catch (error) {
       await message(error instanceof Error ? error.message : "Preset cogaltilamadi.", {
-        title: "Model Manager",
+        title: "Model Yonetici",
         kind: "error",
       });
     }
@@ -225,7 +226,7 @@ export function ModelManager() {
       await refreshPresets();
     } catch (error) {
       await message(error instanceof Error ? error.message : "Preset silinemedi.", {
-        title: "Model Manager",
+        title: "Model Yonetici",
         kind: "error",
       });
     }
@@ -240,7 +241,11 @@ export function ModelManager() {
   }
 
   if (!activeProject) {
-    return <SimpleState title="Model Manager" copy="Preset yonetimi icin once bir proje ac." />;
+    return (
+      <section className="screen-shell">
+        <ProEmptyState icon={Bot} title="Model Yonetici" description="Preset yonetimi icin once bir proje ac." />
+      </section>
+    );
   }
 
   return (
@@ -250,10 +255,10 @@ export function ModelManager() {
           <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
             <span style={eyebrowStyle}>
               <Bot size={13} />
-              Provider presets
+              Model Yonetici
             </span>
             <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-              Model Manager
+              Model Yonetici
             </div>
             <p style={copyStyle}>
               Image ve video uretim ayarlarini preset haline getir. Presetler generator
@@ -270,8 +275,8 @@ export function ModelManager() {
         <section style={metricsGridStyle}>
           <MetricCard label="Toplam preset" value={String(stats.total)} />
           <MetricCard label="Varsayilan" value={String(stats.defaults)} />
-          <MetricCard label="Image ready" value={String(stats.imageCapable)} />
-          <MetricCard label="Video ready" value={String(stats.videoCapable)} />
+          <MetricCard label="Gorsel hazir" value={String(stats.imageCapable)} />
+          <MetricCard label="Video hazir" value={String(stats.videoCapable)} />
         </section>
 
         <section style={toolbarStyle}>
@@ -291,8 +296,8 @@ export function ModelManager() {
             value={capabilityFilter}
           >
             <option value="all">Tum presetler</option>
-            <option value="image">Image model olanlar</option>
-            <option value="video">Video model olanlar</option>
+            <option value="image">Gorsel modeli olanlar</option>
+            <option value="video">Video modeli olanlar</option>
             <option value="default">Varsayilan presetler</option>
           </select>
         </section>
@@ -302,11 +307,12 @@ export function ModelManager() {
         ) : error ? (
           <SimpleState title="Yuklenemedi" copy={error} />
         ) : filteredPresets.length === 0 ? (
-          <SimpleState
+          <ProEmptyState
+            icon={Bot}
             title={presets.length === 0 ? "Preset yok" : "Sonuc bulunamadi"}
-            copy={
+            description={
               presets.length === 0
-                ? "Ilk model preset kaydini olusturup generator akislariyla baglayabilirsin."
+                ? "Yeni bir model preset olusturun."
                 : "Arama ve filtrelere uyan model preset bulunamadi."
             }
           />
@@ -318,7 +324,7 @@ export function ModelManager() {
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <strong style={{ fontSize: 18 }}>{preset.name}</strong>
-                      {preset.isDefault ? <span style={defaultTagStyle}>Default</span> : null}
+                      {preset.isDefault ? <span style={defaultTagStyle}>Varsayilan</span> : null}
                     </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {preset.imageModel ? <span style={tagStyle}>{preset.imageModel}</span> : null}
@@ -332,22 +338,22 @@ export function ModelManager() {
                 </div>
 
                 <div style={{ display: "grid", gap: 10 }}>
-                  <JsonPreview title="Image params" value={preset.imageParams} />
-                  <JsonPreview title="Video params" value={preset.videoParams} />
+                  <JsonPreview title="Gorsel parametreleri" value={preset.imageParams} />
+                  <JsonPreview title="Video parametreleri" value={preset.videoParams} />
                 </div>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button className="btn-secondary" onClick={() => applyPreset(preset, "image")} type="button">
                     <Sparkles size={14} />
-                    Image Generator
+                    Gorsele Uygula
                   </button>
                   <button className="btn-secondary" onClick={() => applyPreset(preset, "video")} type="button">
                     <Bot size={14} />
-                    Video Generator
+                    Videoya Uygula
                   </button>
                   <button className="btn-secondary" onClick={() => void handleDuplicate(preset.id)} type="button">
                     <Copy size={14} />
-                    Cogalt
+                    Kopyala
                   </button>
                   <button className="btn-secondary" onClick={() => void handleDelete(preset.id)} type="button">
                     <Trash2 size={14} />
@@ -392,87 +398,84 @@ function PresetEditorModal({
   onSave: () => void;
   saving: boolean;
 }) {
+  const footerButtons = (
+    <>
+      <button className="btn-secondary" disabled={saving} onClick={onClose} type="button">
+        Iptal
+      </button>
+      <button className="btn-primary" disabled={saving} onClick={onSave} type="button">
+        {saving ? "Kaydediliyor..." : "Kaydet"}
+      </button>
+    </>
+  );
+
   return (
-    <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(event) => event.stopPropagation()} style={modalPanelStyle}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>
-            {editor.id ? "Preset duzenle" : "Yeni preset"}
-          </div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            Parametre JSON alanlari generator ekranlarinda form durumuna uygulanacak sekilde saklanir.
-          </p>
-        </div>
+    <ModalShell
+      title="Model Preset"
+      subtitle="Uretim parametreleri yapilandir"
+      onClose={onClose}
+      width="min(760px, 100%)"
+      footer={footerButtons}
+    >
+      <div style={{ display: "grid", gap: 12, padding: 20 }}>
+        <input
+          onChange={(event) => onChange({ ...editor, name: event.target.value })}
+          placeholder="Preset adi"
+          style={formInputStyle}
+          value={editor.name}
+        />
 
-        <div style={{ display: "grid", gap: 12 }}>
-          <input
-            onChange={(event) => onChange({ ...editor, name: event.target.value })}
-            placeholder="Preset adi"
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <select
+            onChange={(event) => onChange({ ...editor, imageModel: event.target.value })}
             style={formInputStyle}
-            value={editor.name}
-          />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <select
-              onChange={(event) => onChange({ ...editor, imageModel: event.target.value })}
-              style={formInputStyle}
-              value={editor.imageModel}
-            >
-              <option value="">Image model sec</option>
-              {Object.entries(IMAGE_MODELS).map(([modelId, meta]) => (
-                <option key={modelId} value={modelId}>
-                  {meta.label}
-                </option>
-              ))}
-            </select>
-            <select
-              onChange={(event) => onChange({ ...editor, videoModel: event.target.value })}
-              style={formInputStyle}
-              value={editor.videoModel}
-            >
-              <option value="">Video model sec</option>
-              {Object.entries(VIDEO_MODELS).map(([modelId, meta]) => (
-                <option key={modelId} value={modelId}>
-                  {meta.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <textarea
-            onChange={(event) => onChange({ ...editor, imageParams: event.target.value })}
-            rows={8}
-            style={textareaStyle}
-            value={editor.imageParams}
-          />
-          <textarea
-            onChange={(event) => onChange({ ...editor, videoParams: event.target.value })}
-            rows={8}
-            style={textareaStyle}
-            value={editor.videoParams}
-          />
-
-          <label style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-secondary)" }}>
-            <input
-              checked={editor.isDefault}
-              onChange={(event) => onChange({ ...editor, isDefault: event.target.checked })}
-              style={{ accentColor: "var(--accent)" }}
-              type="checkbox"
-            />
-            Varsayilan preset olarak kaydet
-          </label>
+            value={editor.imageModel}
+          >
+            <option value="">Gorsel modeli sec</option>
+            {Object.entries(IMAGE_MODELS).map(([modelId, meta]) => (
+              <option key={modelId} value={modelId}>
+                {meta.label}
+              </option>
+            ))}
+          </select>
+          <select
+            onChange={(event) => onChange({ ...editor, videoModel: event.target.value })}
+            style={formInputStyle}
+            value={editor.videoModel}
+          >
+            <option value="">Video modeli sec</option>
+            {Object.entries(VIDEO_MODELS).map(([modelId, meta]) => (
+              <option key={modelId} value={modelId}>
+                {meta.label}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button className="btn-secondary" disabled={saving} onClick={onClose} type="button">
-            Iptal
-          </button>
-          <button className="btn-primary" disabled={saving} onClick={onSave} type="button">
-            {saving ? "Kaydediliyor..." : "Kaydet"}
-          </button>
-        </div>
+        <textarea
+          onChange={(event) => onChange({ ...editor, imageParams: event.target.value })}
+          rows={8}
+          style={textareaStyle}
+          value={editor.imageParams}
+        />
+        <textarea
+          onChange={(event) => onChange({ ...editor, videoParams: event.target.value })}
+          rows={8}
+          style={textareaStyle}
+          value={editor.videoParams}
+        />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-secondary)" }}>
+          <input
+            checked={editor.isDefault}
+            onChange={(event) => onChange({ ...editor, isDefault: event.target.checked })}
+            style={{ accentColor: "var(--accent)" }}
+            type="checkbox"
+          />
+          Varsayilan preset olarak kaydet
+        </label>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -521,7 +524,7 @@ const heroStyle = {
   padding: 24,
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 28%), var(--bg-surface)",
+  background: "linear-gradient(135deg, var(--surface-hover), transparent 28%), var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const eyebrowStyle = {
@@ -531,8 +534,8 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
   fontSize: 11,
   letterSpacing: "0.08em",
@@ -620,7 +623,7 @@ const tagStyle = {
   display: "inline-flex",
   padding: "4px 8px",
   borderRadius: 999,
-  background: "rgba(0, 0, 0, 0.05)",
+  background: "var(--surface-active)",
   color: "var(--text-primary)",
   fontSize: 11,
 } satisfies React.CSSProperties;
@@ -629,18 +632,19 @@ const mutedTagStyle = {
   display: "inline-flex",
   padding: "4px 8px",
   borderRadius: 999,
-  background: "rgba(0,0,0,0.03)",
+  background: "var(--surface-hover)",
   color: "var(--text-secondary)",
   fontSize: 11,
 } satisfies React.CSSProperties;
 
 const defaultTagStyle = {
   display: "inline-flex",
-  padding: "4px 8px",
-  borderRadius: 999,
-  background: "rgba(34,197,94,0.12)",
-  color: "var(--status-success)",
+  padding: "4px 12px",
+  borderRadius: 8,
+  background: "var(--accent)",
+  color: "var(--on-accent)",
   fontSize: 11,
+  fontWeight: 600,
 } satisfies React.CSSProperties;
 
 const jsonPreviewStyle = {
@@ -653,27 +657,6 @@ const jsonPreviewStyle = {
   lineHeight: 1.7,
   whiteSpace: "pre-wrap",
   fontFamily: '"IBM Plex Sans", monospace',
-} satisfies React.CSSProperties;
-
-const modalBackdropStyle = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 240,
-  display: "grid",
-  placeItems: "center",
-  padding: 20,
-  background: "rgba(0, 0, 0, 0.4)",
-  backdropFilter: "blur(8px)",
-} satisfies React.CSSProperties;
-
-const modalPanelStyle = {
-  width: "min(760px, 100%)",
-  display: "grid",
-  gap: 18,
-  padding: 24,
-  borderRadius: 24,
-  border: "1px solid var(--border-default)",
-  background: "var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const formInputStyle = {

@@ -1,40 +1,14 @@
-import { useEffect, useState } from "react";
-import { ChevronRight, Folder, FolderOpen, Plus, X } from "lucide-react";
+import { useState } from "react";
+import { Folder, FolderOpen, Plus, FileJson } from "lucide-react";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import { toProjectFolderName } from "@/services/project.service";
+import { ModalShell } from "@/components/ui";
 
 type NewProjectModalProps = {
   onClose: () => void;
   onCreate: (name: string, folderPath: string) => Promise<void>;
 };
-
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1 },
-  exit: { opacity: 0, transition: { duration: 0.18, delay: 0.05 } },
-} as const;
-
-const panelVariants = {
-  hidden: { opacity: 0, y: 24, scale: 0.96 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      type: "spring",
-      stiffness: 340,
-      damping: 28,
-      mass: 0.8,
-    },
-  },
-  exit: {
-    opacity: 0,
-    y: 16,
-    scale: 0.97,
-    transition: { duration: 0.18, ease: "easeIn" },
-  },
-} as const;
 
 const treeItems: ReadonlyArray<{ label: string; depth: number; delay: number; isFile?: boolean }> = [
   { label: "storyboard/", depth: 2, delay: 0.04 },
@@ -50,17 +24,6 @@ export function NewProjectModal({ onClose, onCreate }: NewProjectModalProps) {
   const [name, setName] = useState("");
   const [folderPath, setFolderPath] = useState("");
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !creating) {
-        onClose();
-      }
-    }
-
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [creating, onClose]);
 
   const previewFolderName = name.trim() ? toProjectFolderName(name) : "cineai-project";
 
@@ -97,111 +60,35 @@ export function NewProjectModal({ onClose, onCreate }: NewProjectModalProps) {
     }
   }
 
-  return (
-    <motion.div
-      variants={backdropVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-      className="project-modal-backdrop"
-      onClick={() => {
-        if (!creating) {
-          onClose();
-        }
-      }}
-      role="presentation"
-    >
-      <motion.div
-        variants={panelVariants}
-        initial="hidden"
-        animate="visible"
-        exit="exit"
-        aria-modal="true"
-        className="project-modal-panel"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        style={{ position: "relative", overflow: "hidden" }}
+  const footerContent = (
+    <>
+      <button className="btn-secondary" disabled={creating} onClick={onClose} type="button">
+        Iptal
+      </button>
+      <button
+        className="btn-primary"
+        disabled={!name.trim() || !folderPath || creating}
+        onClick={() => void handleCreate()}
+        type="button"
       >
-        {/* Subtle top-right glow */}
-        <div
-          style={{
-            position: "absolute",
-            top: -60,
-            right: -60,
-            width: 200,
-            height: 200,
-            borderRadius: "50%",
-            background: "radial-gradient(circle, rgba(0,0,0,0.03), transparent 65%)",
-            filter: "blur(30px)",
-            pointerEvents: "none",
-          }}
-        />
+        <Plus size={15} />
+        {creating ? "Olusturuluyor..." : "Olustur"}
+      </button>
+    </>
+  );
 
-        {/* Close button */}
-        <motion.button
-          onClick={() => {
-            if (!creating) onClose();
-          }}
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.95 }}
-          style={{
-            position: "absolute",
-            top: 16,
-            right: 16,
-            zIndex: 2,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 30,
-            height: 30,
-            border: "1px solid var(--border-subtle)",
-            borderRadius: 999,
-            background: "rgba(0,0,0,0.03)",
-            color: "var(--text-muted)",
-            cursor: creating ? "not-allowed" : "pointer",
-            transition: "color 150ms ease, border-color 150ms ease",
-          }}
-          type="button"
-        >
-          <X size={14} />
-        </motion.button>
-
-        {/* Header */}
-        <div className="project-modal-header">
-          <motion.span
-            className="project-modal-eyebrow"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.15, duration: 0.3 }}
-          >
-            Yeni Proje
-          </motion.span>
-          <motion.h2
-            className="project-modal-title"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2, duration: 0.3 }}
-          >
-            CineAI produksiyonu baslat
-          </motion.h2>
-          <motion.p
-            className="project-modal-copy"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.25, duration: 0.3 }}
-          >
-            Secilen ana klasor altinda yeni bir proje koku, asset klasorleri ve
-            `project.json` olusturulur.
-          </motion.p>
-        </div>
-
+  return (
+    <ModalShell
+      title="Yeni Proje"
+      subtitle="Produksiyon klasoru olustur"
+      onClose={() => {
+        if (!creating) onClose();
+      }}
+      footer={footerContent}
+    >
+      <div style={{ padding: "16px 20px", display: "grid", gap: 16 }}>
         {/* Form */}
-        <motion.div
-          className="project-form-grid"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.3 }}
-        >
+        <div style={{ display: "grid", gap: 14 }}>
           <label className="project-field">
             <span
               className="project-field-label"
@@ -262,100 +149,100 @@ export function NewProjectModal({ onClose, onCreate }: NewProjectModalProps) {
               </button>
             </div>
           </div>
-        </motion.div>
+        </div>
 
         {/* Folder tree preview */}
-        <motion.div
-          className="project-preview"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35, duration: 0.3 }}
-          style={{ position: "relative", overflow: "hidden" }}
+        <div
+          style={{
+            display: "grid",
+            gap: 8,
+            padding: "14px 16px",
+            borderRadius: 12,
+            border: "1px solid var(--surface-active)",
+            background: "var(--surface-hover)",
+          }}
         >
-          {/* Accent bar */}
           <div
             style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: 3,
-              height: "100%",
-              borderRadius: "3px 0 0 3px",
-              background: "linear-gradient(180deg, var(--accent), transparent)",
-              opacity: 0.4,
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
             }}
-          />
-
-          <div className="project-preview-title" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Folder size={13} style={{ color: "var(--accent)", opacity: 0.7 }} />
+          >
+            <Folder size={12} style={{ color: "var(--accent)", opacity: 0.7 }} />
             Olusacak yapi
           </div>
-          <div className="project-preview-tree">
-            <div style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text-secondary)" }}>
-              <ChevronRight size={10} style={{ opacity: 0.5 }} />
-              <span style={{ fontFamily: "'SF Mono', 'Fira Code', monospace", fontSize: 11 }}>
-                {folderPath || "..."}
-              </span>
-            </div>
-            <div
-              className="project-preview-indent"
-              style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--accent)" }}
-            >
-              <ChevronRight size={10} style={{ opacity: 0.5 }} />
-              <span style={{ fontFamily: "'SF Mono', 'Fira Code', monospace", fontSize: 11 }}>
-                {previewFolderName}/
-              </span>
-            </div>
-            {treeItems.map((item) => (
-              <motion.div
-                key={item.label}
-                initial={{ opacity: 0, x: -6 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.4 + item.delay, duration: 0.25 }}
-                className="project-preview-indent-double"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontFamily: "'SF Mono', 'Fira Code', monospace",
-                  fontSize: 11,
-                  color: item.isFile ? "var(--text-secondary)" : "var(--text-muted)",
-                }}
-              >
-                {item.isFile ? (
-                  <span style={{ width: 10, textAlign: "center", opacity: 0.5 }}>`</span>
-                ) : (
-                  <span style={{ width: 10, textAlign: "center", opacity: 0.3 }}>|</span>
-                )}
-                {item.label}
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
 
-        {/* Actions */}
-        <motion.div
-          className="project-modal-actions"
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.3 }}
-        >
-          <button className="btn-secondary" disabled={creating} onClick={onClose} type="button">
-            Iptal
-          </button>
-          <motion.button
-            className="btn-primary"
-            disabled={!name.trim() || !folderPath || creating}
-            onClick={() => void handleCreate()}
-            type="button"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
+          {/* Root path */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 10px",
+              borderRadius: 8,
+              background: "var(--surface-hover)",
+              fontSize: 11,
+              color: "var(--text-secondary)",
+            }}
           >
-            <Plus size={15} />
-            {creating ? "Olusturuluyor..." : "Olustur"}
-          </motion.button>
-        </motion.div>
-      </motion.div>
-    </motion.div>
+            <Folder size={12} style={{ flexShrink: 0, opacity: 0.6 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {folderPath || "..."}
+            </span>
+          </div>
+
+          {/* Project folder */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 10px",
+              paddingLeft: 24,
+              borderRadius: 8,
+              background: "var(--surface-hover)",
+              fontSize: 11,
+              color: "var(--accent)",
+              fontWeight: 600,
+            }}
+          >
+            <Folder size={12} style={{ flexShrink: 0 }} />
+            {previewFolderName}/
+          </div>
+
+          {/* Tree items */}
+          {treeItems.map((item) => (
+            <motion.div
+              key={item.label}
+              initial={{ opacity: 0, x: -6 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.2 + item.delay, duration: 0.25 }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "5px 10px",
+                paddingLeft: 44,
+                borderRadius: 8,
+                background: "var(--surface-hover)",
+                fontSize: 11,
+                color: item.isFile ? "var(--text-secondary)" : "var(--text-muted)",
+              }}
+            >
+              {item.isFile ? (
+                <FileJson size={12} style={{ flexShrink: 0, opacity: 0.5 }} />
+              ) : (
+                <Folder size={12} style={{ flexShrink: 0, opacity: 0.4 }} />
+              )}
+              {item.label}
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </ModalShell>
   );
 }

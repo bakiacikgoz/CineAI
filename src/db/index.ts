@@ -67,6 +67,7 @@ async function ensureDbSchema(db: Database): Promise<void> {
   await ensureAssetSchema(db);
   await ensureCharacterSchema(db);
   await ensureAudioSchema(db);
+  await ensureScenarioSchema(db);
 }
 
 async function ensureShotColumns(db: Database): Promise<void> {
@@ -168,6 +169,10 @@ async function ensureShotColumns(db: Database): Promise<void> {
     {
       name: "audio_take_history_json",
       sql: "ALTER TABLE shots ADD COLUMN audio_take_history_json TEXT",
+    },
+    {
+      name: "audio_voiceover_text",
+      sql: "ALTER TABLE shots ADD COLUMN audio_voiceover_text TEXT",
     },
   ];
 
@@ -432,6 +437,52 @@ async function backfillLegacyCharacterLooks(db: Database): Promise<void> {
       );
     }
   }
+}
+
+async function ensureScenarioSchema(db: Database): Promise<void> {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS scenarios (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      scenario_text TEXT NOT NULL,
+      shot_plan_json TEXT,
+      target_model TEXT NOT NULL DEFAULT 'veo31',
+      kling_preset TEXT,
+      llm_model TEXT NOT NULL DEFAULT 'openrouter/auto',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+  );
+  const scenarioColumns = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(scenarios)",
+  );
+  const knownScenarioColumns = new Set(scenarioColumns.map((column) => column.name));
+
+  if (!knownScenarioColumns.has("llm_model")) {
+    await db.execute(
+      "ALTER TABLE scenarios ADD COLUMN llm_model TEXT NOT NULL DEFAULT 'openrouter/auto'",
+    );
+  }
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_scenarios_project_id ON scenarios(project_id)",
+  );
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS scenario_generation_logs (
+      id TEXT PRIMARY KEY,
+      scenario_id TEXT NOT NULL,
+      pass_name TEXT NOT NULL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      model TEXT,
+      cost_usd REAL,
+      duration_ms INTEGER,
+      created_at INTEGER NOT NULL
+    )`,
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_scenario_generation_logs_scenario_id ON scenario_generation_logs(scenario_id)",
+  );
 }
 
 export async function getDb(projectFolderPath: string): Promise<Database> {

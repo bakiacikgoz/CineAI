@@ -4,24 +4,26 @@ import {
   AudioLines,
   Film,
   Image as ImageIcon,
-  LoaderCircle,
+  ListOrdered,
   RotateCcw,
   X,
 } from "lucide-react";
+
+import { SegmentGroup, ProEmptyState } from "@/components/ui";
 import { persistQueueParallelLimit } from "@/lib/store";
 import { cancelJob, resumeJobQueue, retryJob } from "@/services/jobqueue.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore, type Job } from "@/store/queue.store";
 
 const JOB_TYPE_LABELS: Record<string, string> = {
-  image_start: "START Frame",
-  image_end: "END Frame",
-  character_image: "Character Candidate",
+  image_start: "START Kare",
+  image_end: "END Kare",
+  character_image: "Karakter Adayi",
   video: "Video",
-  upscale: "4K Upscale",
+  upscale: "4K Yukseltme",
   coverage_image: "Coverage Gorsel",
   coverage_video: "Coverage Video",
-  audio_dialogue: "Dialogue Audio",
+  audio_dialogue: "Diyalog Ses",
 };
 
 export function JobQueue() {
@@ -79,13 +81,13 @@ export function JobQueue() {
                 color: "var(--text-muted)",
               }}
             >
-              Queue Monitor
+              Kuyruk Izleyici
             </span>
             <div style={{ fontSize: 26, fontWeight: 600 }}>Is Kuyrugu</div>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
               {activeProject
                 ? `${activeProject.name} projesinin aktif ve bekleyen isleri`
-                : "Global queue gorunumu. Bir proje acildiginda liste aktif projeye gore filtrelenir."}
+                : "Genel kuyruk gorunumu. Bir proje acildiginda liste aktif projeye gore filtrelenir."}
             </p>
           </div>
 
@@ -101,50 +103,34 @@ export function JobQueue() {
             }}
           >
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>Paralel limit</span>
-            <button
-              className="hover-glow"
-              onClick={() => void updateParallelLimit(Math.max(1, parallelLimit - 1))}
-              style={miniButtonStyle}
-              type="button"
-            >
-              -
-            </button>
-            <strong style={{ minWidth: 18, textAlign: "center" }}>{parallelLimit}</strong>
-            <button
-              className="hover-glow"
-              onClick={() => void updateParallelLimit(Math.min(5, parallelLimit + 1))}
-              style={miniButtonStyle}
-              type="button"
-            >
-              +
-            </button>
+            <SegmentGroup
+              options={[
+                { key: "1", label: "1" },
+                { key: "2", label: "2" },
+                { key: "3", label: "3" },
+                { key: "4", label: "4" },
+                { key: "5", label: "5" },
+              ]}
+              value={String(parallelLimit)}
+              onChange={(k) => void updateParallelLimit(Number(k))}
+              size="sm"
+            />
           </div>
         </header>
 
         {scopedJobs.length === 0 ? (
           <div
             style={{
-              display: "grid",
-              placeItems: "center",
-              minHeight: 360,
               borderRadius: 24,
               border: "1px dashed var(--border-default)",
               background: "var(--bg-surface)",
-              color: "var(--text-muted)",
-              textAlign: "center",
-              padding: 24,
             }}
           >
-            <div style={{ display: "grid", gap: 12, justifyItems: "center" }}>
-              <LoaderCircle className="spin-slow" size={30} />
-              <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-primary)" }}>
-                Kuyruk bos
-              </div>
-              <p style={{ margin: 0, maxWidth: 380, lineHeight: 1.7 }}>
-                Image Generator ekranindan yeni isler gonderildiginde aktif, bekleyen
-                ve tamamlanan bloklari burada goreceksin.
-              </p>
-            </div>
+            <ProEmptyState
+              icon={ListOrdered}
+              title="Kuyruk bos"
+              description="Uretim islemleri burada gorunecek."
+            />
           </div>
         ) : (
           <>
@@ -289,10 +275,10 @@ function JobRow({ job }: { job: Job }) {
         {job.status === "active" ? (
           <div
             style={{
-              height: 4,
+              height: 6,
               overflow: "hidden",
               borderRadius: 999,
-              background: "rgba(0, 0, 0, 0.06)",
+              background: "var(--surface-active)",
               marginTop: 4,
             }}
           >
@@ -301,7 +287,7 @@ function JobRow({ job }: { job: Job }) {
                 width: `${Math.max(4, job.progress)}%`,
                 height: "100%",
                 borderRadius: 999,
-                background: "var(--accent)",
+                background: "linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #fff))",
                 transition: "width 0.35s ease",
               }}
             />
@@ -321,7 +307,7 @@ function JobRow({ job }: { job: Job }) {
           whiteSpace: "nowrap",
           padding: "6px 10px",
           borderRadius: 999,
-          background: "rgba(0, 0, 0, 0.04)",
+          background: "var(--surface-hover)",
           color: statusColor[job.status],
           fontSize: 11,
           fontWeight: 700,
@@ -340,7 +326,7 @@ function JobRow({ job }: { job: Job }) {
             type="button"
           >
             <RotateCcw size={13} />
-            Retry
+            Tekrarla
           </button>
         ) : null}
 

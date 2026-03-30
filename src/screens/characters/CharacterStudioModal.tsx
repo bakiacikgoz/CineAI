@@ -1000,7 +1000,7 @@ const backdropStyle = {
   display: "grid",
   placeItems: "center",
   padding: 20,
-  background: "rgba(0, 0, 0, 0.4)",
+  background: "var(--backdrop-bg)",
   backdropFilter: "blur(8px)",
 } satisfies React.CSSProperties;
 
@@ -1013,7 +1013,7 @@ const panelStyle = {
   border: "1px solid var(--border-default)",
   background: "var(--bg-surface)",
   boxShadow:
-    "0 20px 60px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.04) inset",
+    "var(--shadow-modal)",
   overflow: "hidden",
 } satisfies React.CSSProperties;
 
@@ -1026,7 +1026,7 @@ const headerStyle = {
   padding: "14px 24px",
   borderBottom: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, rgba(0,0,0,0.02), transparent 70%)",
+    "linear-gradient(180deg, var(--surface-hover), transparent 70%)",
   flexShrink: 0,
 } satisfies React.CSSProperties;
 
@@ -1036,8 +1036,8 @@ const headerBadgeStyle = {
   gap: 6,
   padding: "5px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(0,0,0,0.1)",
-  background: "rgba(0,0,0,0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 700,
@@ -1063,7 +1063,7 @@ const sidebarStyle = {
   overflowY: "auto",
   borderRight: "1px solid var(--border-subtle)",
   background:
-    "linear-gradient(180deg, #f9f9f9, #f3f3f4)",
+    "var(--gradient-header)",
   padding: 14,
 } satisfies React.CSSProperties;
 
@@ -1128,7 +1128,7 @@ const previewAvatarWrapStyle = {
   aspectRatio: "3 / 4",
   overflow: "hidden",
   background:
-    "linear-gradient(135deg, #f3f3f4, #eeeeee 70%)",
+    "var(--gradient-header)",
 } satisfies React.CSSProperties;
 
 const previewImageStyle = {
@@ -1152,7 +1152,7 @@ const previewInitialStyle = {
   placeItems: "center",
   borderRadius: 16,
   border: "1px solid var(--border-default)",
-  background: "rgba(0,0,0,0.03)",
+  background: "var(--surface-hover)",
   fontSize: 22,
   fontWeight: 700,
   color: "var(--text-muted)",
@@ -1231,7 +1231,7 @@ const groupStyle = {
   padding: "16px 18px",
   borderRadius: 16,
   border: "1px solid var(--border-subtle)",
-  background: "rgba(0,0,0,0.01)",
+  background: "var(--surface-hover)",
 } satisfies React.CSSProperties;
 
 const groupHeaderStyle = {
@@ -1272,8 +1272,8 @@ function lookCardStyle(active: boolean): React.CSSProperties {
     gap: 8,
     padding: "10px 14px",
     borderRadius: 12,
-    border: `1px solid ${active ? "rgba(0,0,0,0.2)" : "var(--border-subtle)"}`,
-    background: active ? "rgba(0,0,0,0.05)" : "var(--bg-elevated)",
+    border: `1px solid ${active ? "var(--border-default)" : "var(--border-subtle)"}`,
+    background: active ? "var(--surface-active)" : "var(--bg-elevated)",
     color: active ? "var(--text-primary)" : "var(--text-secondary)",
     cursor: "pointer",
     transition: "border-color 150ms ease, background 150ms ease",
@@ -1286,7 +1286,7 @@ const defaultBadgeStyle = {
   gap: 4,
   padding: "2px 7px",
   borderRadius: 999,
-  background: "rgba(0,0,0,0.06)",
+  background: "var(--surface-active)",
   color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 600,
@@ -1313,8 +1313,8 @@ const hintBoxStyle = {
   alignItems: "flex-start",
   padding: "10px 12px",
   borderRadius: 12,
-  border: "1px solid rgba(0,0,0,0.08)",
-  background: "rgba(0,0,0,0.03)",
+  border: "1px solid var(--glass-border)",
+  background: "var(--surface-hover)",
   lineHeight: 1.6,
 } satisfies React.CSSProperties;
 
@@ -1339,8 +1339,8 @@ function refCardStyle(isPrimary: boolean): React.CSSProperties {
     gap: 6,
     padding: 6,
     borderRadius: 14,
-    border: `1px solid ${isPrimary ? "rgba(0,0,0,0.18)" : "var(--border-subtle)"}`,
-    background: isPrimary ? "rgba(0,0,0,0.03)" : "var(--bg-elevated)",
+    border: `1px solid ${isPrimary ? "var(--border-default)" : "var(--border-subtle)"}`,
+    background: isPrimary ? "var(--surface-hover)" : "var(--bg-elevated)",
     overflow: "hidden",
   };
 }
@@ -1389,7 +1389,7 @@ const stepperBtnStyle = {
   height: 26,
   borderRadius: 8,
   border: "1px solid var(--border-default)",
-  background: "rgba(0,0,0,0.03)",
+  background: "var(--surface-hover)",
   color: "var(--text-secondary)",
   cursor: "pointer",
   fontSize: 15,

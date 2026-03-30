@@ -348,7 +348,7 @@ export function GeneratedImageGallery({
               }}
             >
               <Clapperboard size={13} />
-              Generated Frames
+              Uretilen Kareler
             </span>
             <div style={{ fontSize: 22, fontWeight: 600 }}>Galeri</div>
           </div>
@@ -618,7 +618,7 @@ export function GeneratedImageGallery({
                                 kind: "image",
                                 src: asset.assetUrl,
                                 title: asset.filename,
-                                subtitle: `${(asset.model_used ?? "unknown").split("/").pop()} / ${asset.width ?? "-"} x ${asset.height ?? "-"}`,
+                                subtitle: `${(asset.model_used ?? "bilinmiyor").split("/").pop()} / ${asset.width ?? "-"} x ${asset.height ?? "-"}`,
                                 description: asset.prompt ?? "Prompt kaydi yok.",
                                 downloadPath: asset.absolutePath,
                                 downloadName: asset.filename,
@@ -671,7 +671,7 @@ function ImageSkeleton({ progress }: { progress: number }) {
           display: "grid",
           placeItems: "center",
           background:
-            "linear-gradient(135deg, rgba(0, 0, 0, 0.04), transparent 50%), var(--bg-overlay)",
+            "linear-gradient(135deg, var(--surface-hover), transparent 50%), var(--bg-overlay)",
         }}
       >
         <LoaderCircle className="spin-slow" size={24} style={{ color: "var(--accent)" }} />
@@ -683,7 +683,7 @@ function ImageSkeleton({ progress }: { progress: number }) {
             height: 4,
             overflow: "hidden",
             borderRadius: 999,
-            background: "rgba(0, 0, 0, 0.06)",
+            background: "var(--surface-active)",
           }}
         >
           <div
@@ -732,11 +732,11 @@ function ImageCard({
         gap: 0,
         overflow: "hidden",
         borderRadius: 18,
-        border: selected ? "1.5px solid #000000" : "1px solid #e8e8e8",
-        background: "#ffffff",
+        border: selected ? "1.5px solid var(--accent)" : "1px solid var(--border-default)",
+        background: "var(--surface-card)",
         boxShadow: selected
-          ? "0 0 0 1px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08)"
-          : "0 1px 3px rgba(0, 0, 0, 0.04)",
+          ? "var(--shadow-lg)"
+          : "0 1px 3px var(--surface-hover)",
       }}
     >
       <div style={{ position: "relative" }}>
@@ -779,9 +779,9 @@ function ImageCard({
             minWidth: 34,
             padding: "6px 10px",
             borderRadius: 999,
-            background: selected ? "#000000" : "rgba(255, 255, 255, 0.88)",
-            borderColor: selected ? "#000000" : "rgba(0, 0, 0, 0.12)",
-            color: selected ? "#ffffff" : "#1a1c1c",
+            background: selected ? "var(--accent)" : "var(--glass-bg)",
+            borderColor: selected ? "var(--accent)" : "var(--border-default)",
+            color: selected ? "var(--on-accent)" : "var(--text-primary)",
             backdropFilter: "blur(10px)",
           }}
           type="button"
@@ -816,10 +816,10 @@ function ImageCard({
               alignItems: "center",
               gap: 6,
               borderRadius: 999,
-              border: "1px solid rgba(0, 0, 0, 0.12)",
-              background: "rgba(255, 255, 255, 0.88)",
+              border: "1px solid var(--border-default)",
+              background: "var(--glass-bg)",
               padding: "6px 10px",
-              color: "#1a1c1c",
+              color: "var(--text-primary)",
               fontSize: 11,
             }}
           >
@@ -869,10 +869,24 @@ function ImageCard({
           </span>
         </div>
         <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-          {(asset.model_used ?? "unknown").split("/").pop()} / {asset.width ?? "-"} x{" "}
+          {(asset.model_used ?? "bilinmiyor").split("/").pop()} / {asset.width ?? "-"} x{" "}
           {asset.height ?? "-"}
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            aria-label="Referans olarak kullan"
+            className="btn-primary"
+            onClick={(event) => {
+              event.stopPropagation();
+              onUseAsReference();
+            }}
+            style={cardActionButtonStyle}
+            title="Referans olarak kullan"
+            type="button"
+          >
+            <ImagePlus size={13} />
+            Referans yap
+          </button>
           <button
             aria-label="Gorseli indir"
             className="btn-secondary"
@@ -889,45 +903,29 @@ function ImageCard({
           </button>
           <button
             aria-label="Gorseli isaretleyerek duzenle"
-            className="btn-secondary"
+            className="hover-glow"
             onClick={(event) => {
               event.stopPropagation();
               onEdit();
             }}
-            style={cardActionButtonStyle}
+            style={cardIconButtonStyle}
             title="Gorseli isaretleyerek duzenle"
             type="button"
           >
             <Pencil size={13} />
-            Duzenle
           </button>
           <button
             aria-label="Tum ayarlari geri yukle"
-            className="btn-secondary"
+            className="hover-glow"
             onClick={(event) => {
               event.stopPropagation();
               onReuseGeneration();
             }}
-            style={cardActionButtonStyle}
+            style={cardIconButtonStyle}
             title="Tum ayarlari geri yukle"
             type="button"
           >
             <RotateCcw size={13} />
-            Ayarlari yukle
-          </button>
-          <button
-            aria-label="Referans olarak kullan"
-            className="btn-secondary"
-            onClick={(event) => {
-              event.stopPropagation();
-              onUseAsReference();
-            }}
-            style={cardActionButtonStyle}
-            title="Referans olarak kullan"
-            type="button"
-          >
-            <ImagePlus size={13} />
-            Referans yap
           </button>
         </div>
         <p
@@ -968,9 +966,9 @@ const overlayIconButtonStyle = {
   height: 34,
   padding: 0,
   borderRadius: 999,
-  background: "rgba(255, 255, 255, 0.88)",
-  borderColor: "rgba(0, 0, 0, 0.12)",
-  color: "#1a1c1c",
+  background: "var(--glass-bg)",
+  borderColor: "var(--border-default)",
+  color: "var(--text-primary)",
   backdropFilter: "blur(10px)",
 } satisfies React.CSSProperties;
 
@@ -978,4 +976,19 @@ const cardActionButtonStyle = {
   padding: "6px 10px",
   minHeight: 32,
   fontSize: 11,
+} satisfies React.CSSProperties;
+
+const cardIconButtonStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 32,
+  minWidth: 32,
+  height: 32,
+  padding: 0,
+  borderRadius: 10,
+  border: "1px solid var(--border-default)",
+  background: "var(--bg-elevated)",
+  color: "var(--text-secondary)",
+  cursor: "pointer",
 } satisfies React.CSSProperties;

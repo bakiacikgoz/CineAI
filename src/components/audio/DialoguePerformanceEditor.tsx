@@ -179,8 +179,8 @@ export function DialoguePerformanceEditor({
 
 const rootStyle: CSSProperties = {
   borderRadius: 16,
-  border: "1px solid rgba(0,0,0,0.08)",
-  background: "rgba(0,0,0,0.02)",
+  border: "1px solid var(--glass-border)",
+  background: "var(--surface-hover)",
   overflow: "hidden",
 };
 
@@ -217,8 +217,8 @@ const toggleWrapStyle: CSSProperties = {
   gap: 10,
   padding: "10px 12px",
   borderRadius: 14,
-  border: "1px solid rgba(0,0,0,0.08)",
-  background: "rgba(255,255,255,0.78)",
+  border: "1px solid var(--glass-border)",
+  background: "var(--surface-card)",
 };
 
 const fieldStyle: CSSProperties = {
@@ -243,8 +243,8 @@ const textareaStyle: CSSProperties = {
   width: "100%",
   resize: "vertical",
   borderRadius: 14,
-  border: "1px solid rgba(0,0,0,0.1)",
-  background: "rgba(255,255,255,0.9)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-card)",
   padding: "12px 14px",
   font: "inherit",
   lineHeight: 1.6,

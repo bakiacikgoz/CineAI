@@ -18,6 +18,7 @@ import {
   GeneratedImageGallery,
   type GalleryAsset,
 } from "@/screens/image-generator/GeneratedImageGallery";
+import { CollapsibleSection, SliderField } from "@/components/ui";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore, type Job } from "@/store/queue.store";
 import {
@@ -386,25 +387,25 @@ export function ImageGenerator() {
         setPrompt(inboundState.promptTemplateContent);
         notices.push(
           inboundState.promptTemplateName
-            ? `Template applied: ${inboundState.promptTemplateName}`
-            : "Prompt template applied",
+            ? `Sablon uygulandi: ${inboundState.promptTemplateName}`
+            : "Prompt sablonu uygulandi",
         );
       }
 
       if (inboundState?.referenceAssetPath) {
         setRefImage(inboundState.referenceAssetPath);
-        notices.push("Reference frame attached");
+        notices.push("Referans kare eklendi");
       }
 
       if (inboundState?.shotId) {
         setMode("shot-linked");
         setSelectedShotId(inboundState.shotId);
         setShotStage(inboundState.shotStage ?? "start");
-        notices.push("Storyboard shot focused");
+        notices.push("Storyboard shot odaklandi");
       }
 
       if (inboundState?.modelPresetId && !cancelled && inboundPreset) {
-        notices.push(`Preset loaded: ${inboundPreset.name}`);
+        notices.push(`Preset yuklendi: ${inboundPreset.name}`);
       }
 
       if (!cancelled && inboundState) {
@@ -699,7 +700,7 @@ export function ImageGenerator() {
             }}
           >
             <ImagePlus size={40} strokeWidth={1.6} style={{ color: "var(--accent)" }} />
-            <div style={{ fontSize: 24, fontWeight: 600 }}>Image Generator hazir</div>
+            <div style={{ fontSize: 24, fontWeight: 600 }}>Gorsel Uretici hazir</div>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
               Prompt paneli ve job kuyrugu calisiyor. Devam etmeden once Dashboard
               ekranindan bir proje sec.
@@ -738,7 +739,7 @@ export function ImageGenerator() {
             border: "1px solid var(--border-subtle)",
             background:
               "linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 26%), var(--bg-surface)",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+            boxShadow: "0 1px 3px var(--surface-hover)",
           }}
         >
           <div
@@ -756,8 +757,8 @@ export function ImageGenerator() {
                 alignItems: "center",
                 gap: 8,
                 borderRadius: 999,
-                border: "1px solid rgba(0, 0, 0, 0.1)",
-                background: "rgba(0, 0, 0, 0.04)",
+                border: "1px solid var(--border-default)",
+                background: "var(--surface-hover)",
                 padding: "6px 10px",
                 fontSize: 11,
                 letterSpacing: "0.08em",
@@ -766,7 +767,7 @@ export function ImageGenerator() {
               }}
             >
               <Sparkles size={13} />
-              Still Image Lab
+              Gorsel Uretim
             </span>
             <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.03em" }}>
               Gorsel Uret
@@ -780,7 +781,7 @@ export function ImageGenerator() {
                 style={{
                   padding: "10px 12px",
                   borderRadius: 14,
-                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                  border: "1px solid var(--glass-border)",
                 background: "rgba(0, 0, 0, 0.03)",
                 color: "var(--text-secondary)",
                 fontSize: 12,
@@ -794,106 +795,7 @@ export function ImageGenerator() {
           ) : null}
           </div>
 
-          <FieldGroup label="Mod" icon={<Sparkles size={14} />}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-              {([
-                ["shot-linked", "Shot-linked"],
-                ["freeform", "Freeform"],
-              ] as const).map(([value, label]) => (
-                <button
-                  className={mode === value ? "btn-primary" : "btn-secondary"}
-                  key={value}
-                  onClick={() => setMode(value)}
-                  style={{ flex: 1 }}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </FieldGroup>
-
-          {mode === "shot-linked" ? (
-            <>
-              <FieldGroup label="Shot" icon={<Layers3 size={14} />}>
-                <select
-                  className="studio-field"
-                  onChange={(event) => setSelectedShotId(event.target.value)}
-                  style={selectStyle}
-                  value={selectedShotId}
-                >
-                  {shots.map((shot) => (
-                    <option key={shot.id} value={shot.id}>
-                      {shot.shotNumber} - {shot.summaryTr ?? "Storyboard shot"}
-                    </option>
-                  ))}
-                </select>
-                {!hasStoryboardShots ? (
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 14,
-                      border: "1px solid var(--border-subtle)",
-                      background: "rgba(0, 0, 0, 0.02)",
-                      color: "var(--text-secondary)",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    Bu projede henuz storyboard shot'i yok. Storyboard ekranindan shot import
-                    edip sonra shot-linked uretime gecebilirsin.
-                  </div>
-                ) : selectedShot ? (
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 14,
-                      border: "1px solid rgba(0, 0, 0, 0.08)",
-                      background: "rgba(0, 0, 0, 0.03)",
-                      color: "var(--text-secondary)",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    {selectedShot.shotNumber} secili. {shotStage.toUpperCase()} promptu otomatik
-                    yuklenir; istersen burada degistirip varyant uretebilirsin.
-                  </div>
-                ) : null}
-              </FieldGroup>
-
-          <FieldGroup label="Hedef Kare">
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-                  {(["start", "end"] as const).map((value) => (
-                    <button
-                      className={shotStage === value ? "btn-primary" : "btn-secondary"}
-                      key={value}
-                      onClick={() => setShotStage(value)}
-                      style={{ flex: 1 }}
-                      type="button"
-                    >
-                      {value.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </FieldGroup>
-            </>
-          ) : null}
-
-          <FieldGroup label="Prompt" icon={<WandSparkles size={14} />}>
-            <textarea
-              className="studio-field"
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={
-                mode === "shot-linked"
-                  ? "Secili shot promptu burada yuklenir; istersen duzenleyebilirsin..."
-                  : "Sahneyi, lens dilini, isik ve atmosferi tarif et..."
-              }
-              rows={7}
-              style={textareaStyle}
-              value={prompt}
-            />
-          </FieldGroup>
-
+          {/* --- Model ve Prompt (always visible) --- */}
           <FieldGroup label="Model" icon={<Layers3 size={14} />}>
             <div style={{ display: "grid", gap: 8 }}>
               {(Object.entries(IMAGE_MODELS) as Array<
@@ -914,7 +816,7 @@ export function ImageGenerator() {
                       border: `1px solid ${
                         active ? "rgba(0, 0, 0, 0.2)" : "var(--border-subtle)"
                       }`,
-                      background: active ? "rgba(0, 0, 0, 0.04)" : "var(--bg-elevated)",
+                      background: active ? "var(--surface-hover)" : "var(--bg-elevated)",
                       color: "inherit",
                       cursor: "pointer",
                       textAlign: "left",
@@ -931,7 +833,7 @@ export function ImageGenerator() {
                           color: active ? "var(--accent)" : "var(--text-muted)",
                         }}
                       >
-                        {info.costPerImage > 0 ? `$${info.costPerImage.toFixed(2)}` : "Custom"}
+                        {info.costPerImage > 0 ? `$${info.costPerImage.toFixed(2)}` : "Ozel"}
                       </span>
                     </div>
                     <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
@@ -945,59 +847,18 @@ export function ImageGenerator() {
             </div>
           </FieldGroup>
 
-          <FieldGroup label="En Boy Orani" icon={<SlidersHorizontal size={14} />}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {ASPECT_RATIOS.map((ratio) => {
-                const active = ratio === aspectRatio;
-
-                return (
-                  <button
-                    className="hover-glow"
-                    key={ratio}
-                    onClick={() => setAspectRatio(ratio)}
-                    style={{
-                      minWidth: 64,
-                      padding: "7px 12px",
-                      borderRadius: 999,
-                      border: `1px solid ${
-                        active ? "#000000" : "var(--border-default)"
-                      }`,
-                      background: active ? "#000000" : "var(--bg-elevated)",
-                      color: active ? "#ffffff" : "var(--text-secondary)",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 600,
-                    }}
-                    type="button"
-                  >
-                    {ratio}
-                  </button>
-                );
-              })}
-            </div>
-          </FieldGroup>
-
-          <FieldGroup label={`CFG ${cfg.toFixed(1)}`}>
-            <input
-              max={20}
-              min={1}
-              onChange={(event) => setCfg(Number(event.target.value))}
-              step={0.5}
-              style={{ width: "100%", accentColor: "var(--accent)" }}
-              type="range"
-              value={cfg}
-            />
-          </FieldGroup>
-
-          <FieldGroup label={`Adim ${steps}`}>
-            <input
-              max={50}
-              min={20}
-              onChange={(event) => setSteps(Number(event.target.value))}
-              step={1}
-              style={{ width: "100%", accentColor: "var(--accent)" }}
-              type="range"
-              value={steps}
+          <FieldGroup label="Prompt" icon={<WandSparkles size={14} />}>
+            <textarea
+              className="studio-field"
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={
+                mode === "shot-linked"
+                  ? "Secili shot promptu burada yuklenir; istersen duzenleyebilirsin..."
+                  : "Sahneyi, lens dilini, isik ve atmosferi tarif et..."
+              }
+              rows={7}
+              style={textareaStyle}
+              value={prompt}
             />
           </FieldGroup>
 
@@ -1035,14 +896,146 @@ export function ImageGenerator() {
             </div>
           </FieldGroup>
 
-          <FieldGroup label="Referans Kare">
+          {/* --- Gorsel Ayarlari (collapsible, default closed) --- */}
+          <CollapsibleSection title="Gorsel Ayarlari" subtitle="Oran, CFG, Adim">
+            <div style={{ display: "grid", gap: 16 }}>
+              <FieldGroup label="En Boy Orani" icon={<SlidersHorizontal size={14} />}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {ASPECT_RATIOS.map((ratio) => {
+                    const active = ratio === aspectRatio;
+
+                    return (
+                      <button
+                        className="hover-glow"
+                        key={ratio}
+                        onClick={() => setAspectRatio(ratio)}
+                        style={{
+                          minWidth: 64,
+                          padding: "7px 12px",
+                          borderRadius: 999,
+                          border: `1px solid ${
+                            active ? "#000000" : "var(--border-default)"
+                          }`,
+                          background: active ? "#000000" : "var(--bg-elevated)",
+                          color: active ? "var(--on-accent)" : "var(--text-secondary)",
+                          cursor: "pointer",
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                        type="button"
+                      >
+                        {ratio}
+                      </button>
+                    );
+                  })}
+                </div>
+              </FieldGroup>
+
+              <SliderField label="CFG" min={1} max={20} step={0.5} value={cfg} onChange={setCfg} />
+              <SliderField label="Adim sayisi" min={10} max={50} value={steps} onChange={setSteps} />
+            </div>
+          </CollapsibleSection>
+
+          {/* --- Referans Gorsel (collapsible, default closed) --- */}
+          <CollapsibleSection title="Referans Gorsel" subtitle={refImage ? "Secili" : "Yok"}>
             <RefImagePicker
               disabled={!IMAGE_MODELS[model].supportsImg2Img}
               value={refImage}
               onChange={setRefImage}
             />
-          </FieldGroup>
+          </CollapsibleSection>
 
+          {/* --- Shot Baglantisi (collapsible, default closed) --- */}
+          <CollapsibleSection title="Shot Baglantisi" subtitle={mode === "shot-linked" && selectedShot ? selectedShot.shotNumber : "Kapalı"}>
+            <div style={{ display: "grid", gap: 14 }}>
+              <FieldGroup label="Mod" icon={<Sparkles size={14} />}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {([
+                    ["shot-linked", "Shot-linked"],
+                    ["freeform", "Serbest"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      className={mode === value ? "btn-primary" : "btn-secondary"}
+                      key={value}
+                      onClick={() => setMode(value)}
+                      style={{ flex: 1 }}
+                      type="button"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </FieldGroup>
+
+              {mode === "shot-linked" ? (
+                <>
+                  <FieldGroup label="Shot" icon={<Layers3 size={14} />}>
+                    <select
+                      className="studio-field"
+                      onChange={(event) => setSelectedShotId(event.target.value)}
+                      style={selectStyle}
+                      value={selectedShotId}
+                    >
+                      {shots.map((shot) => (
+                        <option key={shot.id} value={shot.id}>
+                          {shot.shotNumber} - {shot.summaryTr ?? "Storyboard shot"}
+                        </option>
+                      ))}
+                    </select>
+                    {!hasStoryboardShots ? (
+                      <div
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 14,
+                          border: "1px solid var(--border-subtle)",
+                          background: "rgba(0, 0, 0, 0.02)",
+                          color: "var(--text-secondary)",
+                          fontSize: 12,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        Bu projede henuz storyboard shot'i yok. Storyboard ekranindan shot import
+                        edip sonra shot-linked uretime gecebilirsin.
+                      </div>
+                    ) : selectedShot ? (
+                      <div
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 14,
+                          border: "1px solid var(--glass-border)",
+                          background: "rgba(0, 0, 0, 0.03)",
+                          color: "var(--text-secondary)",
+                          fontSize: 12,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {selectedShot.shotNumber} secili. {shotStage.toUpperCase()} promptu otomatik
+                        yuklenir; istersen burada degistirip varyant uretebilirsin.
+                      </div>
+                    ) : null}
+                  </FieldGroup>
+
+                  <FieldGroup label="Hedef Kare">
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                      {(["start", "end"] as const).map((value) => (
+                        <button
+                          className={shotStage === value ? "btn-primary" : "btn-secondary"}
+                          key={value}
+                          onClick={() => setShotStage(value)}
+                          style={{ flex: 1 }}
+                          type="button"
+                        >
+                          {value.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </FieldGroup>
+                </>
+              ) : null}
+            </div>
+          </CollapsibleSection>
+
+          {/* --- Generate button area --- */}
           <div
             style={{
               display: "grid",
@@ -1075,30 +1068,24 @@ export function ImageGenerator() {
               </span>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                fontSize: 12,
-                color: "var(--text-secondary)",
-              }}
-            >
-              <span>Tahmini maliyet</span>
-              <strong style={{ color: "var(--accent)", fontSize: 15 }}>
-                ${estimatedCost.toFixed(3)}
-              </strong>
-            </div>
-
             <button
               className="btn-primary"
               disabled={!canGenerate}
               onClick={() => void handleGenerate()}
-              style={{ width: "100%", padding: "12px 16px" }}
+              style={{ width: "100%", padding: "14px 16px", fontSize: 14, fontWeight: 600 }}
               type="button"
             >
               {generateButtonLabel}
             </button>
+            <div
+              style={{
+                textAlign: "center",
+                fontSize: 11,
+                color: "var(--text-muted)",
+              }}
+            >
+              Tahmini maliyet: <strong style={{ color: "var(--accent)" }}>${estimatedCost.toFixed(3)}</strong>
+            </div>
           </div>
         </aside>
 
@@ -1207,7 +1194,7 @@ function RefImagePicker({
       {previewUrl ? (
         <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
           <img
-            alt="Ref image"
+            alt="Referans gorsel"
             src={previewUrl}
             style={{
               flexShrink: 0,
@@ -1215,7 +1202,7 @@ function RefImagePicker({
               height: 56,
               borderRadius: 10,
               objectFit: "cover",
-              border: "1px solid rgba(0, 0, 0, 0.08)",
+              border: "1px solid var(--glass-border)",
             }}
           />
           <div style={{ display: "grid", gap: 4, minWidth: 0, flex: 1, textAlign: "left" }}>

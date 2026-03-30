@@ -5,6 +5,7 @@ import { getProjectDb, syncProjectDbMirror } from "@/db/project-db";
 import { getApiKey } from "@/lib/store";
 import {
   applyDialogueLineOverride,
+  buildVoiceoverAudioDirection,
   createAudioContentHash,
   normalizeAudioSpeakerKey,
   parseAudioDirection,
@@ -150,6 +151,7 @@ export interface DialogueAudioShot {
   generationProfile: DialogueGenerationProfile;
   hasGenerationProfileOverride: boolean;
   audioTakes: DialogueAudioTake[];
+  isVoiceover: boolean;
 }
 
 export type DialogueOverrideLine = ParsedDialogueLine;
@@ -496,7 +498,21 @@ function parseStoredDialogueOverrideLines(
   }
 }
 
-function buildEffectiveAudioDirection(shot: Pick<ShotRow, "audioDialogueOverrideJson">, audioDirection: ParsedAudioDirection | null): ParsedAudioDirection | null {
+function buildEffectiveAudioDirection(
+  shot: Pick<ShotRow, "audioDialogueOverrideJson" | "audioVoiceoverText">,
+  audioDirection: ParsedAudioDirection | null,
+): ParsedAudioDirection | null {
+  if (audioDirection?.speakerTagged && audioDirection.dialogueLines.length > 0) {
+    return applyDialogueLineOverride(
+      audioDirection,
+      parseStoredDialogueOverrideLines(shot.audioDialogueOverrideJson),
+    );
+  }
+
+  if (shot.audioVoiceoverText?.trim()) {
+    return buildVoiceoverAudioDirection(shot.audioVoiceoverText, audioDirection);
+  }
+
   return applyDialogueLineOverride(
     audioDirection,
     parseStoredDialogueOverrideLines(shot.audioDialogueOverrideJson),
@@ -1091,6 +1107,16 @@ async function buildDialogueShotDetail(
     generationProfile.useOptimizer,
   );
   const audioTakes = buildDialogueAudioTakesForShot(normalizedShot);
+  const hasManualVoiceover = Boolean(
+    normalizedShot.audioVoiceoverText?.trim() &&
+      (!baseAudioDirection?.speakerTagged || baseAudioDirection.dialogueLines.length === 0),
+  );
+  const hasAutoWrappedVoiceover = Boolean(
+    audioDirection?.type === "voiceover" ||
+      (audioDirection?.dialogueLines.length &&
+        audioDirection.dialogueLines.every((line) => line.speakerKey === "anlatici")),
+  );
+  const isVoiceover = hasManualVoiceover || hasAutoWrappedVoiceover;
 
   return {
     shot: normalizedShot,
@@ -1103,6 +1129,7 @@ async function buildDialogueShotDetail(
     generationProfile,
     hasGenerationProfileOverride: hasDialogueGenerationProfileOverride(generationProfile),
     audioTakes,
+    isVoiceover,
   };
 }
 
@@ -1296,7 +1323,11 @@ export async function listDialogueAudioShots(
     shots.map((shot) => buildDialogueShotDetail(shot, context, project.folderPath)),
   );
 
-  return details.filter((detail) => Boolean(detail.audioDirection?.dialogueTranscript));
+  return details.filter(
+    (detail) =>
+      Boolean(detail.audioDirection?.dialogueTranscript) ||
+      Boolean(detail.shot.audioVoiceoverText?.trim()),
+  );
 }
 
 export async function getDialogueAudioShotById(
@@ -1311,7 +1342,10 @@ export async function getDialogueAudioShotById(
 
   const context = await buildDialogueResolutionContext(project.id);
   const detail = await buildDialogueShotDetail(shot, context, project.folderPath);
-  return detail.audioDirection?.dialogueTranscript ? detail : null;
+
+  return detail.audioDirection?.dialogueTranscript || detail.shot.audioVoiceoverText?.trim()
+    ? detail
+    : null;
 }
 
 export async function saveDialogueTextOverride(params: {
@@ -1371,6 +1405,70 @@ export async function clearDialogueTextOverride(shotId: string): Promise<void> {
   await updateShotAudioFields(shotId, {
     audioDialogueOverrideJson: null,
     audioDialoguePreview: baseAudioDirection?.dialoguePreview ?? shot.audioDialoguePreview,
+  });
+
+  const refreshedShot = await getShotById(shotId);
+
+  if (!refreshedShot) {
+    return;
+  }
+
+  const context = await buildDialogueResolutionContext(project.id);
+  const detail = await buildDialogueShotDetail(refreshedShot, context, project.folderPath);
+  await reconcileShotAudioState(project.folderPath, detail);
+}
+
+export async function saveVoiceoverText(params: {
+  shotId: string;
+  text: string;
+}): Promise<void> {
+  const project = ensureActiveProject();
+  const shot = await getShotById(params.shotId);
+
+  if (!shot) {
+    throw new Error("Shot bulunamadi.");
+  }
+
+  const normalizedText = params.text.replace(/\r\n/g, "\n").trim();
+
+  if (!normalizedText) {
+    await clearVoiceoverText(params.shotId);
+    return;
+  }
+
+  const voiceoverDirection = buildVoiceoverAudioDirection(normalizedText);
+
+  await updateShotAudioFields(params.shotId, {
+    audioVoiceoverText: normalizedText,
+    audioDialoguePreview: voiceoverDirection.dialoguePreview,
+    audioContentHash: createAudioContentHash(voiceoverDirection),
+  });
+
+  const refreshedShot = await getShotById(params.shotId);
+
+  if (!refreshedShot) {
+    return;
+  }
+
+  const context = await buildDialogueResolutionContext(project.id);
+  const detail = await buildDialogueShotDetail(refreshedShot, context, project.folderPath);
+  await reconcileShotAudioState(project.folderPath, detail);
+}
+
+export async function clearVoiceoverText(shotId: string): Promise<void> {
+  const project = ensureActiveProject();
+  const shot = await getShotById(shotId);
+
+  if (!shot) {
+    throw new Error("Shot bulunamadi.");
+  }
+
+  const baseAudioDirection = parseStoredAudioDirection(shot.audioDirectionJson, shot.promptVideo);
+
+  await updateShotAudioFields(shotId, {
+    audioVoiceoverText: null,
+    audioDialoguePreview: baseAudioDirection?.dialoguePreview ?? null,
+    audioContentHash: createAudioContentHash(baseAudioDirection),
   });
 
   const refreshedShot = await getShotById(shotId);
@@ -1726,6 +1824,7 @@ export async function generateShotDialogueAudio(params: {
       outputPath: outputAbsolutePath,
       outputFormat: preferredOutputFormat,
       stability: performanceProfile.recommendedStability,
+      similarityBoost: performanceProfile.recommendedSimilarityBoost,
       useSpeakerBoost: true,
       abortSignal: params.abortSignal,
       onProgress: params.onProgress,

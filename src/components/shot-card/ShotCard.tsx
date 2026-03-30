@@ -6,7 +6,8 @@ import {
   type ReactNode,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Clapperboard, Image as ImageIcon, Play, Video } from "lucide-react";
+import { Clapperboard, Image as ImageIcon, Play, Video, Volume2 } from "lucide-react";
+import { StatusDot } from "@/components/ui";
 import {
   IMAGE_MODELS,
   VIDEO_MODELS,
@@ -174,8 +175,8 @@ export function ShotCard({
         gridTemplateRows: "auto auto",
         borderRadius: isCoverage ? 20 : 26,
         overflow: "hidden",
-        border: `1px solid ${selected ? accentColor : "#e8e8e8"}`,
-        background: "#ffffff",
+        border: `1px solid ${selected ? accentColor : "var(--border-default)"}`,
+        background: "var(--bg-base)",
         color: "inherit",
         cursor: "pointer",
         opacity: archived ? 0.58 : 1,
@@ -197,12 +198,12 @@ export function ShotCard({
           overflow: "hidden",
           background: resolvedThumbUrl
             ? "linear-gradient(180deg, transparent 22%, rgba(0, 0, 0, 0.62))"
-            : "#f3f3f4",
+            : "var(--canvas-bg)",
         }}
       >
         {resolvedThumbUrl ? (
           <img
-            alt={`${shot.shotNumber} preview`}
+            alt={`${shot.shotNumber} onizleme`}
             onError={() => setThumbnailFailed(true)}
             src={resolvedThumbUrl}
             style={{
@@ -300,7 +301,7 @@ export function ShotCard({
                   textTransform: "uppercase",
                 }}
               >
-                End preview
+                Son onizleme
               </span>
             ) : null}
           </div>
@@ -356,7 +357,7 @@ export function ShotCard({
                       textTransform: "uppercase",
                     }}
                   >
-                    Archived
+                    Arsivlendi
                   </span>
                 ) : null}
                 {missingExternalReference ? (
@@ -364,8 +365,8 @@ export function ShotCard({
                     style={{
                       padding: isCoverage ? "3px 6px" : "4px 8px",
                       borderRadius: 999,
-                      background: "rgba(0, 0, 0, 0.06)",
-                      border: "1px solid rgba(0, 0, 0, 0.12)",
+                      background: "var(--surface-active)",
+                      border: "1px solid var(--border-default)",
                       color: "var(--accent)",
                       fontSize: isCoverage ? 7 : 9,
                       fontWeight: 800,
@@ -373,7 +374,7 @@ export function ShotCard({
                       textTransform: "uppercase",
                     }}
                   >
-                    Ref required
+                    Ref gerekli
                   </span>
                 ) : null}
               </div>
@@ -383,12 +384,14 @@ export function ShotCard({
                   <>
                     <CompactStatus icon={<ImageIcon size={10} />} status={imageCardStatus} />
                     <CompactStatus icon={<Video size={10} />} status={shot.videoStatus} />
+                    <CompactStatus icon={<Volume2 size={10} />} status={shot.audioStatus} />
                     {shot.upscaleStatus === "done" ? <CompactStatus label="4K" status="done" /> : null}
                   </>
                 ) : (
                   <>
-                    <StatusPill icon={<ImageIcon size={11} />} label="IMG" status={imageCardStatus} />
-                    <StatusPill icon={<Video size={11} />} label="VID" status={shot.videoStatus} />
+                    <StatusDot status={imageCardStatus} label="IMG" />
+                    <StatusDot status={shot.videoStatus} label="VID" />
+                    <StatusDot status={shot.audioStatus} label="SES" />
                     {shot.upscaleStatus === "done" ? (
                       <span
                         style={{
@@ -417,7 +420,7 @@ export function ShotCard({
           display: "grid",
           gap: isCoverage ? 6 : 10,
           padding: isCoverage ? "10px 12px 12px" : "14px 16px 16px",
-          borderTop: "1px solid rgba(0,0,0,0.06)",
+          borderTop: "1px solid var(--surface-active)",
         }}
       >
         {!isCoverage ? (
@@ -461,7 +464,7 @@ export function ShotCard({
               </span>
             </div>
             <div style={{ display: "grid", gap: 6 }}>
-              <MetadataChip label="Image" value={imageModelLabel} />
+              <MetadataChip label="Gorsel" value={imageModelLabel} />
               {videoModelLabel ? <MetadataChip label="Video" value={videoModelLabel} /> : null}
             </div>
           </>
@@ -514,8 +517,8 @@ function MetadataChip({ label, value }: { label: string; value: string }) {
         gap: 10,
         padding: "8px 10px",
         borderRadius: 14,
-        border: "1px solid rgba(0,0,0,0.06)",
-        background: "rgba(0,0,0,0.02)",
+        border: "1px solid var(--surface-active)",
+        background: "var(--surface-hover)",
       }}
     >
       <span
@@ -580,7 +583,7 @@ function HoverActionButton({
         opacity: active ? 1 : 0.72,
         backdropFilter: "blur(10px)",
       }}
-      title={active ? `${label} preview` : `${label} henuz uretilmedi`}
+      title={active ? `${label} onizleme` : `${label} henuz uretilmedi`}
     >
       {icon}
       {label}
@@ -631,58 +634,3 @@ function CompactStatus({
   );
 }
 
-function StatusPill({
-  icon,
-  label,
-  status,
-}: {
-  icon: ReactNode;
-  label: string;
-  status: string;
-}) {
-  const token =
-    status === "done"
-      ? {
-          color: "var(--status-success)",
-          background: "rgba(34, 197, 94, 0.12)",
-          border: "rgba(34, 197, 94, 0.22)",
-        }
-      : status === "generating"
-        ? {
-            color: "var(--status-warning)",
-            background: "rgba(245, 158, 11, 0.12)",
-            border: "rgba(245, 158, 11, 0.22)",
-          }
-        : status === "error"
-          ? {
-              color: "var(--status-error)",
-              background: "rgba(239, 68, 68, 0.12)",
-              border: "rgba(239, 68, 68, 0.22)",
-            }
-          : {
-              color: "var(--text-muted)",
-              background: "rgba(0, 0, 0, 0.04)",
-              border: "rgba(0, 0, 0, 0.08)",
-            };
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "4px 6px",
-        borderRadius: 999,
-        background: token.background,
-        border: `1px solid ${token.border}`,
-        color: token.color,
-        fontSize: 9,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
-      }}
-    >
-      {icon}
-      {label}
-    </span>
-  );
-}

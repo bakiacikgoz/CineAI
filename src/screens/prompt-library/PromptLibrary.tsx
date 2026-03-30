@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
-import { BookText, Copy, Pencil, Plus, Search, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { BookText, Copy, FileText, Pencil, Plus, Search, Sparkles, Trash2, WandSparkles } from "lucide-react";
 import { Portal } from "@/components/Portal";
+import { ModalShell, ProEmptyState } from "@/components/ui";
 import { useNavigate } from "react-router-dom";
 import { runPromptAssist, type PromptAssistMode } from "@/services/llm.service";
 import {
@@ -93,7 +94,7 @@ export function PromptLibrary() {
           await message(
             error instanceof Error ? error.message : "Prompt kutuphanesi yuklenemedi.",
             {
-              title: "Prompt Library",
+              title: "Prompt Kutuphanesi",
               kind: "error",
             },
           );
@@ -135,8 +136,8 @@ export function PromptLibrary() {
 
   async function handleSave() {
     if (!editor.name.trim() || !editor.content.trim()) {
-      await message("Template adi ve prompt icerigi zorunludur.", {
-        title: "Prompt Library",
+      await message("Sablon adi ve prompt icerigi zorunludur.", {
+        title: "Prompt Kutuphanesi",
         kind: "warning",
       });
       return;
@@ -156,8 +157,8 @@ export function PromptLibrary() {
       setEditor(EMPTY_EDITOR);
     } catch (error) {
       console.error("Failed to save prompt template", error);
-      await message(error instanceof Error ? error.message : "Prompt template kaydedilemedi.", {
-        title: "Prompt Library",
+      await message(error instanceof Error ? error.message : "Prompt sablonu kaydedilemedi.", {
+        title: "Prompt Kutuphanesi",
         kind: "error",
       });
     } finally {
@@ -170,16 +171,16 @@ export function PromptLibrary() {
       await duplicatePromptTemplate(templateId);
       await refreshTemplates();
     } catch (error) {
-      await message(error instanceof Error ? error.message : "Template cogaltilamadi.", {
-        title: "Prompt Library",
+      await message(error instanceof Error ? error.message : "Sablon kopyalanamadi.", {
+        title: "Prompt Kutuphanesi",
         kind: "error",
       });
     }
   }
 
   async function handleDelete(templateId: string) {
-    const accepted = await confirm("Bu prompt template silinecek. Devam edilsin mi?", {
-      title: "Prompt template sil",
+    const accepted = await confirm("Bu prompt sablonu silinecek. Devam edilsin mi?", {
+      title: "Prompt sablonu sil",
       kind: "warning",
       okLabel: "Sil",
       cancelLabel: "Vazgec",
@@ -193,8 +194,8 @@ export function PromptLibrary() {
       await deletePromptTemplate(templateId);
       await refreshTemplates();
     } catch (error) {
-      await message(error instanceof Error ? error.message : "Template silinemedi.", {
-        title: "Prompt Library",
+      await message(error instanceof Error ? error.message : "Sablon silinemedi.", {
+        title: "Prompt Kutuphanesi",
         kind: "error",
       });
     }
@@ -211,7 +212,11 @@ export function PromptLibrary() {
   }
 
   if (!activeProject) {
-    return <InactiveProjectState title="Prompt Library" copy="Prompt sablonlarini yonetmek icin once bir proje ac." />;
+    return (
+      <section className="screen-shell">
+        <ProEmptyState icon={FileText} title="Prompt Kutuphanesi" description="Prompt sablonlarini yonetmek icin once bir proje ac." />
+      </section>
+    );
   }
 
   return (
@@ -221,10 +226,10 @@ export function PromptLibrary() {
           <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
             <span style={eyebrowStyle}>
               <WandSparkles size={13} />
-              Prompt workspace
+              Prompt Kutuphanesi
             </span>
             <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-              Prompt Library
+              Prompt Kutuphanesi
             </div>
             <p style={heroCopyStyle}>
               Projeye ozel prompt sablonlari, kategori bazli varyasyonlar ve hizli generator
@@ -234,7 +239,7 @@ export function PromptLibrary() {
 
           <button className="btn-primary" onClick={openCreateEditor} type="button">
             <Plus size={15} />
-            Yeni Template
+            Yeni Sablon
           </button>
         </header>
 
@@ -264,14 +269,15 @@ export function PromptLibrary() {
         </section>
 
         {loading ? (
-          <DataState title="Yukleniyor..." copy="Prompt template kayitlari okunuyor." />
+          <DataState title="Yukleniyor..." copy="Prompt sablon kayitlari okunuyor." />
         ) : filteredTemplates.length === 0 ? (
-          <DataState
-            title={templates.length === 0 ? "Prompt kutuphanesi bos" : "Sonuc bulunamadi"}
-            copy={
+          <ProEmptyState
+            icon={FileText}
+            title="Sablon bulunamadi"
+            description={
               templates.length === 0
-                ? "Ilk prompt template kaydini olusturup generator akislariyla baglayabilirsin."
-                : "Arama ve filtrelere uyan prompt template bulunamadi."
+                ? "Yeni bir prompt sablonu olusturun."
+                : "Arama ve filtrelere uyan prompt sablonu bulunamadi."
             }
           />
         ) : (
@@ -297,15 +303,15 @@ export function PromptLibrary() {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button className="btn-secondary" onClick={() => routeTemplate(template, "image")} type="button">
                       <Sparkles size={14} />
-                      Image Generator
+                      Gorsel Uret
                     </button>
                     <button className="btn-secondary" onClick={() => routeTemplate(template, "video")} type="button">
                       <BookText size={14} />
-                      Video Generator
+                      Video Uret
                     </button>
                     <button className="btn-secondary" onClick={() => void handleDuplicate(template.id)} type="button">
                       <Copy size={14} />
-                      Cogalt
+                      Kopyala
                     </button>
                     <button className="btn-secondary" onClick={() => void handleDelete(template.id)} type="button">
                       <Trash2 size={14} />
@@ -356,7 +362,7 @@ function TemplateEditorModal({
   async function handleAssist(mode: PromptAssistMode) {
     if (!editor.content.trim()) {
       await message("Yardimci aksiyon icin once bir prompt icerigi gir.", {
-        title: "Prompt Library",
+        title: "Prompt Kutuphanesi",
         kind: "warning",
       });
       return;
@@ -372,7 +378,7 @@ function TemplateEditorModal({
       await message(
         error instanceof Error ? error.message : "Prompt yardimcisi calistirilamadi.",
         {
-          title: "Prompt Library",
+          title: "Prompt Kutuphanesi",
           kind: "error",
         },
       );
@@ -381,100 +387,89 @@ function TemplateEditorModal({
     }
   }
 
-  return (
-    <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(event) => event.stopPropagation()} style={modalPanelStyle}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>
-            {editor.id ? "Prompt template duzenle" : "Yeni prompt template"}
-          </div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            Template tanimi, kategori ve model onerisiyle birlikte proje kutuphanesine kaydedilir.
-          </p>
-        </div>
-
-        <div style={{ display: "grid", gap: 12 }}>
-          <input
-            onChange={(event) => onChange({ ...editor, name: event.target.value })}
-            placeholder="Template adi"
-            style={formInputStyle}
-            value={editor.name}
-          />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <input
-              onChange={(event) => onChange({ ...editor, category: event.target.value })}
-              placeholder="Kategori"
-              style={formInputStyle}
-              value={editor.category}
-            />
-            <input
-              onChange={(event) => onChange({ ...editor, model: event.target.value })}
-              placeholder="Model onerisi"
-              style={formInputStyle}
-              value={editor.model}
-            />
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              className="btn-secondary"
-              disabled={Boolean(assisting)}
-              onClick={() => void handleAssist("refine")}
-              type="button"
-            >
-              {assisting === "refine" ? "Refining..." : "Refine"}
-            </button>
-            <button
-              className="btn-secondary"
-              disabled={Boolean(assisting)}
-              onClick={() => void handleAssist("shorten")}
-              type="button"
-            >
-              {assisting === "shorten" ? "Shortening..." : "Shorten"}
-            </button>
-            <button
-              className="btn-secondary"
-              disabled={Boolean(assisting)}
-              onClick={() => void handleAssist("translate-tr")}
-              type="button"
-            >
-              {assisting === "translate-tr" ? "Translating..." : "TR"}
-            </button>
-            <button
-              className="btn-secondary"
-              disabled={Boolean(assisting)}
-              onClick={() => void handleAssist("translate-en")}
-              type="button"
-            >
-              {assisting === "translate-en" ? "Translating..." : "EN"}
-            </button>
-          </div>
-          <textarea
-            onChange={(event) => onChange({ ...editor, content: event.target.value })}
-            placeholder="Prompt icerigi"
-            rows={14}
-            style={textareaStyle}
-            value={editor.content}
-          />
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button className="btn-secondary" disabled={saving} onClick={onClose} type="button">
-            Iptal
-          </button>
-          <button className="btn-primary" disabled={saving} onClick={onSave} type="button">
-            {saving ? "Kaydediliyor..." : "Kaydet"}
-          </button>
-        </div>
-      </div>
-    </div>
+  const footerButtons = (
+    <>
+      <button className="btn-secondary" disabled={saving} onClick={onClose} type="button">
+        Iptal
+      </button>
+      <button className="btn-primary" disabled={saving} onClick={onSave} type="button">
+        {saving ? "Kaydediliyor..." : "Kaydet"}
+      </button>
+    </>
   );
-}
 
-function InactiveProjectState({ title, copy }: { title: string; copy: string }) {
   return (
-    <section className="screen-shell">
-      <DataState title={title} copy={copy} />
-    </section>
+    <ModalShell
+      title="Prompt Sablonu"
+      subtitle="Sablon duzenle veya yeni olustur"
+      onClose={onClose}
+      width="min(720px, 100%)"
+      footer={footerButtons}
+    >
+      <div style={{ display: "grid", gap: 12, padding: 20 }}>
+        <input
+          onChange={(event) => onChange({ ...editor, name: event.target.value })}
+          placeholder="Sablon adi"
+          style={formInputStyle}
+          value={editor.name}
+        />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <input
+            onChange={(event) => onChange({ ...editor, category: event.target.value })}
+            placeholder="Kategori"
+            style={formInputStyle}
+            value={editor.category}
+          />
+          <input
+            onChange={(event) => onChange({ ...editor, model: event.target.value })}
+            placeholder="Model onerisi"
+            style={formInputStyle}
+            value={editor.model}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            className="btn-secondary"
+            disabled={Boolean(assisting)}
+            onClick={() => void handleAssist("refine")}
+            type="button"
+          >
+            {assisting === "refine" ? "Iyilestiriliyor..." : "Iyilestir"}
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={Boolean(assisting)}
+            onClick={() => void handleAssist("shorten")}
+            type="button"
+          >
+            {assisting === "shorten" ? "Kisaltiliyor..." : "Kisalt"}
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={Boolean(assisting)}
+            onClick={() => void handleAssist("translate-tr")}
+            type="button"
+          >
+            {assisting === "translate-tr" ? "Cevriliyor..." : "Turkce'ye cevir"}
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={Boolean(assisting)}
+            onClick={() => void handleAssist("translate-en")}
+            type="button"
+          >
+            {assisting === "translate-en" ? "Cevriliyor..." : "Ingilizce'ye cevir"}
+          </button>
+        </div>
+        <textarea
+          onChange={(event) => onChange({ ...editor, content: event.target.value })}
+          placeholder="Prompt icerigi"
+          rows={14}
+          style={textareaStyle}
+          value={editor.content}
+        />
+      </div>
+    </ModalShell>
   );
 }
 
@@ -510,8 +505,8 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
   fontSize: 11,
   letterSpacing: "0.08em",
@@ -578,7 +573,7 @@ const cardStyle = {
   borderRadius: 22,
   border: "1px solid var(--border-subtle)",
   background: "var(--bg-surface)",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+  boxShadow: "0 1px 3px var(--surface-hover)",
 } satisfies React.CSSProperties;
 
 const tagStyle = {
@@ -613,27 +608,6 @@ const contentPreviewStyle = {
   WebkitLineClamp: 8,
   WebkitBoxOrient: "vertical",
   overflow: "hidden",
-} satisfies React.CSSProperties;
-
-const modalBackdropStyle = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 240,
-  display: "grid",
-  placeItems: "center",
-  padding: 20,
-  background: "rgba(0, 0, 0, 0.4)",
-  backdropFilter: "blur(8px)",
-} satisfies React.CSSProperties;
-
-const modalPanelStyle = {
-  width: "min(720px, 100%)",
-  display: "grid",
-  gap: 18,
-  padding: 24,
-  borderRadius: 24,
-  border: "1px solid var(--border-default)",
-  background: "var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const formInputStyle = {

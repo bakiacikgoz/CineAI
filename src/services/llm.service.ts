@@ -4,7 +4,7 @@ const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const DEFAULT_OPENROUTER_MODEL = "openrouter/auto";
 const DEFAULT_DIALOGUE_OPTIMIZER_MODEL = "openrouter/auto";
-const DIALOGUE_OPTIMIZER_VERSION = "dialogue-optimizer-v6-human-performance";
+const DIALOGUE_OPTIMIZER_VERSION = "dialogue-optimizer-v7-hollywood-direction";
 const TURKISH_LIGHT_STOPWORDS = new Set([
   "ve",
   "ile",
@@ -122,7 +122,8 @@ export interface DialoguePerformanceProfile {
   preset: DialoguePerformancePreset;
   intensity: "low" | "medium" | "high";
   baselineCue: string;
-  recommendedStability: 0 | 0.5 | 1;
+  recommendedStability: number;
+  recommendedSimilarityBoost: number;
   directionNote: string;
 }
 
@@ -135,6 +136,64 @@ type DialogueTimingGuidance = {
   shouldCompressForTime: boolean;
 };
 
+export interface OpenRouterModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  contextLength: number | null;
+  promptPricePerM: number | null;
+  completionPricePerM: number | null;
+}
+
+const OPENROUTER_PROVIDER_LABELS: Record<string, string> = {
+  openrouter: "OpenRouter",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  meta: "Meta",
+  "meta-llama": "Meta",
+  mistralai: "Mistral",
+  xai: "xAI",
+  "x-ai": "xAI",
+  deepseek: "DeepSeek",
+  qwen: "Qwen",
+  moonshotai: "Moonshot",
+  perplexity: "Perplexity",
+  cohere: "Cohere",
+  microsoft: "Microsoft",
+  nvidia: "NVIDIA",
+  amazon: "Amazon",
+  minimax: "MiniMax",
+};
+
+export function inferOpenRouterProvider(modelId: string): string {
+  const [provider] = modelId.trim().split("/");
+  const normalized = provider?.trim().toLowerCase();
+  return normalized || "other";
+}
+
+export function formatOpenRouterProvider(provider: string): string {
+  const normalized = provider.trim().toLowerCase();
+
+  if (!normalized) {
+    return "Other";
+  }
+
+  const mapped = OPENROUTER_PROVIDER_LABELS[normalized];
+
+  if (mapped) {
+    return mapped;
+  }
+
+  return normalized
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) =>
+      part === "ai" ? "AI" : `${part.charAt(0).toUpperCase()}${part.slice(1)}`,
+    )
+    .join(" ");
+}
+
 function createStableHash(value: string): string {
   let hash = 5381;
 
@@ -145,26 +204,95 @@ function createStableHash(value: string): string {
   return Math.abs(hash >>> 0).toString(16);
 }
 
-function extractJsonObject(content: string): string {
+function stripJsonComments(json: string): string {
+  return json
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
+export function extractJsonObject(content: string): string {
   const trimmed = content.trim();
 
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return trimmed;
-  }
-
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
-  if (fencedMatch?.[1]) {
-    return fencedMatch[1].trim();
-  }
+  const candidate = fencedMatch?.[1]?.trim() ?? trimmed;
 
-  const startIndex = trimmed.indexOf("{");
-  const endIndex = trimmed.lastIndexOf("}");
+  const startIndex = candidate.indexOf("{");
+  const endIndex = candidate.lastIndexOf("}");
 
   if (startIndex >= 0 && endIndex > startIndex) {
-    return trimmed.slice(startIndex, endIndex + 1);
+    const raw = candidate.slice(startIndex, endIndex + 1);
+    return stripJsonComments(raw);
   }
 
-  throw new Error("OpenRouter dialog optimizer yanitinda JSON bulunamadi.");
+  const arrayStart = candidate.indexOf("[");
+  const arrayEnd = candidate.lastIndexOf("]");
+
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    const raw = candidate.slice(arrayStart, arrayEnd + 1);
+    return stripJsonComments(raw);
+  }
+
+  throw new Error("OpenRouter yanitinda JSON bulunamadi.");
+}
+
+export function autoCloseJsonDelimiters(content: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let isEscaped = false;
+
+  for (const char of content) {
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        isEscaped = true;
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      stack.push("}");
+      continue;
+    }
+
+    if (char === "[") {
+      stack.push("]");
+      continue;
+    }
+
+    if (char === "}" || char === "]") {
+      const expected = stack.pop();
+
+      if (expected !== char) {
+        return null;
+      }
+    }
+  }
+
+  if (inString) {
+    return null;
+  }
+
+  if (stack.length === 0) {
+    return content;
+  }
+
+  return `${content}${stack.reverse().join("")}`;
 }
 
 function normalizeDeliveryCue(value: string | null | undefined): string | null {
@@ -408,116 +536,129 @@ export function resolveDialoguePerformanceProfile(params: {
   if (preset === "command") {
     return withNote({
       intensity: "high",
-      baselineCue: "clipped military command",
-      recommendedStability: 0,
-      directionNote: "Hard command delivery. Immediate, clipped, fully committed, never serene.",
+      baselineCue: "clipped military command, hard and immediate",
+      recommendedStability: 0.30,
+      recommendedSimilarityBoost: 0.82,
+      directionNote: "Hard command delivery. Immediate, clipped, fully committed. Jaw tight, breath short, zero hesitation. Not narrated, not announced — barked like a real officer under fire.",
     });
   }
 
   if (preset === "threat") {
     return withNote({
       intensity: "high",
-      baselineCue: "cold threat, tightly controlled",
-      recommendedStability: 0,
-      directionNote: "Threat delivery. Dangerous restraint, cold authority, not theatrical.",
+      baselineCue: "cold dangerous restraint, barely holding back",
+      recommendedStability: 0.28,
+      recommendedSimilarityBoost: 0.80,
+      directionNote: "Threat delivery. The danger is in the control, not the volume. Voice drops low, pace slows, every word lands like a blade. Cold, coiled, predatory stillness.",
     });
   }
 
   if (preset === "controlled_grief") {
     return withNote({
       intensity: "medium",
-      baselineCue: "held emotion, barely steady",
-      recommendedStability: 0.5,
-      directionNote: "Controlled grief. Emotion is contained but audible, never melodramatic or sleepy.",
+      baselineCue: "held emotion, voice cracks once then steadies",
+      recommendedStability: 0.42,
+      recommendedSimilarityBoost: 0.75,
+      directionNote: "Controlled grief. The actor is fighting to hold it together. One micro-break in the voice, then recovery. Not weeping, not stoic — the struggle between the two is the performance.",
     });
   }
 
   if (preset === "oath") {
     return withNote({
       intensity: "medium",
-      baselineCue: "firm resolve, fully present",
-      recommendedStability: 0.5,
-      directionNote: "Oath or acceptance. Human conviction, pressure, and commitment, not politeness.",
+      baselineCue: "firm resolve, weight of conviction in every word",
+      recommendedStability: 0.45,
+      recommendedSimilarityBoost: 0.78,
+      directionNote: "Oath delivery. Each word carries the weight of commitment. Measured pace, grounded chest voice, eyes locked forward. Not rushed, not ceremonial — deeply personal.",
     });
   }
 
   if (preset === "tense") {
     return withNote({
       intensity: "high",
-      baselineCue: "under pressure, still controlled",
-      recommendedStability: 0,
-      directionNote: "Tense scene. Pressure should be felt in the voice without sounding synthetic.",
+      baselineCue: "under pressure, controlled but strain audible",
+      recommendedStability: 0.32,
+      recommendedSimilarityBoost: 0.80,
+      directionNote: "Tense scene. Adrenaline is running but discipline holds. Breath slightly faster, jaw set, words precise. The body is ready to move. Not panicked, not calm — coiled.",
     });
   }
 
   if (preset === "conversation") {
     return withNote({
       intensity: "low",
-      baselineCue: "conversational and present",
-      recommendedStability: 0.5,
-      directionNote: "Natural conversation. Human, present, and believable rather than polished.",
+      baselineCue: "natural and present, real human talking",
+      recommendedStability: 0.50,
+      recommendedSimilarityBoost: 0.82,
+      directionNote: "Natural conversation. Think two real people in a room, not actors on a soundstage. Slight overlaps in thought, natural breath, imperfect rhythm. Warm, present, lived-in.",
     });
   }
 
   if (PHONE_CONTEXT_REGEX.test(context) && COMMAND_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "high",
-      baselineCue: "clipped command through static",
-      recommendedStability: 0,
-      directionNote: "High-pressure phone command. Human, clipped, tense, not calm.",
+      baselineCue: "clipped command through phone static, terse",
+      recommendedStability: 0.30,
+      recommendedSimilarityBoost: 0.82,
+      directionNote: "Phone command under pressure. Clipped, tense, words bitten off. Static degrades the line but urgency cuts through. Not a voicemail — a battlefield order.",
     });
   }
 
   if (HIGH_PRESSURE_CONTEXT_REGEX.test(context) && COMMAND_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "high",
-      baselineCue: "urgent, tightly controlled",
-      recommendedStability: 0,
-      directionNote: "Hard command under pressure. Present, dangerous, controlled, not narrated.",
+      baselineCue: "urgent command, pressure audible in breath",
+      recommendedStability: 0.28,
+      recommendedSimilarityBoost: 0.80,
+      directionNote: "Hard command under fire. The voice carries authority but you can hear the adrenaline underneath. Not narrated — present, dangerous, controlled.",
     });
   }
 
   if (CONTROLLED_GRIEF_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "medium",
-      baselineCue: "held emotion, steady",
-      recommendedStability: 0.5,
-      directionNote: "Controlled grief or farewell. Emotional truth without melodrama or softness.",
+      baselineCue: "held emotion, throat tight but voice steady",
+      recommendedStability: 0.42,
+      recommendedSimilarityBoost: 0.75,
+      directionNote: "Controlled grief or farewell. The emotion lives in the pauses and the slight unsteadiness, not in volume or tears. Dignity under pressure.",
     });
   }
 
   if (OATH_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "medium",
-      baselineCue: "firm resolve, fully present",
-      recommendedStability: 0.5,
-      directionNote: "Oath or mission acceptance. Human resolve, not polite or serene.",
+      baselineCue: "firm resolve, weight behind every word",
+      recommendedStability: 0.45,
+      recommendedSimilarityBoost: 0.78,
+      directionNote: "Oath or mission acceptance. Not formal — deeply personal. The commitment is felt in the grounded steadiness, not in volume.",
     });
   }
 
   if (HIGH_PRESSURE_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "high",
-      baselineCue: "under pressure, still controlled",
-      recommendedStability: 0,
-      directionNote: "Tense scene. Audible strain and pressure, but still believable.",
+      baselineCue: "under pressure, strain audible but controlled",
+      recommendedStability: 0.32,
+      recommendedSimilarityBoost: 0.80,
+      directionNote: "Tense scene. The body is tight, breath is measured, words are chosen carefully. Pressure is in the texture of the voice, not in shouting.",
     });
   }
 
   if (PHONE_CONTEXT_REGEX.test(context)) {
     return withNote({
       intensity: "medium",
-      baselineCue: "tense through static",
-      recommendedStability: 0.5,
-      directionNote: "Phone/static context. Slight grit and tension, not clean narration.",
+      baselineCue: "tense through static, guarded",
+      recommendedStability: 0.40,
+      recommendedSimilarityBoost: 0.78,
+      directionNote: "Phone or radio context. Voice filtered by distance and static. Guarded, slightly clipped, real tension underneath the compression.",
     });
   }
 
   return withNote({
     intensity: "low",
-    baselineCue: "conversational and present",
-    recommendedStability: 0.5,
-    directionNote: "Natural human conversation. Present and believable, not announcer-clean.",
+    baselineCue: "natural and present, real human talking",
+    recommendedStability: 0.50,
+    recommendedSimilarityBoost: 0.82,
+    directionNote: "Natural human conversation. Not a performance — a real person in a real moment. Imperfect, warm, present. Breathe between thoughts.",
   });
 }
 
@@ -564,7 +705,7 @@ export function stabilizeDialogueDeliveryCue(params: {
   const trimmedWords = normalizedDelivery
     .split(/\s+/)
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, 12);
   const shortenedDelivery = trimmedWords.join(" ");
 
   if (!shortenedDelivery) {
@@ -749,8 +890,8 @@ function parseOptimizedDialoguePayload(content: string): OptimizedDialogueLine[]
 
 function buildDialogueOptimizationInstruction(): string {
   return [
-    "You are a Turkish dialogue doctor for cinematic voice synthesis.",
-    "Your job is minimal dialogue polishing, not rewriting.",
+    "You are a Hollywood-grade Turkish dialogue performance director for cinematic voice synthesis.",
+    "Your job is minimal dialogue polishing and precise actor direction — not rewriting.",
     "Rewrite each line into more natural spoken Turkish only when necessary for fluency, pacing, pronunciation, or punctuation.",
     "Preserve the exact speaker order, wording intent, names, ranks, commands, story facts, tactical meaning, and emotional truth.",
     "Never paraphrase, summarize, expand, omit, intensify, soften, reinterpret, or change subtext.",
@@ -776,14 +917,25 @@ function buildDialogueOptimizationInstruction(): string {
     "Do not make commands, threats, oaths, grief, or battlefield pressure sound customer-service calm.",
     "Prefer subtle human irregularity, pressure, clipped resolve, and emotional friction over pristine synthetic smoothness.",
     "Control pace through word choice, punctuation, ellipses, dashes, sentence length, and breath-friendly phrasing.",
+    "Use em-dashes for interrupted thoughts, ellipses for trailing hesitation, commas for breath beats.",
     "Infer emotional delivery from the scene summary and video prompt cues, but do not add new plot information.",
     "If a custom performance note is provided, follow it as scene direction without changing the line's meaning.",
     "Keep each line concise, highly speakable, and very close in wording to the original.",
     "Return strict JSON only with this shape:",
-    '{"lines":[{"speaker":"Speaker Name","text":"optimized spoken Turkish line","delivery":"short English delivery cue"}]}',
-    "delivery must be a very short English actor-direction cue for Eleven v3 emotional prompting, maximum 6 words.",
-    "delivery should include pace when useful, but stay subtle and believable.",
-    "Prefer grounded cues such as: clipped command through static, urgent and controlled, firm resolve, held emotion, tense through static, under pressure, shaken but steady, cold authority, breath held.",
+    '{"lines":[{"speaker":"Speaker Name","text":"optimized spoken Turkish line","delivery":"English actor-direction cue"}]}',
+    "delivery is an English actor-direction cue that will be injected into TTS emotional prompting, maximum 12 words.",
+    "Write delivery as if you are a film director whispering to the actor right before the take.",
+    "delivery must describe HOW to say the line physically: what the jaw does, where the breath catches, what the body is doing.",
+    "Include pace, projection, and physical acting cues when useful.",
+    "Examples of excellent delivery cues:",
+    "- 'jaw clenched, words bitten off short, controlled fury underneath'",
+    "- 'quiet and steady, but throat tightens on the last word'",
+    "- 'breath catches, recovers, pushes through with grounded resolve'",
+    "- 'low chest voice, slow deliberate pace, each word a weight'",
+    "- 'conversational warmth, slight smile audible, unhurried'",
+    "- 'clipped and urgent through radio static, no wasted breath'",
+    "- 'held back tears, voice drops low, fights to stay steady'",
+    "Avoid generic cues like 'emotional', 'intense', 'dramatic', 'powerful'. Be specific about the physical performance.",
     "If a line already sounds natural, improve it minimally instead of rewriting aggressively.",
     "Do not use markdown fences. Do not include explanations.",
   ].join(" ");
@@ -1046,9 +1198,128 @@ export async function optimizeDialogueForSpeech(params: {
   };
 }
 
-export async function testOpenRouterConnection(
+export async function runScenarioLLM(params: {
+  systemPrompt: string;
+  userPrompt: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  abortSignal?: AbortSignal;
+}): Promise<{ content: string; model: string; finishReason: string | null }> {
+  const apiKey = (await getApiKey("OPENROUTER_API_KEY"))?.trim();
+
+  if (!apiKey) {
+    throw new Error("OpenRouter API key bulunamadi. Ayarlardan ekleyin.");
+  }
+
+  const model = params.model?.trim() || DEFAULT_OPENROUTER_MODEL;
+
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://cineai.local",
+      "X-Title": "CineAI Studio",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: params.temperature ?? 0.15,
+      max_tokens: params.maxTokens,
+      messages: [
+        { role: "system", content: params.systemPrompt },
+        { role: "user", content: params.userPrompt },
+      ],
+    }),
+    signal: params.abortSignal,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(
+      `OpenRouter istegi basarisiz oldu (${response.status}). ${errorBody.slice(0, 200)}`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string }; finish_reason?: string | null }>;
+    model?: string;
+  };
+  const choice = payload.choices?.[0];
+  const content = choice?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("OpenRouter yanitinda icerik bulunamadi.");
+  }
+
+  return { content, model: payload.model ?? model, finishReason: choice?.finish_reason ?? null };
+}
+
+function normalizePricePerMillion(value: unknown): number | null {
+  const numeric = Number(value);
+
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return null;
+  }
+
+  return numeric * 1_000_000;
+}
+
+function normalizeOpenRouterModels(payload: unknown): OpenRouterModelOption[] {
+  const rows = (payload as { data?: unknown[] })?.data;
+
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+
+  return rows
+    .map((row) => {
+      const model = row as {
+        id?: unknown;
+        name?: unknown;
+        context_length?: unknown;
+        pricing?: {
+          prompt?: unknown;
+          completion?: unknown;
+        };
+      };
+      const id = typeof model.id === "string" ? model.id.trim() : "";
+
+      if (!id) {
+        return null;
+      }
+
+      return {
+        id,
+        name:
+          typeof model.name === "string" && model.name.trim()
+            ? model.name.trim()
+            : id,
+        provider: inferOpenRouterProvider(id),
+        contextLength:
+          Number.isFinite(Number(model.context_length))
+            ? Number(model.context_length)
+            : null,
+        promptPricePerM: normalizePricePerMillion(model.pricing?.prompt),
+        completionPricePerM: normalizePricePerMillion(model.pricing?.completion),
+      } satisfies OpenRouterModelOption;
+    })
+    .filter((model): model is OpenRouterModelOption => Boolean(model))
+    .sort((left, right) => {
+      const leftPrompt = left.promptPricePerM ?? Number.POSITIVE_INFINITY;
+      const rightPrompt = right.promptPricePerM ?? Number.POSITIVE_INFINITY;
+
+      if (leftPrompt !== rightPrompt) {
+        return leftPrompt - rightPrompt;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+}
+
+export async function listOpenRouterModels(
   apiKeyOverride?: string,
-): Promise<{ modelCount: number }> {
+): Promise<OpenRouterModelOption[]> {
   const apiKey = apiKeyOverride?.trim() || (await getApiKey("OPENROUTER_API_KEY"))?.trim();
 
   if (!apiKey) {
@@ -1064,14 +1335,29 @@ export async function testOpenRouterConnection(
   });
 
   if (!response.ok) {
-    throw new Error(`OpenRouter baglanti testi basarisiz oldu (${response.status}).`);
+    throw new Error(`OpenRouter model listesi alinamadi (${response.status}).`);
   }
 
-  const payload = (await response.json()) as {
-    data?: unknown[];
-  };
+  const payload = await response.json();
+  const models = normalizeOpenRouterModels(payload);
 
+  return [
+    {
+      id: DEFAULT_OPENROUTER_MODEL,
+      name: "OpenRouter Auto",
+      provider: "openrouter",
+      contextLength: null,
+      promptPricePerM: null,
+      completionPricePerM: null,
+    },
+    ...models.filter((model) => model.id !== DEFAULT_OPENROUTER_MODEL),
+  ];
+}
+
+export async function testOpenRouterConnection(
+  apiKeyOverride?: string,
+): Promise<{ modelCount: number }> {
   return {
-    modelCount: Array.isArray(payload.data) ? payload.data.length : 0,
+    modelCount: (await listOpenRouterModels(apiKeyOverride)).length,
   };
 }

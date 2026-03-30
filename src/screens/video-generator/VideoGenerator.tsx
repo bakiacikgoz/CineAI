@@ -43,6 +43,7 @@ import { getAssets, updateAssetGroups, type AssetWithTags } from "@/services/ass
 import { getShots, type ShotRow } from "@/services/import.service";
 import { enqueueVideoJobs } from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
+import { CollapsibleSection, SliderField, ToggleSwitch } from "@/components/ui";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
 import {
@@ -356,31 +357,31 @@ export function VideoGenerator() {
         setPrompt(inboundState.promptTemplateContent);
         notices.push(
           inboundState.promptTemplateName
-            ? `Template applied: ${inboundState.promptTemplateName}`
-            : "Prompt template applied",
+            ? `Sablon uygulandi: ${inboundState.promptTemplateName}`
+            : "Prompt sablonu uygulandi",
         );
       }
 
       if (inboundState?.startAssetId) {
         setMode("freeform");
         setStartAssetId(inboundState.startAssetId);
-        notices.push("START asset linked");
+        notices.push("START gorseli baglandi");
       }
 
       if (inboundState?.endAssetId) {
         setMode("freeform");
         setEndAssetId(inboundState.endAssetId);
-        notices.push("END asset linked");
+        notices.push("END gorseli baglandi");
       }
 
       if (inboundState?.shotId) {
         setMode("shot-linked");
         setSelectedShotId(inboundState.shotId);
-        notices.push("Storyboard shot focused");
+        notices.push("Storyboard shot odaklandi");
       }
 
       if (inboundState?.modelPresetId && !cancelled && inboundPreset) {
-        notices.push(`Preset loaded: ${inboundPreset.name}`);
+        notices.push(`Preset yuklendi: ${inboundPreset.name}`);
       }
 
       if (!cancelled && inboundState) {
@@ -652,7 +653,7 @@ export function VideoGenerator() {
               Video Uret
             </div>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-              Shot-linked mod storyboard karelerini kullanir. Freeform modda asset
+              Shot bagli mod storyboard karelerini kullanir. Serbest modda asset
               library'den secim yapabilir veya dosyadan dogrudan gorsel yukleyebilirsin.
             </p>
             {inboundNotice ? (
@@ -660,7 +661,7 @@ export function VideoGenerator() {
                 style={{
                   padding: "10px 12px",
                   borderRadius: 14,
-                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                  border: "1px solid var(--glass-border)",
                   background: "rgba(0, 0, 0, 0.03)",
                   color: "var(--text-secondary)",
                   fontSize: 12,
@@ -676,8 +677,8 @@ export function VideoGenerator() {
             <span style={fieldLabelStyle}>Mod</span>
             <div style={{ display: "flex", gap: 8 }}>
               {([
-                ["shot-linked", "Shot-linked"],
-                ["freeform", "Freeform"],
+                ["shot-linked", "Shot bagli"],
+                ["freeform", "Serbest mod"],
               ] as const).map(([value, label]) => (
                 <button
                   key={value}
@@ -820,7 +821,8 @@ export function VideoGenerator() {
             </select>
           </label>
 
-          <div style={{ display: "grid", gap: 10 }}>
+          <CollapsibleSection title="Video ayarlari" subtitle={`${duration}s · Ses ${generateAudio ? "acik" : "kapali"}`} defaultOpen>
+            <div style={{ display: "grid", gap: 12 }}>
               <div style={{ display: "grid", gap: 6 }}>
                 <span style={fieldLabelStyle}>Sure</span>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
@@ -838,80 +840,32 @@ export function VideoGenerator() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gap: 6 }}>
-              <span style={fieldLabelStyle}>Aspect ratio</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                {(["16:9", "9:16", "1:1"] as const).map((value) => (
-                  <button
-                    key={value}
-                    className={aspectRatio === value ? "btn-primary" : "btn-secondary"}
-                    onClick={() => setAspectRatio(value)}
-                    style={{ flex: 1 }}
-                    type="button"
-                  >
-                    {value}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <label style={fieldStyle}>
-              <span style={fieldLabelStyle}>CFG {cfg.toFixed(2)}</span>
-              <input
-                max={1}
-                min={0.1}
-                onChange={(event) => setCfg(Number(event.target.value))}
-                step={0.05}
-                style={{ width: "100%", accentColor: "var(--accent)" }}
-                type="range"
-                value={cfg}
-              />
-            </label>
-
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                padding: "12px 14px",
-                borderRadius: 16,
-                border: "1px solid var(--border-subtle)",
-                background: "rgba(0, 0, 0, 0.02)",
-              }}
-            >
-              <div style={{ display: "grid", gap: 4 }}>
-                <span style={fieldLabelStyle}>Native audio</span>
-                <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                  Audio direction bulunan promptlarda Kling ses uretimini acabilirsin.
-                </span>
-              </div>
-              <input
-                checked={generateAudio}
-                onChange={(event) => setGenerateAudio(event.target.checked)}
-                style={{ width: 18, height: 18, accentColor: "var(--accent)" }}
-                type="checkbox"
-              />
-            </label>
+            <ToggleSwitch
+              label="Yerel ses uretimi"
+              description="Kling'e generate_audio=true gonderilir"
+              checked={generateAudio}
+              onChange={setGenerateAudio}
+            />
 
             {promptAnalysis.detectedMultiShot ? (
               <div
                 style={{
                   display: "grid",
                   gap: 10,
-                  padding: "12px 14px",
+                  padding: "14px 16px",
                   borderRadius: 16,
-                  border: "1px solid rgba(0, 0, 0, 0.08)",
-                  background: "rgba(0, 0, 0, 0.03)",
+                  border: "1px solid rgba(59, 130, 246, 0.3)",
+                  background: "rgba(59, 130, 246, 0.06)",
                 }}
               >
-                <div style={{ display: "grid", gap: 4 }}>
-                  <span style={fieldLabelStyle}>Multi-shot algilandi</span>
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                    Prompt icinde {promptAnalysis.shotCount} alt shot bulundu. Istek
-                    `multi_prompt` + `shot_type` ile gonderilecek.
-                  </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Film size={14} style={{ color: "rgba(59, 130, 246, 0.8)", flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Multi-shot algilandi</span>
                 </div>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  Prompt icinde {promptAnalysis.shotCount} alt shot bulundu. Istek
+                  {" "}<code style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, background: "rgba(59, 130, 246, 0.1)" }}>multi_prompt</code> + <code style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, background: "rgba(59, 130, 246, 0.1)" }}>shot_type</code> ile gonderilecek.
+                </span>
                 <div style={{ display: "flex", gap: 8 }}>
                   {(["customize", "intelligent"] as KlingShotType[]).map((value) => (
                     <button
@@ -927,16 +881,47 @@ export function VideoGenerator() {
                 </div>
               </div>
             ) : null}
-          </div>
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Gelismis ayarlar">
+            <div style={{ display: "grid", gap: 12 }}>
+              <SliderField
+                label="CFG"
+                min={0}
+                max={1}
+                step={0.05}
+                value={cfg}
+                onChange={setCfg}
+              />
+
+              <div style={{ display: "grid", gap: 6 }}>
+                <span style={fieldLabelStyle}>En-boy orani</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(["16:9", "9:16", "1:1"] as const).map((value) => (
+                    <button
+                      key={value}
+                      className={aspectRatio === value ? "btn-primary" : "btn-secondary"}
+                      onClick={() => setAspectRatio(value)}
+                      style={{ flex: 1 }}
+                      type="button"
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CollapsibleSection>
 
           <button
             className="btn-primary"
             disabled={!prompt.trim() || generating || loading}
             onClick={() => void handleGenerate()}
-            style={{ width: "100%" }}
+            style={{ width: "100%", fontSize: 14, fontWeight: 600, borderRadius: 12, padding: "14px 20px" }}
             type="button"
           >
-            <Film size={15} />
+            <Film size={16} />
             {generating ? "Kuyruga ekleniyor..." : "Video Uret"}
           </button>
         </aside>
@@ -1055,7 +1040,7 @@ function SourcePreviewSection({
   return (
     <section style={{ display: "grid", gap: 12 }}>
       <div style={{ fontSize: 12, color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-        Source frames
+        Kaynak kareler
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
         <PreviewCard
@@ -1154,9 +1139,9 @@ function PreviewCard({
                       style={{
                         padding: "7px 10px",
                         borderRadius: 999,
-                        background: "rgba(255, 255, 255, 0.88)",
-                        borderColor: "rgba(0, 0, 0, 0.12)",
-                        color: "#1a1c1c",
+                        background: "var(--glass-bg)",
+                        borderColor: "var(--border-default)",
+                        color: "var(--text-primary)",
                         backdropFilter: "blur(10px)",
                       }}
                       type="button"
@@ -1175,9 +1160,9 @@ function PreviewCard({
                       style={{
                         padding: "7px 10px",
                         borderRadius: 999,
-                        background: "rgba(255, 255, 255, 0.88)",
-                        borderColor: "rgba(0, 0, 0, 0.12)",
-                        color: "#1a1c1c",
+                        background: "var(--glass-bg)",
+                        borderColor: "var(--border-default)",
+                        color: "var(--text-primary)",
                         backdropFilter: "blur(10px)",
                       }}
                       type="button"
@@ -1582,11 +1567,11 @@ function VideoCard({
         gap: 12,
         padding: 14,
         borderRadius: 18,
-        border: selected ? "1.5px solid #000000" : "1px solid #e8e8e8",
-        background: "#ffffff",
+        border: selected ? "1.5px solid var(--accent)" : "1px solid var(--border-default)",
+        background: "var(--surface-card)",
         boxShadow: selected
-          ? "0 0 0 1px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08)"
-          : "0 1px 3px rgba(0, 0, 0, 0.04)",
+          ? "var(--shadow-lg)"
+          : "0 1px 3px var(--surface-hover)",
       }}
     >
       <div style={{ position: "relative" }}>
@@ -1606,9 +1591,9 @@ function VideoCard({
             minWidth: 34,
             padding: "6px 10px",
             borderRadius: 999,
-            background: selected ? "#000000" : "rgba(255, 255, 255, 0.88)",
-            borderColor: selected ? "#000000" : "rgba(0, 0, 0, 0.12)",
-            color: selected ? "#ffffff" : "#1a1c1c",
+            background: selected ? "var(--accent)" : "var(--glass-bg)",
+            borderColor: selected ? "var(--accent)" : "var(--border-default)",
+            color: selected ? "var(--on-accent)" : "var(--text-primary)",
             backdropFilter: "blur(10px)",
           }}
           type="button"
@@ -1630,9 +1615,9 @@ function VideoCard({
             style={{
               padding: "7px 10px",
               borderRadius: 999,
-              background: "rgba(255, 255, 255, 0.88)",
-              borderColor: "rgba(0, 0, 0, 0.12)",
-              color: "#1a1c1c",
+              background: "var(--glass-bg)",
+              borderColor: "var(--border-default)",
+              color: "var(--text-primary)",
               backdropFilter: "blur(10px)",
             }}
             type="button"
@@ -1646,9 +1631,9 @@ function VideoCard({
             style={{
               padding: "7px 10px",
               borderRadius: 999,
-              background: "rgba(255, 255, 255, 0.88)",
-              borderColor: "rgba(0, 0, 0, 0.12)",
-              color: "#1a1c1c",
+              background: "var(--glass-bg)",
+              borderColor: "var(--border-default)",
+              color: "var(--text-primary)",
               backdropFilter: "blur(10px)",
             }}
             type="button"
@@ -1667,10 +1652,10 @@ function VideoCard({
               alignItems: "center",
               gap: 6,
               borderRadius: 999,
-              border: "1px solid rgba(0, 0, 0, 0.12)",
-              background: "rgba(255, 255, 255, 0.88)",
+              border: "1px solid var(--border-default)",
+              background: "var(--glass-bg)",
               padding: "6px 10px",
-              color: "#1a1c1c",
+              color: "var(--text-primary)",
               fontSize: 11,
             }}
           >
@@ -1777,7 +1762,7 @@ const panelStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   background:
     "linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 22%), var(--bg-surface)",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+  boxShadow: "0 1px 3px var(--surface-hover)",
 };
 
 const eyebrowStyle: CSSProperties = {
@@ -1786,8 +1771,8 @@ const eyebrowStyle: CSSProperties = {
   alignItems: "center",
   gap: 8,
   borderRadius: 999,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   padding: "6px 10px",
   fontSize: 11,
   letterSpacing: "0.08em",

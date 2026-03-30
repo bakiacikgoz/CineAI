@@ -40,7 +40,7 @@ export function ProjectGridSkeleton() {
             minHeight: 228,
             borderRadius: 22,
             border: "1px solid var(--border-subtle)",
-            background: "#ffffff",
+            background: "var(--bg-base)",
             overflow: "hidden",
             display: "flex",
             flexDirection: "column",
@@ -59,7 +59,7 @@ export function ProjectGridSkeleton() {
             style={{
               height: 138,
               background:
-                "linear-gradient(90deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.06) 40%, rgba(0,0,0,0.02) 80%)",
+                "linear-gradient(90deg, var(--surface-hover) 0%, var(--surface-active) 40%, var(--surface-hover) 80%)",
               backgroundSize: "200% 100%",
             }}
           />
@@ -81,7 +81,7 @@ export function ProjectGridSkeleton() {
                 height: 14,
                 borderRadius: 6,
                 background:
-                  "linear-gradient(90deg, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0.07) 40%, rgba(0,0,0,0.03) 80%)",
+                  "linear-gradient(90deg, var(--surface-hover) 0%, var(--surface-active) 40%, var(--surface-hover) 80%)",
                 backgroundSize: "200% 100%",
               }}
             />
@@ -101,7 +101,7 @@ export function ProjectGridSkeleton() {
                 height: 10,
                 borderRadius: 4,
                 background:
-                  "linear-gradient(90deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.02) 80%)",
+                  "linear-gradient(90deg, var(--surface-hover) 0%, var(--surface-active) 40%, var(--surface-hover) 80%)",
                 backgroundSize: "200% 100%",
               }}
             />
@@ -122,7 +122,7 @@ export function ProjectGridSkeleton() {
                   height: 24,
                   borderRadius: 999,
                   background:
-                    "linear-gradient(90deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.02) 80%)",
+                    "linear-gradient(90deg, var(--surface-hover) 0%, var(--surface-active) 40%, var(--surface-hover) 80%)",
                   backgroundSize: "200% 100%",
                 }}
               />
@@ -140,7 +140,7 @@ export function ProjectGridSkeleton() {
                   height: 24,
                   borderRadius: 999,
                   background:
-                    "linear-gradient(90deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.02) 80%)",
+                    "linear-gradient(90deg, var(--surface-hover) 0%, var(--surface-active) 40%, var(--surface-hover) 80%)",
                   backgroundSize: "200% 100%",
                 }}
               />

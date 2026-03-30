@@ -60,7 +60,7 @@ Audio direction:
     expect(createAudioContentHash(parsed)).toMatch(/^[a-f0-9]{8}$/);
   });
 
-  it("keeps legacy inline dialogue visible but blocked", () => {
+  it("auto-wraps untagged dialogue transcript as narrator lines", () => {
     const parsed = parseAudioDirection(`
 Audio direction:
 - Language: TURKISH
@@ -70,10 +70,58 @@ Audio direction:
     `);
 
     expect(parsed?.dialogueTranscript).toBe("Anladim pasam. Hemen harekete geciyoruz.");
-    expect(parsed?.speakerTagged).toBe(false);
-    expect(parsed?.dialogueLines).toEqual([]);
-    expect(parsed?.dialoguePreview).toContain("Anladim pasam");
-    expect(resolveAudioShotStatus(parsed ?? null)).toBe("blocked");
+    expect(parsed?.speakerTagged).toBe(true);
+    expect(parsed?.dialogueLines).toEqual([
+      {
+        speaker: "Anlatici",
+        speakerKey: "anlatici",
+        text: "Anladim pasam. Hemen harekete geciyoruz.",
+      },
+    ]);
+    expect(parsed?.dialoguePreview).toContain("Anlatici");
+    expect(resolveAudioShotStatus(parsed ?? null)).toBe("pending");
+  });
+
+  it("auto-wraps untagged mixed-type transcript from film-kit output", () => {
+    const parsed = parseAudioDirection(`
+Audio direction:
+- Language: TURKISH
+- Type: Mixed
+- Dialogue transcript: "Kendi ağırlığının tam üç katı! Bunu dünyada yapabilen başka bir insan yok!"
+- SFX: Authoritative footsteps on platform
+- Ambience: Vast arena reverb, crowd murmur
+- Music: NONE
+- Mix target: Dialogue 45%, SFX 30%, Ambience 25%
+- No on-screen subtitles/captions.
+    `);
+
+    expect(parsed?.type).toBe("mixed");
+    expect(parsed?.speakerTagged).toBe(true);
+    expect(parsed?.dialogueLines).toHaveLength(1);
+    expect(parsed?.dialogueLines[0]?.speaker).toBe("Anlatici");
+    expect(parsed?.dialogueLines[0]?.text).toContain("Kendi ağırlığının tam üç katı");
+    expect(resolveAudioShotStatus(parsed ?? null)).toBe("pending");
+  });
+
+  it("recognizes SFX/Ambience and Amplified SFX types from film-kit", () => {
+    const sfxAmbience = parseAudioDirection(`
+Audio direction:
+- Language: NONE
+- Type: SFX/Ambience
+- Dialogue transcript: NONE
+- SFX: Footsteps on dry earth
+- Ambience: Distant village sounds
+    `);
+    expect(sfxAmbience?.type).toBe("mixed");
+
+    const amplified = parseAudioDirection(`
+Audio direction:
+- Language: NONE
+- Type: Amplified SFX
+- Dialogue transcript: NONE
+- SFX: Amplified slow heartbeat
+    `);
+    expect(amplified?.type).toBe("sfx");
   });
 
   it("returns null when there is no audio block", () => {

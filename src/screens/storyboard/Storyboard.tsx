@@ -8,7 +8,8 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { open, message } from "@tauri-apps/plugin-dialog";
-import { Archive, Download, Minus, Plus, Scan, Sparkles } from "lucide-react";
+import { Clapperboard, Download, Minus, Plus, Scan, Sparkles } from "lucide-react";
+import { ToggleSwitch, ProEmptyState } from "@/components/ui";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ShotCard, type ShotCardPreviewTarget } from "@/components/shot-card";
 import {
@@ -591,8 +592,8 @@ export function Storyboard() {
           padding: 28,
           borderRadius: 32,
           border: "1px solid var(--border-default)",
-          background: "#ffffff",
-          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+          background: "var(--surface-card)",
+          boxShadow: "var(--shadow-lg)",
         }}
       >
         <div
@@ -625,10 +626,10 @@ export function Storyboard() {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <HeroInfoPill label={showArchived ? "Archive visible" : "Archive filtered"} value={String(archivedShotCount)} />
+            <HeroInfoPill label={showArchived ? "Arsiv gorunur" : "Arsiv gizli"} value={String(archivedShotCount)} />
             <HeroInfoPill
               accent
-              label={selectedShot ? "Focus shot" : "Main ready"}
+              label={selectedShot ? "Odak shot" : "Hazir ana shot"}
               value={selectedShot ? selectedShot.shotNumber : `${readyMainFrameCount}/${mainShots.length}`}
             />
           </div>
@@ -651,8 +652,8 @@ export function Storyboard() {
                 gap: 8,
                 padding: "7px 12px",
                 borderRadius: 999,
-                border: "1px solid rgba(0, 0, 0, 0.12)",
-                background: "rgba(0, 0, 0, 0.04)",
+                border: "1px solid var(--border-default)",
+                background: "var(--surface-hover)",
                 color: "var(--accent)",
                 fontSize: 11,
                 fontWeight: 800,
@@ -661,7 +662,7 @@ export function Storyboard() {
               }}
             >
               <Sparkles size={13} />
-              Story Canvas
+              Hikaye Tuvali
             </span>
             <div style={{ fontSize: "clamp(34px, 5vw, 54px)", fontWeight: 700, letterSpacing: "-0.06em", lineHeight: 0.96 }}>
               Storyboard Flow
@@ -688,8 +689,8 @@ export function Storyboard() {
               gap: 18,
               padding: 20,
               borderRadius: 24,
-              border: "1px solid rgba(0, 0, 0, 0.06)",
-              background: "#f9f9f9",
+              border: "1px solid var(--surface-active)",
+              background: "var(--surface-tint)",
             }}
           >
             <div style={{ display: "grid", gap: 8 }}>
@@ -702,7 +703,7 @@ export function Storyboard() {
                   color: "var(--text-muted)",
                 }}
               >
-                Production Controls
+                Uretim Kontrolleri
               </span>
               <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.03em" }}>
                 Import, guncelleme, archive ve toplu uretim ayni board yuzeyinde.
@@ -713,14 +714,15 @@ export function Storyboard() {
               </p>
             </div>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <SurfaceActionButton onClick={() => setShowArchived((current) => !current)} type="secondary">
-                <Archive size={15} />
-                {showArchived ? `Archived on (${archivedShotCount})` : `Archived off (${archivedShotCount})`}
-              </SurfaceActionButton>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <ToggleSwitch
+                label="Arsivlenenleri goster"
+                checked={showArchived}
+                onChange={setShowArchived}
+              />
               <SurfaceActionButton onClick={() => void handleImportClick()} type="secondary">
                 <Download size={15} />
-                {hasImportedShots ? "Film-kit Guncelle" : "Film-kit Import"}
+                {hasImportedShots ? "Film-kit Guncelle" : "Film-kit Ice Aktar"}
               </SurfaceActionButton>
               <SurfaceActionButton
                 disabled={mainShots.length === 0}
@@ -728,7 +730,7 @@ export function Storyboard() {
                 type="primary"
               >
                 <Sparkles size={15} />
-                Bulk Production
+                Toplu Uretim
               </SurfaceActionButton>
             </div>
           </div>
@@ -744,31 +746,31 @@ export function Storyboard() {
           }}
         >
           <MetricCard
-            caption="Master continuity beats"
-            label="Main Shot"
+            caption="Ana sureklilik vuruslari"
+            label="Ana Shot"
             tone="accent"
             value={mainShots.length}
           />
           <MetricCard
-            caption="Auxiliary inserts and reactions"
+            caption="Yardimci insert ve reaksiyonlar"
             label="Coverage"
             tone="info"
             value={coverageCount}
           />
           <MetricCard
-            caption="Shots with explicit continue handoff"
+            caption="Acik devam baglantisi olan shotlar"
             emphasized
-            label="Chain Link"
+            label="Zincir Baglantisi"
             tone="accent"
             value={linkedShotCount}
           />
           <MetricCard
             caption={
               missingExternalReferenceCount === 0
-                ? "Reference gaps closed"
-                : "Needs external handoff"
+                ? "Referans bosluklari kapatildi"
+                : "Dis referans gerekli"
             }
-            label="Missing Ref"
+            label="Eksik Referans"
             tone={missingExternalReferenceCount === 0 ? "success" : "danger"}
             value={missingExternalReferenceCount}
           />
@@ -794,14 +796,14 @@ export function Storyboard() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <BoardMetaPill>Space + drag / +/- / 0 / F</BoardMetaPill>
               <BoardMetaPill accent>
-                {selectedShot ? `Focused / ${selectedShot.shotNumber}` : `Ready / ${readyMainFrameCount} main`}
+                {selectedShot ? `Odak / ${selectedShot.shotNumber}` : `Hazir / ${readyMainFrameCount} ana`}
               </BoardMetaPill>
               <BoardMetaPill>
                 {selectedShot
                   ? `${selectedShot.parentShotId ? "Coverage" : "Main"} / ${selectedShot.shotNumber}`
                   : `${mainShots.length} main / ${coverageCount} coverage`}
               </BoardMetaPill>
-              <BoardMetaPill>{showArchived ? "Archive visible" : "Archive hidden"}</BoardMetaPill>
+              <BoardMetaPill>{showArchived ? "Arsiv gorunur" : "Arsiv gizli"}</BoardMetaPill>
             </div>
 
             <div style={{ display: "inline-flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -826,7 +828,7 @@ export function Storyboard() {
                     boxShadow: "0 0 8px rgba(0, 0, 0, 0.3)",
                   }}
                 />
-                Auto-saving storyboard changes
+                Storyboard otomatik kaydediliyor
               </div>
               <div
                 style={{
@@ -835,11 +837,11 @@ export function Storyboard() {
                   gap: 6,
                   padding: "6px",
                   borderRadius: 999,
-                  border: "1px solid rgba(0, 0, 0, 0.06)",
+                  border: "1px solid var(--surface-active)",
                   background: "rgba(0, 0, 0, 0.03)",
                 }}
               >
-                <ZoomControlButton label="Zoom out" onClick={() => changeZoom(-ZOOM_STEP)}>
+                <ZoomControlButton label="Uzaklastir" onClick={() => changeZoom(-ZOOM_STEP)}>
                   <Minus size={14} />
                 </ZoomControlButton>
                 <div
@@ -854,10 +856,10 @@ export function Storyboard() {
                 >
                   {Math.round(zoom * 100)}%
                 </div>
-                <ZoomControlButton label="Zoom in" onClick={() => changeZoom(ZOOM_STEP)}>
+                <ZoomControlButton label="Yakinlastir" onClick={() => changeZoom(ZOOM_STEP)}>
                   <Plus size={14} />
                 </ZoomControlButton>
-                <ZoomControlButton label="Fit canvas" onClick={fitCanvas}>
+                <ZoomControlButton label="Tuvale sigdir" onClick={fitCanvas}>
                   <Scan size={14} />
                 </ZoomControlButton>
               </div>
@@ -899,9 +901,9 @@ export function Storyboard() {
                     width: boardWidth,
                     minHeight: boardHeight,
                     borderRadius: 30,
-                    border: "1px solid rgba(0, 0, 0, 0.06)",
+                    border: "1px solid var(--surface-active)",
                     background:
-                      "linear-gradient(rgba(0,0,0,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.018) 1px, transparent 1px), #f9f9f9",
+                      "linear-gradient(rgba(0,0,0,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.018) 1px, transparent 1px), var(--surface-tint)",
                     backgroundSize: "108px 108px, 108px 108px, auto",
                     overflow: "hidden",
                     transform: `scale(${zoom})`,
@@ -917,14 +919,14 @@ export function Storyboard() {
                       height: 8,
                       margin: `-${BOARD_SIDE_PADDING}px -${BOARD_SIDE_PADDING}px 0`,
                       background:
-                        "linear-gradient(90deg, rgba(0, 0, 0, 0.1), transparent 22%, transparent 78%, rgba(0, 0, 0, 0.06))",
+                        "linear-gradient(90deg, var(--border-default), transparent 22%, transparent 78%, var(--surface-active))",
                     }}
                   />
 
                   <TrackHeader
-                    label="Main Shots"
+                    label="Ana Shotlar"
                     tone="accent"
-                    subtitle="Primary continuity arc"
+                    subtitle="Birincil sureklilik arki"
                   />
 
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 0, width: "max-content" }}>
@@ -966,9 +968,9 @@ export function Storyboard() {
                   </div>
 
                   <TrackHeader
-                    label="Coverage & Inserts"
+                    label="Coverage ve Insert'ler"
                     tone="muted"
-                    subtitle="Auxiliary reactions, inserts and alternatives"
+                    subtitle="Yardimci reaksiyonlar, insert'ler ve alternatifler"
                   />
 
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 0, width: "max-content" }}>
@@ -1099,19 +1101,19 @@ function SurfaceActionButton({
         border:
           type === "primary"
             ? "1px solid rgba(0, 0, 0, 0.2)"
-            : "1px solid rgba(0, 0, 0, 0.08)",
+            : "1px solid var(--glass-border)",
         background:
           type === "primary"
-            ? "#000000"
-            : "rgba(0, 0, 0, 0.04)",
-        color: type === "primary" ? "#ffffff" : "var(--text-primary)",
+            ? "var(--accent)"
+            : "var(--surface-hover)",
+        color: type === "primary" ? "var(--on-accent)" : "var(--text-primary)",
         fontSize: 13,
         fontWeight: type === "primary" ? 800 : 700,
         letterSpacing: "0.02em",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.48 : 1,
         boxShadow:
-          type === "primary" && !disabled ? "0 4px 12px rgba(0, 0, 0, 0.12)" : "none",
+          type === "primary" && !disabled ? "0 4px 12px var(--border-default)" : "none",
       }}
       type="button"
     >
@@ -1138,9 +1140,9 @@ function HeroInfoPill({
         padding: "8px 12px",
         borderRadius: 999,
         border: `1px solid ${
-          accent ? "rgba(0, 0, 0, 0.12)" : "rgba(0, 0, 0, 0.06)"
+          accent ? "var(--border-default)" : "var(--surface-active)"
         }`,
-        background: accent ? "rgba(0, 0, 0, 0.04)" : "rgba(0, 0, 0, 0.02)",
+        background: accent ? "var(--surface-hover)" : "rgba(0, 0, 0, 0.02)",
       }}
     >
       <span
@@ -1184,9 +1186,9 @@ function BoardMetaPill({
         padding: "9px 12px",
         borderRadius: 999,
         border: `1px solid ${
-          accent ? "rgba(0, 0, 0, 0.12)" : "rgba(0, 0, 0, 0.06)"
+          accent ? "var(--border-default)" : "var(--surface-active)"
         }`,
-        background: accent ? "rgba(0, 0, 0, 0.04)" : "rgba(0, 0, 0, 0.02)",
+        background: accent ? "var(--surface-hover)" : "rgba(0, 0, 0, 0.02)",
         color: accent ? "var(--accent)" : "var(--text-secondary)",
         fontSize: 12,
         fontWeight: 600,
@@ -1217,8 +1219,8 @@ function ZoomControlButton({
         width: 34,
         height: 34,
         borderRadius: 999,
-        border: "1px solid rgba(0, 0, 0, 0.08)",
-        background: "#ffffff",
+        border: "1px solid var(--glass-border)",
+        background: "var(--surface-card)",
         color: "var(--text-secondary)",
         cursor: "pointer",
       }}
@@ -1262,8 +1264,8 @@ function MetricCard({
               text: "var(--status-success)",
             }
           : {
-              border: "rgba(0, 0, 0, 0.12)",
-              glow: "rgba(0, 0, 0, 0.04)",
+              border: "var(--border-default)",
+              glow: "var(--surface-hover)",
               text: "var(--accent)",
             };
 
@@ -1278,8 +1280,8 @@ function MetricCard({
         border: `1px solid ${tokens.border}`,
         background:
           emphasized
-            ? `linear-gradient(180deg, ${tokens.glow}, transparent 48%), #ffffff`
-            : "#ffffff",
+            ? `linear-gradient(180deg, ${tokens.glow}, transparent 48%), var(--surface-card)`
+            : "var(--surface-card)",
         boxShadow: emphasized ? `0 18px 44px ${tokens.glow}` : "none",
       }}
     >
@@ -1322,7 +1324,7 @@ function TrackHeader({
             padding: "7px 12px",
             borderRadius: 999,
             background:
-              tone === "accent" ? "rgba(0, 0, 0, 0.06)" : "rgba(0, 0, 0, 0.03)",
+              tone === "accent" ? "var(--surface-active)" : "rgba(0, 0, 0, 0.03)",
             color: tone === "accent" ? "var(--accent)" : "var(--text-secondary)",
             fontSize: 10,
             fontWeight: 800,
@@ -1338,8 +1340,8 @@ function TrackHeader({
             height: 1,
             background:
               tone === "accent"
-                ? "linear-gradient(90deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.02))"
-                : "linear-gradient(90deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.02))",
+                ? "linear-gradient(90deg, var(--border-default), rgba(0, 0, 0, 0.02))"
+                : "linear-gradient(90deg, var(--glass-border), rgba(0, 0, 0, 0.02))",
           }}
         />
       </div>
@@ -1360,7 +1362,7 @@ function SequenceBadge({ caption, index }: { caption: string; index: number }) {
           color: "var(--text-muted)",
         }}
       >
-        Sequence {String(index + 1).padStart(2, "0")}
+        Sira {String(index + 1).padStart(2, "0")}
       </span>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div
@@ -1368,7 +1370,7 @@ function SequenceBadge({ caption, index }: { caption: string; index: number }) {
             width: 72,
             height: 2,
             borderRadius: 999,
-            background: "linear-gradient(90deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.04))",
+            background: "linear-gradient(90deg, rgba(0, 0, 0, 0.2), var(--surface-hover))",
           }}
         />
         <span
@@ -1416,8 +1418,8 @@ function InlineConnector({ isLinked }: { isLinked: boolean }) {
             height: 2,
             borderRadius: 999,
             background: isLinked
-              ? "linear-gradient(90deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4))"
-              : "linear-gradient(90deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.14))",
+              ? "linear-gradient(90deg, var(--glass-border), var(--backdrop-bg))"
+              : "linear-gradient(90deg, var(--surface-active), rgba(0, 0, 0, 0.14))",
           }}
         />
         <div
@@ -1444,7 +1446,7 @@ function InlineConnector({ isLinked }: { isLinked: boolean }) {
             color: isLinked ? "var(--accent)" : "var(--text-muted)",
           }}
         >
-          {isLinked ? "Continue" : "Cut"}
+          {isLinked ? "Devam" : "Kes"}
         </span>
       </div>
     </div>
@@ -1460,8 +1462,8 @@ function CoverageEmptyState() {
         display: "grid",
         placeItems: "center",
         borderRadius: 22,
-        border: "1px dashed rgba(0,0,0,0.1)",
-        background: "rgba(0,0,0,0.02)",
+        border: "1px dashed var(--border-default)",
+        background: "var(--surface-hover)",
         color: "var(--text-muted)",
         textAlign: "center",
       }}
@@ -1475,7 +1477,7 @@ function CoverageEmptyState() {
             textTransform: "uppercase",
           }}
         >
-          Coverage Slot Empty
+          Coverage Slotu Bos
         </span>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           Bu beat icin alternatif veya insert shot eklenmedi.
@@ -1486,46 +1488,16 @@ function CoverageEmptyState() {
 }
 function StoryboardEmptyState({ onImport }: { onImport: () => void }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        placeItems: "center",
-        minHeight: 420,
-        padding: 24,
-      }}
-    >
-      <div
-        style={{
-          display: "grid",
-          justifyItems: "center",
-          gap: 14,
-          maxWidth: 360,
-          textAlign: "center",
-        }}
-      >
-        <div
-          style={{
-            width: 72,
-            height: 72,
-            display: "grid",
-            placeItems: "center",
-            borderRadius: 999,
-            background: "rgba(0, 0, 0, 0.04)",
-            color: "var(--accent)",
-          }}
-        >
-          <Download size={28} />
-        </div>
-        <div style={{ fontSize: 22, fontWeight: 600 }}>Storyboard bos</div>
-        <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-          Film-kit ile uretilen outputs klasorunu import ederek shot zincirini ve
-          coverage katmanlarini olustur.
-        </p>
+    <ProEmptyState
+      icon={Clapperboard}
+      title="Storyboard bos"
+      description="Markdown dosyalarindan shot'lari ice aktarin veya manuel ekleyin."
+      action={
         <button className="btn-primary" onClick={() => void onImport()} type="button">
           <Download size={15} />
-          Film-kit Import
+          Film-kit Ice Aktar
         </button>
-      </div>
-    </div>
+      }
+    />
   );
 }

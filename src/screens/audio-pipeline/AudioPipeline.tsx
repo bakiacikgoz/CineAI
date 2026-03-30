@@ -2,17 +2,26 @@ import { startTransition, type CSSProperties, useEffect, useMemo, useState } fro
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import {
+  AlertTriangle,
   AudioLines,
+  CheckCircle2,
+  CircleDot,
+  FileAudio,
+  Filter,
   Mic2,
   PlayCircle,
   RefreshCw,
+  Save,
+  Search,
   Sparkles,
   UserRound,
   Waves,
 } from "lucide-react";
+import { CollapsibleSection, MetricCard, ProCard, ToggleSwitch, SegmentGroup, StatusDot, ProEmptyState } from "@/components/ui";
 import { listCharacters, type CharacterRecord } from "@/services/character.service";
 import { DialogueTextEditor } from "@/components/audio/DialogueTextEditor";
 import { DialoguePerformanceEditor } from "@/components/audio/DialoguePerformanceEditor";
+import { VoiceoverTextEditor } from "@/components/audio/VoiceoverTextEditor";
 import {
   clearAudioSpeakerAlias,
   clearAudioSpeakerVoiceBinding,
@@ -33,6 +42,8 @@ import {
   setAudioSpeakerVoiceBinding,
   setCharacterVoiceBinding,
   clearDialogueTextOverride,
+  saveVoiceoverText,
+  clearVoiceoverText,
   type AudioSpeakerAliasRecord,
   type AudioSpeakerVoiceBindingRecord,
   type CharacterVoiceBindingRecord,
@@ -49,6 +60,7 @@ import {
   enqueueAudioDialogueJob,
   enqueueBulkAudioDialogueJobs,
 } from "@/services/jobqueue.service";
+import { getShots, type ShotRow } from "@/services/import.service";
 import { useProjectStore } from "@/store/project.store";
 
 function toAbsoluteProjectPath(projectFolderPath: string, relativePath: string): string {
@@ -68,25 +80,6 @@ function formatAudioTakeCreatedAt(value: number): string {
   }).format(value);
 }
 
-function statusColor(status: string): string {
-  if (status === "done") {
-    return "var(--status-success)";
-  }
-
-  if (status === "error") {
-    return "var(--status-error)";
-  }
-
-  if (status === "blocked") {
-    return "var(--text-primary)";
-  }
-
-  if (status === "queued" || status === "generating") {
-    return "rgba(147,197,253,0.95)";
-  }
-
-  return "var(--text-muted)";
-}
 
 function normalizeVoiceMetadataValue(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
@@ -188,6 +181,7 @@ function mergeTurkishVoiceCatalogPages(
 export function AudioPipeline() {
   const activeProject = useProjectStore((state) => state.activeProject);
   const [shots, setShots] = useState<DialogueAudioShot[]>([]);
+  const [allProjectShots, setAllProjectShots] = useState<ShotRow[]>([]);
   const [characters, setCharacters] = useState<CharacterRecord[]>([]);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
   const [turkishVoiceCatalog, setTurkishVoiceCatalog] = useState<ElevenLabsSharedVoice[]>([]);
@@ -210,10 +204,15 @@ export function AudioPipeline() {
   const [showOnlyFreeAllowedCatalogVoices, setShowOnlyFreeAllowedCatalogVoices] = useState(false);
   const [showOnlyFeaturedCatalogVoices, setShowOnlyFeaturedCatalogVoices] = useState(false);
   const [showOnlyPreviewableCatalogVoices, setShowOnlyPreviewableCatalogVoices] = useState(false);
+  const [catalogQuickFilter, setCatalogQuickFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "ready" | "blocked" | "missing" | "voiceover">("all");
+  const [addVoiceoverShotId, setAddVoiceoverShotId] = useState<string | null>(null);
+  const [addVoiceoverDraft, setAddVoiceoverDraft] = useState("");
 
   async function loadScreenData(showSpinner = true) {
     if (!activeProject) {
       setShots([]);
+      setAllProjectShots([]);
       setCharacters([]);
       setVoices([]);
       setTurkishVoiceCatalog([]);
@@ -234,8 +233,9 @@ export function AudioPipeline() {
 
     try {
       await reconcileProjectAudioState(activeProject.id);
-      const [nextShots, nextCharacters, nextBindings, nextAliases, nextSpeakerVoiceBindings] = await Promise.all([
+      const [nextShots, nextAllShots, nextCharacters, nextBindings, nextAliases, nextSpeakerVoiceBindings] = await Promise.all([
         listDialogueAudioShots(activeProject.id),
+        getShots(activeProject.id),
         listCharacters(),
         listCharacterVoiceBindings(),
         listAudioSpeakerAliases(),
@@ -254,6 +254,7 @@ export function AudioPipeline() {
       }
 
       setShots(nextShots);
+      setAllProjectShots(nextAllShots);
       setCharacters(nextCharacters.filter((character) => character.projectId === activeProject.id));
       setVoices(nextVoices);
       setVoiceBindings(nextBindings);
@@ -405,6 +406,14 @@ export function AudioPipeline() {
           ownedVoiceNames.has(normalizeVoiceMetadataValue(voice.name)),
       }))
       .filter(({ voice, alreadyAdded }) => {
+        if (catalogQuickFilter === "turkish" && voice.turkishCompatibilityScore < 4) {
+          return false;
+        }
+
+        if (catalogQuickFilter === "assigned" && !alreadyAdded) {
+          return false;
+        }
+
         if (showOnlyMissingCatalogVoices && alreadyAdded) {
           return false;
         }
@@ -469,6 +478,7 @@ export function AudioPipeline() {
   }, [
     catalogGenderFilter,
     catalogQuery,
+    catalogQuickFilter,
     catalogUseCaseFilter,
     ownedVoiceIds,
     ownedVoiceNames,
@@ -514,6 +524,24 @@ export function AudioPipeline() {
   const readyShots = shots.filter((shot) => shot.isReady);
   const missingMasters = readyShots.filter((shot) => !shot.shot.audioMasterPath);
   const blockedShots = shots.filter((shot) => Boolean(shot.blockerReason));
+  const voiceoverShots = shots.filter((shot) => shot.isVoiceover);
+  const audioShotIds = useMemo(() => new Set(shots.map((s) => s.shot.id)), [shots]);
+  const shotsWithoutAudio = useMemo(
+    () => allProjectShots.filter((s) => !audioShotIds.has(s.id) && !s.isArchived),
+    [allProjectShots, audioShotIds],
+  );
+
+  const filteredShots = useMemo(() => {
+    if (statusFilter === "ready") return readyShots;
+    if (statusFilter === "blocked") return blockedShots;
+    if (statusFilter === "missing") return missingMasters;
+    if (statusFilter === "voiceover") return voiceoverShots;
+    return shots;
+  }, [shots, readyShots, blockedShots, missingMasters, voiceoverShots, statusFilter]);
+
+  function handleStatusFilterClick(filter: "all" | "ready" | "blocked" | "missing" | "voiceover") {
+    setStatusFilter((current) => (current === filter ? "all" : filter));
+  }
 
   async function handleQueueSingleShot(shotId: string) {
     setBusyKey(`shot:${shotId}`);
@@ -735,6 +763,38 @@ export function AudioPipeline() {
     }
   }
 
+  async function handleVoiceoverSave(shotId: string, text: string) {
+    setBusyKey(`voiceover:${shotId}`);
+
+    try {
+      await saveVoiceoverText({ shotId, text });
+      await loadScreenData(false);
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Seslendirme metni kaydedilemedi.",
+        { title: "Seslendirme", kind: "error" },
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleVoiceoverClear(shotId: string) {
+    setBusyKey(`voiceover:${shotId}`);
+
+    try {
+      await clearVoiceoverText(shotId);
+      await loadScreenData(false);
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Seslendirme metni kaldirilmadi.",
+        { title: "Seslendirme", kind: "error" },
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   async function handleGenerationProfileSave(
     shotId: string,
     profile: DialogueGenerationProfile,
@@ -773,332 +833,470 @@ export function AudioPipeline() {
   if (!activeProject) {
     return (
       <section className="screen-shell">
-        <section style={emptyStateStyle}>
-          <AudioLines size={28} />
-          <div style={{ fontSize: 22, fontWeight: 600 }}>Seslendirme</div>
-          <p style={emptyCopyStyle}>Bu paneli kullanmak icin once bir proje ac.</p>
-        </section>
+        <ProEmptyState
+          icon={AudioLines}
+          title="Seslendirme Hatti"
+          description="Bu paneli kullanmak icin once bir proje ac."
+        />
       </section>
     );
   }
 
   return (
     <section className="screen-shell">
-      <section style={screenStyle}>
-        <header style={heroStyle}>
-          <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
-            <span style={eyebrowStyle}>
-              <Mic2 size={13} />
-              Professional dialogue audio
-            </span>
-            <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-              Seslendirme
+      <div style={screenStyle}>
+        {/* ── Hero basligi ─────────────────────────────────── */}
+        <header className="screen-hero">
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, flexWrap: "wrap" }}>
+            <div style={{ display: "grid", gap: 10, maxWidth: 680 }}>
+              <span className="screen-eyebrow">
+                <Mic2 size={13} />
+                Seslendirme Hatti
+              </span>
+              <h1 style={{ margin: 0, fontSize: 26, fontWeight: 700, letterSpacing: "-0.03em", color: "var(--text-primary)" }}>
+                Diyalog Seslendirme
+              </h1>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                Karakter ses eslestirmesi, konusmaci takma adi yonetimi ve toplu seslendirme
+                uretimini bu panelden kontrol et.
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                <StatusDot status="success" label={`${readyShots.length} Hazir`} />
+                <StatusDot status="error" label={`${blockedShots.length} Engelli`} />
+                <StatusDot status="warning" label={`${missingMasters.length} Eksik`} />
+              </div>
             </div>
-            <p style={heroCopyStyle}>
-              Speaker-tagged transcript, karakter voice binding, alias mapping ve bulk queue
-              akislarini bu panelden yonet. Pipeline ElevenLabs `eleven_v3` ile once
-              `wav_44100` dener; plan izin vermiyorsa otomatik `mp3_44100_128` fallback kullanir.
-            </p>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <button
-              className="btn-secondary"
-              disabled={refreshing || catalogLoading}
-              onClick={() => void handleRefresh()}
-              type="button"
-            >
-              <RefreshCw size={14} />
-              {refreshing ? "Yenileniyor..." : "Yenile"}
-            </button>
-            <button
-              className="btn-secondary"
-              disabled={busyKey === "bulk:missing"}
-              onClick={() => void handleBulkQueue("missing")}
-              type="button"
-            >
-              <Waves size={14} />
-              Eksikleri uret
-            </button>
-            <button
-              className="btn-primary"
-              disabled={busyKey === "bulk:all"}
-              onClick={() => void handleBulkQueue("all")}
-              type="button"
-            >
-              <Sparkles size={14} />
-              Tum ready shotlari queue'la
-            </button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <button
+                className="btn-secondary"
+                disabled={refreshing || catalogLoading}
+                onClick={() => void handleRefresh()}
+                type="button"
+              >
+                <RefreshCw size={14} className={refreshing ? "spin-slow" : undefined} />
+                {refreshing ? "Yenileniyor..." : "Yenile"}
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={busyKey === "bulk:missing"}
+                onClick={() => void handleBulkQueue("missing")}
+                type="button"
+              >
+                <Waves size={14} />
+                Eksikleri uret
+              </button>
+              <button
+                className="btn-primary"
+                disabled={busyKey === "bulk:all"}
+                onClick={() => void handleBulkQueue("all")}
+                type="button"
+              >
+                <Sparkles size={14} />
+                Toplu uretim baslat
+              </button>
+            </div>
           </div>
         </header>
 
-        <section style={summaryGridStyle}>
-          <SummaryCard label="Dialogue shot" value={String(shots.length)} detail="Parse edilen toplam diyalog shot" />
-          <SummaryCard label="Ready" value={String(readyShots.length)} detail="Voice ve alias blocker'i yok" />
-          <SummaryCard label="Blocked" value={String(blockedShots.length)} detail="Speaker, alias veya voice mapping bekliyor" />
-          <SummaryCard label="Missing WAV" value={String(missingMasters.length)} detail="Hazir ama master dosyasi eksik" />
+        {/* ── Durum metrikleri (tiklanabilir filtre) ──────── */}
+        <section style={metricsGridStyle}>
+          <div
+            onClick={() => handleStatusFilterClick("all")}
+            style={{ cursor: "pointer", opacity: statusFilter === "all" ? 1 : 0.65, transition: "opacity 150ms ease" }}
+          >
+            <MetricCard
+              icon={AudioLines}
+              label="Toplam Diyalog"
+              value={shots.length}
+              description="Ayristirilan diyalog shot sayisi"
+              accentColor="var(--surface-hover)"
+            />
+          </div>
+          <div
+            onClick={() => handleStatusFilterClick("ready")}
+            style={{ cursor: "pointer", opacity: statusFilter === "ready" ? 1 : 0.65, transition: "opacity 150ms ease" }}
+          >
+            <MetricCard
+              icon={CheckCircle2}
+              label="Hazir"
+              value={readyShots.length}
+              description="Ses ve takma ad eslemesi tamam"
+              accentColor="var(--status-success)"
+            />
+          </div>
+          <div
+            onClick={() => handleStatusFilterClick("blocked")}
+            style={{ cursor: "pointer", opacity: statusFilter === "blocked" ? 1 : 0.65, transition: "opacity 150ms ease" }}
+          >
+            <MetricCard
+              icon={AlertTriangle}
+              label="Engellenen"
+              value={blockedShots.length}
+              description="Takma ad veya ses eslesmesi bekliyor"
+              accentColor="var(--status-error)"
+            />
+          </div>
+          <div
+            onClick={() => handleStatusFilterClick("missing")}
+            style={{ cursor: "pointer", opacity: statusFilter === "missing" ? 1 : 0.65, transition: "opacity 150ms ease" }}
+          >
+            <MetricCard
+              icon={FileAudio}
+              label="Eksik WAV"
+              value={missingMasters.length}
+              description="Hazir ama master dosyasi uretilmedi"
+              accentColor="var(--status-warning)"
+            />
+          </div>
+          <div
+            onClick={() => handleStatusFilterClick("voiceover")}
+            style={{ cursor: "pointer", opacity: statusFilter === "voiceover" ? 1 : 0.65, transition: "opacity 150ms ease" }}
+          >
+            <MetricCard
+              icon={Waves}
+              label="Seslendirme"
+              value={voiceoverShots.length}
+              description="Diyalog disinda seslendirme metni olan shot"
+              accentColor="rgba(99,102,241,0.7)"
+            />
+          </div>
         </section>
 
+        {/* ── ElevenLabs uyarisi ──────────────────────────── */}
         {voiceWarning ? (
-          <section style={warningBannerStyle}>
-            <strong style={{ color: "var(--text-primary)" }}>ElevenLabs setup gerekli</strong>
-            <span style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              {voiceWarning} Voice binding dropdown'lari bos kalabilir; once Ayarlar ekranindan
-              ElevenLabs API key ekle.
-            </span>
-          </section>
+          <ProCard
+            title="ElevenLabs Kurulumu Gerekli"
+            subtitle="Ses eslestirme islemleri icin API anahtari sart"
+            borderColor="var(--status-warning)"
+          >
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              {voiceWarning} Ses eslestirme alanlari bos kalabilir. Once <strong>Ayarlar</strong> ekranindan
+              ElevenLabs API anahtarini ekle.
+            </p>
+          </ProCard>
         ) : null}
 
+        {/* ── Ses katalogu ────────────────────────────────── */}
         {!voiceWarning ? (
-          <article style={panelStyle}>
-            <SectionHeader
-              title="Turkce Voice Katalogu"
-              copy="Bu panel Voice Library icindeki Turkce-trained, Turkce aksanli veya Turkce locale dogrulanmis tum uygun sesleri toplar. Istersen tek tek, istersen topluca My Voices listene ekleyebilirsin."
-            />
-            <div style={catalogToolbarStyle}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                <span style={metaPillStyle}>{catalogStats.totalCount} yuklenen voice</span>
-                <span style={metaPillStyle}>{catalogStats.filteredCount} gorunen</span>
-                <span style={metaPillStyle}>{catalogStats.missingCount} eksik</span>
-                <span style={metaPillStyle}>{catalogStats.addedCount} projede var</span>
-                {catalogHasMore ? <span style={metaPillStyle}>daha fazla var</span> : null}
-              </div>
-              <div style={toolbarActionsStyle}>
-                <input
-                  className="studio-field"
-                  onChange={(event) => setCatalogQuery(event.target.value)}
-                  placeholder="Turkce voice ara"
-                  style={catalogSearchStyle}
-                  type="search"
-                  value={catalogQuery}
-                />
-                <label style={checkboxLabelStyle}>
-                  <input
-                    checked={showOnlyMissingCatalogVoices}
-                    onChange={(event) => setShowOnlyMissingCatalogVoices(event.target.checked)}
-                    type="checkbox"
-                  />
-                  Sadece eksikler
-                </label>
-                <button
-                  className="btn-secondary"
-                  disabled={busyKey === "shared:all" || catalogStats.missingCount === 0}
-                  onClick={() => void handleImportAllTurkishVoices()}
-                  type="button"
-                >
-                  {busyKey === "shared:all" ? "Ekleniyor..." : "Tum Turkce sesleri ekle"}
-                </button>
-              </div>
-            </div>
-            <div style={catalogFiltersStyle}>
-              <select
-                className="studio-field"
-                onChange={(event) => setCatalogGenderFilter(event.target.value)}
-                style={catalogFilterSelectStyle}
-                value={catalogGenderFilter}
-              >
-                <option value="all">Tum cinsiyetler</option>
-                {catalogGenderOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="studio-field"
-                onChange={(event) => setCatalogUseCaseFilter(event.target.value)}
-                style={catalogFilterSelectStyle}
-                value={catalogUseCaseFilter}
-              >
-                <option value="all">Tum use case'ler</option>
-                {catalogUseCaseOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-              <label style={checkboxLabelStyle}>
-                <input
-                  checked={showOnlyFreeAllowedCatalogVoices}
-                  onChange={(event) => setShowOnlyFreeAllowedCatalogVoices(event.target.checked)}
-                  type="checkbox"
-                />
-                Sadece free allowed
-              </label>
-              <label style={checkboxLabelStyle}>
-                <input
-                  checked={showOnlyFeaturedCatalogVoices}
-                  onChange={(event) => setShowOnlyFeaturedCatalogVoices(event.target.checked)}
-                  type="checkbox"
-                />
-                Sadece featured
-              </label>
-              <label style={checkboxLabelStyle}>
-                <input
-                  checked={showOnlyPreviewableCatalogVoices}
-                  onChange={(event) => setShowOnlyPreviewableCatalogVoices(event.target.checked)}
-                  type="checkbox"
-                />
-                Preview'li
-              </label>
+          <CollapsibleSection
+            title="Ses Katalogu"
+            subtitle={`${catalogStats.totalCount} ses yuklendi`}
+            defaultOpen={turkishVoiceCatalog.length > 0}
+            headerRight={
               <button
                 className="btn-secondary"
-                disabled={
-                  catalogGenderFilter === "all" &&
-                  catalogUseCaseFilter === "all" &&
-                  !showOnlyFreeAllowedCatalogVoices &&
-                  !showOnlyFeaturedCatalogVoices &&
-                  !showOnlyPreviewableCatalogVoices &&
-                  !showOnlyMissingCatalogVoices &&
-                  !catalogQuery
-                }
-                onClick={() => {
-                  setCatalogQuery("");
-                  setCatalogGenderFilter("all");
-                  setCatalogUseCaseFilter("all");
-                  setShowOnlyFreeAllowedCatalogVoices(false);
-                  setShowOnlyFeaturedCatalogVoices(false);
-                  setShowOnlyPreviewableCatalogVoices(false);
-                  setShowOnlyMissingCatalogVoices(false);
-                }}
+                disabled={busyKey === "shared:all" || catalogStats.missingCount === 0}
+                onClick={() => void handleImportAllTurkishVoices()}
                 type="button"
+                style={{ fontSize: 11, padding: "5px 12px", minHeight: 30 }}
               >
-                Filtreleri temizle
+                {busyKey === "shared:all" ? "Ekleniyor..." : "Tum Turkce sesleri ekle"}
               </button>
-            </div>
-            {catalogQuery && catalogHasMore ? (
-              <div style={mutedStateStyle}>
-                Arama su an yuklenen sayfalarda calisiyor. Daha fazla sonuc icin asagidan yeni sayfa yukleyebilirsin.
+            }
+          >
+            <div style={{ display: "grid", gap: 14 }}>
+              {/* Arama + hizli filtre */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ position: "relative", flex: "1 1 240px", minWidth: 200 }}>
+                  <Search size={14} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }} />
+                  <input
+                    className="studio-field"
+                    onChange={(event) => setCatalogQuery(event.target.value)}
+                    placeholder="Ses ara..."
+                    style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 12, border: "1px solid var(--border-subtle)", background: "var(--bg-base)", color: "var(--text-primary)" }}
+                    type="search"
+                    value={catalogQuery}
+                  />
+                </div>
+                <SegmentGroup
+                  options={[
+                    { key: "all", label: "Tumu" },
+                    { key: "turkish", label: "Turkce" },
+                    { key: "assigned", label: "Atanmis" },
+                  ]}
+                  value={catalogQuickFilter}
+                  onChange={setCatalogQuickFilter}
+                  size="sm"
+                />
+                <div style={{ display: "flex", gap: 8, fontSize: 11, color: "var(--text-muted)" }}>
+                  <span>{catalogStats.filteredCount} gorunen</span>
+                  <span style={{ color: "var(--border-default)" }}>|</span>
+                  <span>{catalogStats.missingCount} eksik</span>
+                  <span style={{ color: "var(--border-default)" }}>|</span>
+                  <span>{catalogStats.addedCount} mevcut</span>
+                </div>
               </div>
-            ) : null}
-            {sharedVoiceWarning ? (
-              <div style={mutedStateStyle}>{sharedVoiceWarning}</div>
-            ) : catalogLoading && turkishVoiceCatalog.length === 0 ? (
-              <div style={mutedStateStyle}>Turkce voice katalogu yukleniyor...</div>
-            ) : turkishVoiceCatalog.length === 0 ? (
-              <div style={mutedStateStyle}>
-                Turkce uyumlu shared voice bulunamadi. Kendi Turkce voice'un varsa asagidaki dropdown'larda yine kullanabilirsin.
-              </div>
-            ) : (
-              <>
-              <div style={sharedVoiceGridStyle}>
-                {filteredTurkishVoiceCatalog.map(({ voice, alreadyAdded }) => {
-                  return (
-                    <article key={`${voice.publicOwnerId}:${voice.voiceId}`} style={sharedVoiceCardStyle}>
-                      <div style={{ display: "grid", gap: 6 }}>
-                        <strong>{voice.name}</strong>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          <span style={metaPillStyle}>TR score {voice.turkishCompatibilityScore}</span>
-                          {voice.language ? <span style={metaPillStyle}>{voice.language}</span> : null}
-                          {voice.locale ? <span style={metaPillStyle}>{voice.locale}</span> : null}
-                          {voice.accent ? <span style={metaPillStyle}>{voice.accent}</span> : null}
-                          {voice.gender ? <span style={metaPillStyle}>{voice.gender}</span> : null}
-                          {voice.useCase ? <span style={metaPillStyle}>{voice.useCase}</span> : null}
-                          {voice.freeUsersAllowed ? <span style={metaPillStyle}>free allowed</span> : null}
-                          {voice.featured ? <span style={metaPillStyle}>featured</span> : null}
-                        </div>
-                        <span style={metaCopyStyle}>
-                          {voice.description ?? voice.descriptive ?? "Turkce akicilik icin one cikan paylasilan ses."}
-                        </span>
-                        <span style={metaCopyStyle}>
-                          {formatCompactCount(voice.clonedByCount)} kullanici eklemis • {formatCompactCount(voice.playApiUsageCharacterCount1y)} API char/1y
-                        </span>
-                        <span style={metaCopyStyle}>
-                          {voice.verifiedLanguages.length > 0
-                            ? `Dogrulanmis diller: ${voice.verifiedLanguages
-                                .map((item) => item.locale ?? item.language ?? item.accent)
-                                .filter(Boolean)
-                                .join(", ")}`
-                            : "Ek verified language verisi yok."}
-                        </span>
-                      </div>
-                      <div style={rowActionsStyle}>
-                        {voice.previewUrl ? (
-                          <audio controls src={voice.previewUrl} style={{ width: 220 }} />
-                        ) : null}
-                        <button
-                          className="btn-secondary"
-                          disabled={alreadyAdded || busyKey === `shared:${voice.voiceId}`}
-                          onClick={() => void handleImportSharedVoice(voice)}
-                          type="button"
-                        >
-                          {alreadyAdded ? "Projede var" : "My Voices'a ekle"}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-              {catalogHasMore ? (
-                <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
+
+              {/* Gelismis filtreler */}
+              <CollapsibleSection
+                title="Gelismis Filtreler"
+                subtitle={
+                  catalogGenderFilter !== "all" || catalogUseCaseFilter !== "all" || showOnlyFreeAllowedCatalogVoices || showOnlyFeaturedCatalogVoices || showOnlyPreviewableCatalogVoices || showOnlyMissingCatalogVoices
+                    ? "Filtre aktif"
+                    : ""
+                }
+                headerRight={
+                  <Filter size={14} style={{ color: "var(--text-muted)" }} />
+                }
+              >
+                <div style={{ display: "grid", gap: 16 }}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <select
+                      className="studio-field"
+                      onChange={(event) => setCatalogGenderFilter(event.target.value)}
+                      style={compactSelectStyle}
+                      value={catalogGenderFilter}
+                    >
+                      <option value="all">Tum cinsiyetler</option>
+                      {catalogGenderOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="studio-field"
+                      onChange={(event) => setCatalogUseCaseFilter(event.target.value)}
+                      style={compactSelectStyle}
+                      value={catalogUseCaseFilter}
+                    >
+                      <option value="all">Tum kullanim alanlari</option>
+                      {catalogUseCaseOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: "grid", gap: 12 }}>
+                    <ToggleSwitch
+                      checked={showOnlyMissingCatalogVoices}
+                      onChange={setShowOnlyMissingCatalogVoices}
+                      label="Sadece eksikler"
+                      description="Projede henuz olmayan sesleri goster"
+                    />
+                    <ToggleSwitch
+                      checked={showOnlyFreeAllowedCatalogVoices}
+                      onChange={setShowOnlyFreeAllowedCatalogVoices}
+                      label="Sadece ucretsiz"
+                      description="Ucretsiz planlarda kullanilabilir sesler"
+                    />
+                    <ToggleSwitch
+                      checked={showOnlyFeaturedCatalogVoices}
+                      onChange={setShowOnlyFeaturedCatalogVoices}
+                      label="Sadece one cikan"
+                      description="ElevenLabs tarafindan one cikarilmis sesler"
+                    />
+                    <ToggleSwitch
+                      checked={showOnlyPreviewableCatalogVoices}
+                      onChange={setShowOnlyPreviewableCatalogVoices}
+                      label="Onizlemeli"
+                      description="Dinlenebilir onizlemesi olan sesler"
+                    />
+                  </div>
                   <button
                     className="btn-secondary"
-                    disabled={catalogLoadingMore}
-                    onClick={() => void loadTurkishVoiceCatalogPage()}
+                    disabled={
+                      catalogGenderFilter === "all" &&
+                      catalogUseCaseFilter === "all" &&
+                      !showOnlyFreeAllowedCatalogVoices &&
+                      !showOnlyFeaturedCatalogVoices &&
+                      !showOnlyPreviewableCatalogVoices &&
+                      !showOnlyMissingCatalogVoices &&
+                      !catalogQuery &&
+                      catalogQuickFilter === "all"
+                    }
+                    onClick={() => {
+                      setCatalogQuery("");
+                      setCatalogQuickFilter("all");
+                      setCatalogGenderFilter("all");
+                      setCatalogUseCaseFilter("all");
+                      setShowOnlyFreeAllowedCatalogVoices(false);
+                      setShowOnlyFeaturedCatalogVoices(false);
+                      setShowOnlyPreviewableCatalogVoices(false);
+                      setShowOnlyMissingCatalogVoices(false);
+                    }}
                     type="button"
+                    style={{ justifySelf: "start" }}
                   >
-                    {catalogLoadingMore ? "Yukleniyor..." : "Daha fazla yukle"}
+                    Filtreleri temizle
                   </button>
                 </div>
+              </CollapsibleSection>
+
+              {/* Katalog icerik durumu */}
+              {catalogQuery && catalogHasMore ? (
+                <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  Arama yuklenen sayfalarda calisiyor. Daha fazla sonuc icin asagidan yeni sayfa yukleyebilirsin.
+                </p>
               ) : null}
-              </>
-            )}
-          </article>
+
+              {sharedVoiceWarning ? (
+                <p style={{ margin: 0, fontSize: 12, color: "var(--status-warning)", lineHeight: 1.6 }}>{sharedVoiceWarning}</p>
+              ) : catalogLoading && turkishVoiceCatalog.length === 0 ? (
+                <ProEmptyState
+                  icon={RefreshCw}
+                  title="Katalog yukleniyor"
+                  description="Turkce ses katalogu hazirlaniyor..."
+                />
+              ) : turkishVoiceCatalog.length === 0 ? (
+                <ProEmptyState
+                  icon={AudioLines}
+                  title="Katalog bos"
+                  description="Turkce uyumlu paylasilan ses bulunamadi. Kendi seslerini asagidaki eslestirme panellerinde kullanabilirsin."
+                />
+              ) : (
+                <>
+                  <div style={voiceGridStyle}>
+                    {filteredTurkishVoiceCatalog.map(({ voice, alreadyAdded }) => (
+                      <article
+                        key={`${voice.publicOwnerId}:${voice.voiceId}`}
+                        style={{
+                          ...voiceCardStyle,
+                          borderColor: alreadyAdded ? "var(--status-success)" : "var(--border-subtle)",
+                          opacity: alreadyAdded ? 0.7 : 1,
+                        }}
+                      >
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                            <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{voice.name}</strong>
+                            {alreadyAdded ? (
+                              <StatusDot status="success" label="Mevcut" />
+                            ) : null}
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {voice.turkishCompatibilityScore >= 10 ? (
+                              <span style={tagStyle}>Turkce Uyumlu</span>
+                            ) : voice.turkishCompatibilityScore >= 4 ? (
+                              <span style={tagStyle}>Kismi Turkce</span>
+                            ) : null}
+                            {voice.gender ? <span style={tagStyle}>{voice.gender}</span> : null}
+                            {voice.useCase ? <span style={tagStyle}>{voice.useCase}</span> : null}
+                            {voice.freeUsersAllowed ? <span style={{ ...tagStyle, color: "var(--status-success)" }}>Ucretsiz</span> : null}
+                            {voice.featured ? <span style={{ ...tagStyle, color: "var(--status-info)" }}>One cikan</span> : null}
+                          </div>
+                          <p style={{ margin: 0, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                            {voice.description ?? voice.descriptive ?? "Turkce akicilik icin uygun paylasilan ses."}
+                          </p>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            {formatCompactCount(voice.clonedByCount)} kullanici
+                            {voice.verifiedLanguages.length > 0
+                              ? ` · Dogrulanan: ${voice.verifiedLanguages
+                                  .map((item) => item.locale ?? item.language ?? item.accent)
+                                  .filter(Boolean)
+                                  .join(", ")}`
+                              : null}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                          {voice.previewUrl ? (
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                const a = new Audio(voice.previewUrl!);
+                                void a.play();
+                              }}
+                              type="button"
+                              style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
+                            >
+                              <PlayCircle size={12} />
+                              Dinle
+                            </button>
+                          ) : null}
+                          <button
+                            className="btn-secondary"
+                            disabled={alreadyAdded || busyKey === `shared:${voice.voiceId}`}
+                            onClick={() => void handleImportSharedVoice(voice)}
+                            type="button"
+                            style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
+                          >
+                            {alreadyAdded ? "Projede mevcut" : "Seslerime ekle"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                  {catalogHasMore ? (
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                      <button
+                        className="btn-secondary"
+                        disabled={catalogLoadingMore}
+                        onClick={() => void loadTurkishVoiceCatalogPage()}
+                        type="button"
+                      >
+                        {catalogLoadingMore ? "Yukleniyor..." : "Daha fazla yukle"}
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </CollapsibleSection>
         ) : null}
 
+        {/* ── Hazir shot yok uyarisi ─────────────────────── */}
         {!voiceWarning && readyShots.length === 0 && shots.length > 0 ? (
-          <section style={warningBannerStyle}>
-            <strong style={{ color: "var(--text-primary)" }}>Ready shot yok</strong>
-            <span style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              Generate ve bulk queue islemleri ancak speaker alias ve karakter voice binding
-              eksikleri kapandiginda ilerler. Asagidaki blocker kartlarini tamamla.
-            </span>
-          </section>
+          <ProCard
+            title="Hazir Shot Yok"
+            subtitle="Uretim baslayamaz"
+            borderColor="var(--status-warning)"
+          >
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              Toplu uretim islemi ancak konusmaci takma adi ve karakter ses eslestirmesi
+              eksikleri tamamlandiginda calisir. Asagidaki eslestirme panellerini kontrol et.
+            </p>
+          </ProCard>
         ) : null}
 
+        {/* ── Yukleniyor durumu ───────────────────────────── */}
         {loading ? (
-          <section style={emptyStateStyle}>
-            <RefreshCw className="spin-slow" size={28} />
-            <div style={{ fontSize: 18, fontWeight: 600 }}>Audio pipeline yukleniyor</div>
-          </section>
+          <ProEmptyState
+            icon={RefreshCw}
+            title="Seslendirme yukleniyor"
+            description="Diyalog pipeline verileri hazirlaniyor..."
+          />
         ) : (
           <>
-            <section style={layoutGridStyle}>
-              <article style={panelStyle}>
-                <SectionHeader
-                  title="Karakter Voice Binding"
-                  copy="Karakter bazli voice secimi degistiginde etkilenen shot masterlari invalid edilir."
-                />
-                <div style={{ display: "grid", gap: 12 }}>
+            {/* ── Karakter ses eslestirme + Takma ad: yan yana grid ── */}
+            <section style={bindingGridStyle}>
+              <ProCard
+                title="Karakter Ses Eslestirmesi"
+                subtitle="Ses secimi degistiginde etkilenen shotlar gecersiz olur"
+              >
+                <div style={{ display: "grid", gap: 10 }}>
                   {characters.length === 0 ? (
-                    <div style={mutedStateStyle}>Projede karakter kaydi bulunmuyor.</div>
+                    <ProEmptyState
+                      icon={UserRound}
+                      title="Karakter yok"
+                      description="Projede karakter kaydi bulunmuyor."
+                    />
                   ) : (
                     characters.map((character) => {
                       const binding = bindingsByCharacterId.get(character.id);
                       const selectedVoice = sortedVoices.find((voice) => voice.voiceId === binding?.voiceId) ?? null;
 
                       return (
-                        <div key={character.id} style={rowCardStyle}>
-                          <div style={{ display: "grid", gap: 4 }}>
-                            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                              <UserRound size={14} />
-                              <strong>{character.name}</strong>
+                        <div key={character.id} style={bindingRowStyle}>
+                          <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <UserRound size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                              <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{character.name}</strong>
                             </div>
-                            <span style={metaCopyStyle}>
-                              {binding?.voiceName ?? "Voice baglanmadi"}
+                            <span style={{ fontSize: 11, color: binding ? "var(--status-success)" : "var(--text-muted)" }}>
+                              {binding?.voiceName ?? "Ses atanmadi"}
                             </span>
                           </div>
-                          <div style={rowActionsStyle}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                             <select
                               className="studio-field"
                               disabled={busyKey === `voice:${character.id}`}
                               onChange={(event) =>
                                 void handleVoiceBindingChange(character.id, event.target.value)
                               }
-                            style={compactSelectStyle}
-                            value={binding?.voiceId ?? ""}
-                          >
-                              <option value="">Voice sec</option>
+                              style={compactSelectStyle}
+                              value={binding?.voiceId ?? ""}
+                            >
+                              <option value="">Ses sec...</option>
                               {sortedVoices.map((voice) => (
                                 <option key={voice.voiceId} value={voice.voiceId}>
                                   {buildVoiceOptionLabel(voice)}
@@ -1106,7 +1304,18 @@ export function AudioPipeline() {
                               ))}
                             </select>
                             {selectedVoice?.previewUrl ? (
-                              <audio controls src={selectedVoice.previewUrl} style={{ width: 220 }} />
+                              <button
+                                className="btn-secondary"
+                                onClick={() => {
+                                  const a = new Audio(selectedVoice.previewUrl!);
+                                  void a.play();
+                                }}
+                                type="button"
+                                style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
+                              >
+                                <PlayCircle size={12} />
+                                Dinle
+                              </button>
                             ) : null}
                           </div>
                         </div>
@@ -1114,26 +1323,36 @@ export function AudioPipeline() {
                     })
                   )}
                 </div>
-              </article>
+              </ProCard>
 
-              <article style={panelStyle}>
-                <SectionHeader
-                  title="Speaker Routing"
-                  copy="Speaker etiketlerini istersen karaktere, istersen dogrudan bir ElevenLabs voice'una bagla."
-                />
-                <div style={{ display: "grid", gap: 12 }}>
+              <ProCard
+                title="Konusmaci Takma Adlari"
+                subtitle="Konusmaci etiketlerini karaktere veya dogrudan sese bagla"
+              >
+                <div style={{ display: "grid", gap: 10 }}>
                   {speakerRoutes.length === 0 ? (
-                    <div style={mutedStateStyle}>Dialogue shot'larda speaker etiketi bulunmuyor.</div>
+                    <ProEmptyState
+                      icon={Mic2}
+                      title="Konusmaci yok"
+                      description="Diyalog shotlarinda konusmaci etiketi bulunmuyor."
+                    />
                   ) : (
                     speakerRoutes.map((speaker) => (
-                      <div key={speaker.speakerKey} style={rowCardStyle}>
-                        <div style={{ display: "grid", gap: 4 }}>
-                          <strong>{speaker.speakerLabel}</strong>
-                          <span style={metaCopyStyle}>
-                            {speaker.shotCount} line {speaker.needsAttention ? "attention gerekiyor" : "hazir"}
+                      <div key={speaker.speakerKey} style={bindingRowStyle}>
+                        <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{speaker.speakerLabel}</strong>
+                            {speaker.needsAttention ? (
+                              <StatusDot status="warning" />
+                            ) : (
+                              <StatusDot status="success" />
+                            )}
+                          </div>
+                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            {speaker.shotCount} satir
                           </span>
                         </div>
-                        <div style={rowActionsStyle}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           <select
                             className="studio-field"
                             disabled={busyKey === `alias:${speaker.speakerKey}`}
@@ -1147,7 +1366,7 @@ export function AudioPipeline() {
                             style={compactSelectStyle}
                             value={aliasesBySpeakerKey.get(speaker.speakerKey)?.characterId ?? ""}
                           >
-                            <option value="">Karakter sec</option>
+                            <option value="">Karakter sec...</option>
                             {characters.map((character) => (
                               <option key={character.id} value={character.id}>
                                 {character.name}
@@ -1167,7 +1386,7 @@ export function AudioPipeline() {
                             style={compactSelectStyle}
                             value={speakerVoiceBindingsBySpeakerKey.get(speaker.speakerKey)?.voiceId ?? ""}
                           >
-                            <option value="">Direkt voice sec</option>
+                            <option value="">Dogrudan ses sec...</option>
                             {sortedVoices.map((voice) => (
                               <option key={voice.voiceId} value={voice.voiceId}>
                                 {buildVoiceOptionLabel(voice)}
@@ -1179,19 +1398,50 @@ export function AudioPipeline() {
                     ))
                   )}
                 </div>
-              </article>
+              </ProCard>
             </section>
 
-            <article style={panelStyle}>
-              <SectionHeader
-                title="Dialogue Shot Listesi"
-                copy="Shot blocker nedeni, speaker cozumleme durumu ve uretilmis master WAV bu listede gorunur."
-              />
+            {/* ── Diyalog shot listesi ────────────────────── */}
+            <ProCard
+              title="Diyalog & Seslendirme Shot Listesi"
+              subtitle={
+                statusFilter !== "all"
+                  ? `${filteredShots.length} / ${shots.length} shot gorunuyor (filtre aktif)`
+                  : `${shots.length} shot (${voiceoverShots.length} seslendirme)`
+              }
+              headerRight={
+                statusFilter !== "all" ? (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setStatusFilter("all")}
+                    type="button"
+                    style={{ fontSize: 11, padding: "5px 12px", minHeight: 28 }}
+                  >
+                    Filtreyi kaldir
+                  </button>
+                ) : null
+              }
+            >
               <div style={{ display: "grid", gap: 12 }}>
-                {shots.length === 0 ? (
-                  <div style={mutedStateStyle}>Dialogue transcript bulunan shot yok.</div>
+                {filteredShots.length === 0 ? (
+                  <ProEmptyState
+                    icon={CircleDot}
+                    title="Shot bulunamadi"
+                    description={statusFilter !== "all" ? "Bu filtreyle eslesen shot yok. Filtreyi kaldirmayi dene." : "Diyalog veya seslendirme metni bulunan shot yok."}
+                    action={
+                      statusFilter !== "all" ? (
+                        <button
+                          className="btn-secondary"
+                          onClick={() => setStatusFilter("all")}
+                          type="button"
+                        >
+                          Filtreyi kaldir
+                        </button>
+                      ) : undefined
+                    }
+                  />
                 ) : (
-                  shots.map((detail) => {
+                  filteredShots.map((detail) => {
                     const activeTake =
                       detail.audioTakes.find((take) => take.isMaster) ?? detail.audioTakes[0] ?? null;
                     const audioSrc = activeTake
@@ -1204,67 +1454,116 @@ export function AudioPipeline() {
                     );
 
                     return (
-                      <article key={detail.shot.id} style={shotCardStyle}>
-                        <div style={{ display: "grid", gap: 10 }}>
+                      <article
+                        key={detail.shot.id}
+                        style={{
+                          ...shotCardStyle,
+                          borderColor: detail.blockerReason
+                            ? "var(--status-error)"
+                            : detail.shot.audioMasterPath
+                              ? "var(--status-success)"
+                              : "var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ display: "grid", gap: 12 }}>
+                          {/* Shot basligi */}
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                            <div style={{ display: "grid", gap: 4 }}>
-                              <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-                                <strong style={{ fontSize: 16 }}>{detail.shot.shotNumber}</strong>
-                                <span style={{ ...statusPillStyle, color: statusColor(detail.shot.audioStatus) }}>
-                                  {detail.shot.audioStatus}
-                                </span>
-                              </div>
-                              <span style={metaCopyStyle}>
-                                {detail.audioDirection?.dialoguePreview ?? "Dialogue preview yok"}
-                              </span>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <strong style={{ fontSize: 15, color: "var(--text-primary)" }}>{detail.shot.shotNumber}</strong>
+                              <StatusDot
+                                status={
+                                  detail.shot.audioStatus === "done" ? "success"
+                                    : detail.shot.audioStatus === "error" ? "error"
+                                    : detail.shot.audioStatus === "blocked" ? "warning"
+                                    : detail.shot.audioStatus === "queued" || detail.shot.audioStatus === "generating" ? "active"
+                                    : "pending"
+                                }
+                                label={
+                                  detail.shot.audioStatus === "done" ? "Tamamlandi"
+                                    : detail.shot.audioStatus === "error" ? "Hata"
+                                    : detail.shot.audioStatus === "blocked" ? "Engellendi"
+                                    : detail.shot.audioStatus === "queued" ? "Kuyrukta"
+                                    : detail.shot.audioStatus === "generating" ? "Uretiliyor"
+                                    : "Bekliyor"
+                                }
+                              />
                             </div>
-
-                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                              {detail.isVoiceover ? (
+                                <span style={{ ...tagStyle, color: "rgba(99,102,241,0.85)", borderColor: "rgba(99,102,241,0.22)" }}>Seslendirme</span>
+                              ) : null}
                               {detail.characterCount ? (
-                                <span style={metaPillStyle}>{detail.characterCount} chars</span>
+                                <span style={tagStyle}>{detail.characterCount} karakter</span>
                               ) : null}
                               {detail.hasDialogueOverride ? (
-                                <span style={metaPillStyle}>edited text</span>
+                                <span style={tagStyle}>Metin duzenlendi</span>
                               ) : null}
                               {detail.hasGenerationProfileOverride ? (
-                                <span style={metaPillStyle}>tone override</span>
+                                <span style={tagStyle}>Ton ayari</span>
                               ) : null}
                               {!detail.generationProfile.useOptimizer ? (
-                                <span style={metaPillStyle}>optimizer off</span>
+                                <span style={tagStyle}>Optimizer kapali</span>
                               ) : null}
                               <button
                                 className="btn-primary"
                                 disabled={busyKey === `shot:${detail.shot.id}`}
                                 onClick={() => void handleQueueSingleShot(detail.shot.id)}
                                 type="button"
+                                style={{ minHeight: 34 }}
                               >
                                 <PlayCircle size={14} />
-                                {activeTake ? "Regenerate" : "Generate"}
+                                {activeTake ? "Yeniden uret" : "Uret"}
                               </button>
                             </div>
                           </div>
 
+                          {/* Diyalog onizleme */}
+                          <p style={{ margin: 0, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                            {detail.audioDirection?.dialoguePreview ?? "Diyalog onizlemesi yok"}
+                          </p>
+
+                          {/* Engel nedeni */}
                           {detail.blockerReason ? (
-                            <div style={blockerStyle}>{detail.blockerReason}</div>
+                            <div style={blockerStyle}>
+                              <AlertTriangle size={13} style={{ flexShrink: 0, color: "var(--status-error)" }} />
+                              <span>{detail.blockerReason}</span>
+                            </div>
                           ) : null}
 
+                          {/* Konusmaci cozumleme satirlari */}
                           {detail.resolvedLines.length > 0 ? (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                               {detail.resolvedLines.map((line, index) => (
-                                <span key={`${detail.shot.id}-${line.speakerKey}-${index}`} style={metaPillStyle}>
-                                  {line.speaker} {"->"} {line.resolvedTargetLabel ?? "unresolved"} {"->"} {line.voiceName ?? line.voiceId ?? "voice missing"}
+                                <span
+                                  key={`${detail.shot.id}-${line.speakerKey}-${index}`}
+                                  style={{
+                                    ...tagStyle,
+                                    color: line.voiceId ? "var(--text-secondary)" : "var(--status-error)",
+                                  }}
+                                >
+                                  {line.speaker} → {line.resolvedTargetLabel ?? "cozumlenmedi"} → {line.voiceName ?? line.voiceId ?? "ses eksik"}
                                 </span>
                               ))}
                             </div>
                           ) : null}
 
-                          <DialogueTextEditor
-                            busy={busyKey === `edit:${detail.shot.id}`}
-                            hasOverride={detail.hasDialogueOverride}
-                            lines={detail.audioDirection?.dialogueLines ?? []}
-                            onClear={() => handleDialogueOverrideClear(detail.shot.id)}
-                            onSave={(lines) => handleDialogueOverrideSave(detail.shot.id, lines)}
-                          />
+                          {/* Metin ve performans duzenleyicileri */}
+                          {detail.isVoiceover ? (
+                            <VoiceoverTextEditor
+                              busy={busyKey === `voiceover:${detail.shot.id}`}
+                              text={detail.shot.audioVoiceoverText}
+                              onSave={(text) => handleVoiceoverSave(detail.shot.id, text)}
+                              onClear={() => handleVoiceoverClear(detail.shot.id)}
+                            />
+                          ) : (
+                            <DialogueTextEditor
+                              busy={busyKey === `edit:${detail.shot.id}`}
+                              hasOverride={detail.hasDialogueOverride}
+                              lines={detail.audioDirection?.dialogueLines ?? []}
+                              onClear={() => handleDialogueOverrideClear(detail.shot.id)}
+                              onSave={(lines) => handleDialogueOverrideSave(detail.shot.id, lines)}
+                            />
+                          )}
 
                           <DialoguePerformanceEditor
                             busy={busyKey === `profile:${detail.shot.id}`}
@@ -1276,41 +1575,28 @@ export function AudioPipeline() {
                             profile={detail.generationProfile}
                           />
 
+                          {/* Ses oynatici */}
                           {audioSrc ? (
-                            <div style={{ display: "grid", gap: 10 }}>
-                              <audio controls src={audioSrc} style={{ width: "100%" }} />
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <audio controls src={audioSrc} style={{ width: "100%", borderRadius: 8 }} />
                               {activeTake ? (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                  <span style={metaPillStyle}>
-                                    master {formatAudioTakeLabel(activeTake)}
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  <span style={tagStyle}>
+                                    Master {formatAudioTakeLabel(activeTake)}
                                   </span>
-                                  <span style={metaPillStyle}>
+                                  <span style={tagStyle}>
                                     {formatAudioTakeCreatedAt(activeTake.createdAt)}
                                   </span>
                                   {activeTake.outputFormat ? (
-                                    <span style={metaPillStyle}>{activeTake.outputFormat}</span>
+                                    <span style={tagStyle}>{activeTake.outputFormat}</span>
                                   ) : null}
                                 </div>
                               ) : null}
                               {historicalTakes.length > 0 ? (
-                                <details
-                                  style={{
-                                    borderRadius: 16,
-                                    border: "1px solid var(--border-subtle)",
-                                    background: "rgba(0,0,0,0.02)",
-                                    padding: "10px 12px",
-                                  }}
+                                <CollapsibleSection
+                                  title={`Onceki kayitlar (${historicalTakes.length})`}
                                 >
-                                  <summary
-                                    style={{
-                                      cursor: "pointer",
-                                      color: "var(--text-secondary)",
-                                      fontSize: 12,
-                                    }}
-                                  >
-                                    Onceki take&apos;ler ({historicalTakes.length})
-                                  </summary>
-                                  <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+                                  <div style={{ display: "grid", gap: 12 }}>
                                     {historicalTakes.map((take) => {
                                       const takeSrc = convertFileSrc(
                                         toAbsoluteProjectPath(activeProject.folderPath, take.relativePath),
@@ -1321,30 +1607,32 @@ export function AudioPipeline() {
                                           key={take.id}
                                           style={{
                                             display: "grid",
-                                            gap: 8,
+                                            gap: 6,
                                             paddingTop: 12,
                                             borderTop: "1px solid var(--border-subtle)",
                                           }}
                                         >
-                                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                            <span style={metaPillStyle}>{formatAudioTakeLabel(take)}</span>
-                                            <span style={metaPillStyle}>
+                                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                            <span style={tagStyle}>{formatAudioTakeLabel(take)}</span>
+                                            <span style={tagStyle}>
                                               {formatAudioTakeCreatedAt(take.createdAt)}
                                             </span>
                                             {take.outputFormat ? (
-                                              <span style={metaPillStyle}>{take.outputFormat}</span>
+                                              <span style={tagStyle}>{take.outputFormat}</span>
                                             ) : null}
                                           </div>
-                                          <audio controls src={takeSrc} style={{ width: "100%" }} />
+                                          <audio controls src={takeSrc} style={{ width: "100%", borderRadius: 8 }} />
                                         </div>
                                       );
                                     })}
                                   </div>
-                                </details>
+                                </CollapsibleSection>
                               ) : null}
                             </div>
                           ) : (
-                            <div style={mutedStateStyle}>Master WAV henuz uretilmedi.</div>
+                            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
+                              Master WAV henuz uretilmedi.
+                            </p>
                           )}
                         </div>
                       </article>
@@ -1352,277 +1640,204 @@ export function AudioPipeline() {
                   })
                 )}
               </div>
-            </article>
+            </ProCard>
+
+            {/* ── Seslendirme ekle (diyalogsuz shotlar) ──── */}
+            {shotsWithoutAudio.length > 0 ? (
+              <CollapsibleSection
+                title={`Seslendirme eklenebilir shot'lar (${shotsWithoutAudio.length})`}
+              >
+                <div style={{ display: "grid", gap: 8 }}>
+                  {shotsWithoutAudio.map((shot) => (
+                    <div
+                      key={shot.id}
+                      style={{
+                        display: "grid",
+                        gap: 8,
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid var(--border-subtle)",
+                        background: "var(--surface-card)",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                          <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                            {shot.shotNumber}
+                          </strong>
+                          {shot.summaryTr ? (
+                            <span style={{ fontSize: 11, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {shot.summaryTr.slice(0, 100)}
+                            </span>
+                          ) : null}
+                        </div>
+                        {addVoiceoverShotId !== shot.id ? (
+                          <button
+                            className="btn-secondary"
+                            onClick={() => {
+                              setAddVoiceoverShotId(shot.id);
+                              setAddVoiceoverDraft("");
+                            }}
+                            type="button"
+                            style={{ flexShrink: 0, fontSize: 11, minHeight: 30, padding: "4px 12px" }}
+                          >
+                            <Waves size={13} />
+                            Seslendirme ekle
+                          </button>
+                        ) : null}
+                      </div>
+                      {addVoiceoverShotId === shot.id ? (
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <textarea
+                            autoFocus
+                            onChange={(e) => setAddVoiceoverDraft(e.target.value)}
+                            placeholder="Seslendirme metnini buraya yaz..."
+                            rows={3}
+                            style={{
+                              width: "100%",
+                              resize: "vertical",
+                              borderRadius: 12,
+                              border: "1px solid var(--border-default)",
+                              background: "var(--surface-hover)",
+                              padding: "10px 12px",
+                              font: "inherit",
+                              fontSize: 13,
+                              lineHeight: 1.6,
+                              color: "var(--text-primary)",
+                            }}
+                            value={addVoiceoverDraft}
+                          />
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button
+                              className="btn-primary"
+                              disabled={!addVoiceoverDraft.trim() || busyKey === `voiceover:${shot.id}`}
+                              onClick={async () => {
+                                await handleVoiceoverSave(shot.id, addVoiceoverDraft);
+                                setAddVoiceoverShotId(null);
+                                setAddVoiceoverDraft("");
+                              }}
+                              type="button"
+                              style={{ fontSize: 11, minHeight: 30, padding: "4px 12px" }}
+                            >
+                              <Save size={13} />
+                              Kaydet
+                            </button>
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                setAddVoiceoverShotId(null);
+                                setAddVoiceoverDraft("");
+                              }}
+                              type="button"
+                              style={{ fontSize: 11, minHeight: 30, padding: "4px 12px" }}
+                            >
+                              Vazgec
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </CollapsibleSection>
+            ) : null}
           </>
         )}
-      </section>
+      </div>
     </section>
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <article style={summaryCardStyle}>
-      <span style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-        {label}
-      </span>
-      <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.04em" }}>{value}</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>{detail}</p>
-    </article>
-  );
-}
-
-function SectionHeader({ title, copy }: { title: string; copy: string }) {
-  return (
-    <header style={{ display: "grid", gap: 4 }}>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>{title}</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>{copy}</p>
-    </header>
-  );
-}
+/* ═══════════ STIL SABITLERI ═══════════ */
 
 const screenStyle = {
   display: "grid",
-  gap: 18,
+  gap: 20,
 } satisfies CSSProperties;
 
-const heroStyle = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: 18,
-  padding: 22,
-  borderRadius: 26,
-  border: "1px solid var(--border-subtle)",
-  background:
-    "linear-gradient(140deg, rgba(59,130,246,0.06), transparent 36%), var(--bg-surface)",
-  flexWrap: "wrap",
-} satisfies CSSProperties;
-
-const eyebrowStyle = {
-  display: "inline-flex",
-  width: "fit-content",
-  alignItems: "center",
-  gap: 8,
-  borderRadius: 999,
-  border: "1px solid rgba(59,130,246,0.22)",
-  background: "rgba(59,130,246,0.08)",
-  padding: "6px 10px",
-  fontSize: 11,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: "rgba(147,197,253,0.95)",
-} satisfies CSSProperties;
-
-const heroCopyStyle = {
-  margin: 0,
-  color: "var(--text-secondary)",
-  lineHeight: 1.7,
-} satisfies CSSProperties;
-
-const summaryGridStyle = {
+const metricsGridStyle = {
   display: "grid",
   gap: 12,
-  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
 } satisfies CSSProperties;
 
-const warningBannerStyle = {
+const bindingGridStyle = {
   display: "grid",
-  gap: 6,
+  gap: 18,
+  gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))",
+} satisfies CSSProperties;
+
+const voiceGridStyle = {
+  display: "grid",
+  gap: 10,
+  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+} satisfies CSSProperties;
+
+const voiceCardStyle = {
+  display: "grid",
+  gap: 8,
   padding: "14px 16px",
-  borderRadius: 18,
-  border: "1px solid rgba(245,158,11,0.18)",
-  background: "rgba(245,158,11,0.08)",
-} satisfies CSSProperties;
-
-const summaryCardStyle = {
-  display: "grid",
-  gap: 8,
-  padding: 18,
-  borderRadius: 20,
+  borderRadius: 14,
   border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
+  background: "var(--surface-card)",
+  transition: "border-color 150ms ease, opacity 150ms ease",
 } satisfies CSSProperties;
 
-const layoutGridStyle = {
-  display: "grid",
-  gap: 18,
-  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-} satisfies CSSProperties;
-
-const panelStyle = {
-  display: "grid",
-  gap: 14,
-  padding: 20,
-  borderRadius: 24,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
-} satisfies CSSProperties;
-
-const sharedVoiceGridStyle = {
-  display: "grid",
-  gap: 12,
-  gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-} satisfies CSSProperties;
-
-const sharedVoiceCardStyle = {
-  display: "grid",
-  gap: 12,
-  padding: "16px 18px",
-  borderRadius: 18,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-elevated)",
-} satisfies CSSProperties;
-
-const catalogToolbarStyle = {
+const bindingRowStyle = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   gap: 12,
-  flexWrap: "wrap",
-} satisfies CSSProperties;
-
-const catalogFiltersStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  flexWrap: "wrap",
-} satisfies CSSProperties;
-
-const toolbarActionsStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  flexWrap: "wrap",
-} satisfies CSSProperties;
-
-const catalogSearchStyle = {
-  minWidth: 220,
-  padding: "10px 12px",
-  borderRadius: 14,
-} satisfies CSSProperties;
-
-const catalogFilterSelectStyle = {
-  minWidth: 170,
-  padding: "10px 12px",
-  borderRadius: 14,
-} satisfies CSSProperties;
-
-const checkboxLabelStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 8,
-  color: "var(--text-secondary)",
-  fontSize: 12,
-} satisfies CSSProperties;
-
-const rowCardStyle = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 14,
-  padding: "14px 16px",
-  borderRadius: 18,
+  padding: "12px 14px",
+  borderRadius: 12,
   border: "1px solid var(--border-subtle)",
-  background: "var(--bg-elevated)",
-  flexWrap: "wrap",
-} satisfies CSSProperties;
-
-const rowActionsStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
+  background: "var(--surface-card)",
   flexWrap: "wrap",
 } satisfies CSSProperties;
 
 const compactSelectStyle = {
-  minWidth: 220,
-  padding: "10px 12px",
-  borderRadius: 14,
+  minWidth: 180,
+  padding: "8px 10px",
+  borderRadius: 10,
   border: "1px solid var(--border-default)",
   background: "var(--bg-base)",
   color: "var(--text-primary)",
-} satisfies CSSProperties;
-
-const metaCopyStyle = {
-  color: "var(--text-secondary)",
   fontSize: 12,
-  lineHeight: 1.6,
-} satisfies CSSProperties;
-
-const mutedStateStyle = {
-  color: "var(--text-secondary)",
-  fontSize: 12,
-  lineHeight: 1.6,
 } satisfies CSSProperties;
 
 const shotCardStyle = {
   display: "grid",
   gap: 12,
   padding: "16px 18px",
-  borderRadius: 20,
+  borderRadius: 16,
   border: "1px solid var(--border-subtle)",
-  background: "var(--bg-elevated)",
+  background: "var(--surface-card)",
+  transition: "border-color 150ms ease",
 } satisfies CSSProperties;
 
-const statusPillStyle = {
+const tagStyle = {
   display: "inline-flex",
   alignItems: "center",
-  padding: "5px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(0,0,0,0.08)",
-  background: "rgba(0,0,0,0.03)",
-  fontSize: 11,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-} satisfies CSSProperties;
-
-const metaPillStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "6px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(0,0,0,0.08)",
-  background: "rgba(0,0,0,0.03)",
-  fontSize: 11,
+  gap: 4,
+  padding: "4px 8px",
+  borderRadius: 6,
+  background: "var(--surface-hover)",
+  fontSize: 10,
+  fontWeight: 500 as const,
   color: "var(--text-secondary)",
+  whiteSpace: "nowrap",
 } satisfies CSSProperties;
 
 const blockerStyle = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 8,
   padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid rgba(0,0,0,0.1)",
-  background: "rgba(0,0,0,0.03)",
+  borderRadius: 10,
+  border: "1px solid color-mix(in srgb, var(--status-error) 20%, transparent)",
+  background: "color-mix(in srgb, var(--status-error) 5%, transparent)",
   color: "var(--text-secondary)",
   fontSize: 12,
   lineHeight: 1.6,
 } satisfies CSSProperties;
 
-const emptyStateStyle = {
-  display: "grid",
-  placeItems: "center",
-  gap: 12,
-  minHeight: 320,
-  borderRadius: 24,
-  border: "1px dashed var(--border-default)",
-  background: "var(--bg-surface)",
-  color: "var(--text-muted)",
-  textAlign: "center",
-  padding: 24,
-} satisfies CSSProperties;
-
-const emptyCopyStyle = {
-  margin: 0,
-  maxWidth: 420,
-  color: "var(--text-secondary)",
-  lineHeight: 1.7,
-} satisfies CSSProperties;

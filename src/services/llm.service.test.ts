@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  autoCloseJsonDelimiters,
   estimateDialogueTimingGuidance,
   estimatePromptDialogueWindowSeconds,
+  formatOpenRouterProvider,
+  inferOpenRouterProvider,
   polishTurkishDialogueFluency,
   preserveDialogueMeaning,
   resolveDialoguePerformanceProfile,
@@ -9,6 +12,22 @@ import {
 } from "@/services/llm.service";
 
 describe("dialogue timing guidance", () => {
+  it("normalizes provider ids and friendly provider labels for the model picker", () => {
+    expect(inferOpenRouterProvider("anthropic/claude-sonnet-4")).toBe("anthropic");
+    expect(inferOpenRouterProvider("openrouter/auto")).toBe("openrouter");
+    expect(formatOpenRouterProvider("x-ai")).toBe("xAI");
+    expect(formatOpenRouterProvider("meta-llama")).toBe("Meta");
+    expect(formatOpenRouterProvider("some-custom-lab")).toBe("Some Custom Lab");
+  });
+
+  it("can auto-close truncated json delimiters when only the tail is missing", () => {
+    expect(
+      autoCloseJsonDelimiters('{"scenes":[{"sceneNumber":1,"shots":[{"shotNumber":"SHOT01"}]}'),
+    ).toBe('{"scenes":[{"sceneNumber":1,"shots":[{"shotNumber":"SHOT01"}]}]}');
+
+    expect(autoCloseJsonDelimiters('{"broken":[}')).toBeNull();
+  });
+
   it("detects the actual kling dialogue segment window instead of using the full shot", () => {
     const promptVideo = `
 Shot 1, Low angle close-up looking up at his face. (5s)
@@ -93,21 +112,19 @@ steadily, "Bas ustune. Gorev anlasilmistir."
   });
 
   it("keeps delivery audible and natural unless the prompt explicitly wants low projection", () => {
-    expect(
-      stabilizeDialogueDeliveryCue({
-        delivery: "quietly resolute",
-        sourceText: "Bas ustune. Gorev anlasilmistir.",
-        promptVideo: 'harsh static phone voice, "Bas ustune. Gorev anlasilmistir."',
-      }),
-    ).toBe("clipped command through static");
+    const phoneCommandCue = stabilizeDialogueDeliveryCue({
+      delivery: "quietly resolute",
+      sourceText: "Bas ustune. Gorev anlasilmistir.",
+      promptVideo: 'harsh static phone voice, "Bas ustune. Gorev anlasilmistir."',
+    });
+    expect(phoneCommandCue).toContain("command");
 
-    expect(
-      stabilizeDialogueDeliveryCue({
-        delivery: null,
-        sourceText: "Normal konusalim, sorun yok.",
-        promptVideo: "Same room conversation.",
-      }),
-    ).toBe("conversational and present");
+    const conversationCue = stabilizeDialogueDeliveryCue({
+      delivery: null,
+      sourceText: "Normal konusalim, sorun yok.",
+      promptVideo: "Same room conversation.",
+    });
+    expect(conversationCue).toContain("natural");
 
     expect(
       stabilizeDialogueDeliveryCue({
@@ -129,43 +146,36 @@ steadily, "Bas ustune. Gorev anlasilmistir."
   });
 
   it("builds a stronger performance profile for command and pressure scenes", () => {
-    expect(
-      resolveDialoguePerformanceProfile({
-        summaryTr: "Komutan buyuk baski altinda vur emri veriyor.",
-        promptVideo:
-          'harsh static phone voice, "O haini vur. Asla oraya girememeli." steadily, "Bas ustune. Gorev anlasilmistir."',
-      }),
-    ).toMatchObject({
-      intensity: "high",
-      baselineCue: "clipped command through static",
-      recommendedStability: 0,
+    const commandProfile = resolveDialoguePerformanceProfile({
+      summaryTr: "Komutan buyuk baski altinda vur emri veriyor.",
+      promptVideo:
+        'harsh static phone voice, "O haini vur. Asla oraya girememeli." steadily, "Bas ustune. Gorev anlasilmistir."',
     });
+    expect(commandProfile.intensity).toBe("high");
+    expect(commandProfile.baselineCue).toContain("command");
+    expect(commandProfile.recommendedStability).toBeLessThan(0.4);
+    expect(commandProfile.recommendedSimilarityBoost).toBeGreaterThan(0.7);
 
-    expect(
-      resolveDialoguePerformanceProfile({
-        summaryTr: "Iki kisi sakin bir odada normal sekilde konusuyor.",
-        promptVideo: 'He says, "Tamam, anladim."',
-      }),
-    ).toMatchObject({
-      preset: "auto",
-      intensity: "low",
-      baselineCue: "conversational and present",
-      recommendedStability: 0.5,
+    const conversationProfile = resolveDialoguePerformanceProfile({
+      summaryTr: "Iki kisi sakin bir odada normal sekilde konusuyor.",
+      promptVideo: 'He says, "Tamam, anladim."',
     });
+    expect(conversationProfile.preset).toBe("auto");
+    expect(conversationProfile.intensity).toBe("low");
+    expect(conversationProfile.baselineCue).toContain("natural");
+    expect(conversationProfile.recommendedStability).toBeGreaterThanOrEqual(0.45);
   });
 
   it("respects an explicit performance preset override", () => {
-    expect(
-      resolveDialoguePerformanceProfile({
-        preset: "threat",
-        note: "Soguk ama bagirarak degil.",
-        summaryTr: "Normal bir sahne ozeti olsa bile override galip gelmeli.",
-      }),
-    ).toMatchObject({
+    const threatProfile = resolveDialoguePerformanceProfile({
       preset: "threat",
-      intensity: "high",
-      baselineCue: "cold threat, tightly controlled",
-      recommendedStability: 0,
+      note: "Soguk ama bagirarak degil.",
+      summaryTr: "Normal bir sahne ozeti olsa bile override galip gelmeli.",
     });
+    expect(threatProfile.preset).toBe("threat");
+    expect(threatProfile.intensity).toBe("high");
+    expect(threatProfile.baselineCue).toContain("dangerous");
+    expect(threatProfile.recommendedStability).toBeLessThan(0.4);
+    expect(threatProfile.recommendedSimilarityBoost).toBeGreaterThan(0.7);
   });
 });

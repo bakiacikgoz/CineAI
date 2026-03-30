@@ -136,7 +136,8 @@ export interface GenerateDialogueWithTimestampsParams {
   lines: DialogueLineInput[];
   outputPath: string;
   outputFormat?: string;
-  stability?: 0 | 0.5 | 1;
+  stability?: number;
+  similarityBoost?: number;
   useSpeakerBoost?: boolean;
   seed?: number;
   apiKeyOverride?: string;
@@ -662,7 +663,8 @@ export async function generateDialogueWithTimestamps(
   const requestBody = {
     model_id: ELEVENLABS_DIALOGUE_MODEL_ID,
     language_code: ELEVENLABS_LANGUAGE_CODE,
-    stability: params.stability ?? 0.5,
+    stability: Math.max(0, Math.min(1, params.stability ?? 0.5)),
+    similarity_boost: Math.max(0, Math.min(1, params.similarityBoost ?? 0.78)),
     use_speaker_boost: params.useSpeakerBoost ?? true,
     seed: params.seed,
     apply_text_normalization: "auto",

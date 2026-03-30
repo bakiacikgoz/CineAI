@@ -20,6 +20,7 @@ import {
   type CostRange,
 } from "@/services/cost-dashboard.service";
 import { useProjectStore } from "@/store/project.store";
+import { SegmentGroup, ProEmptyState } from "@/components/ui";
 
 const RANGE_OPTIONS: Array<{ value: CostRange; label: string }> = [
   { value: "7d", label: "Son 7 gun" },
@@ -27,6 +28,8 @@ const RANGE_OPTIONS: Array<{ value: CostRange; label: string }> = [
   { value: "90d", label: "Son 90 gun" },
   { value: "all", label: "Tum zamanlar" },
 ];
+
+const SEGMENT_OPTIONS = RANGE_OPTIONS.map((o) => ({ key: o.value, label: o.label }));
 
 export function CostDashboard() {
   const activeProject = useProjectStore((state) => state.activeProject);
@@ -87,7 +90,7 @@ export function CostDashboard() {
               icon: <DollarSign size={16} />,
             },
             {
-              label: "Image",
+              label: "Gorsel",
               value: formatUsd(overview.imageUsd),
               detail: `${overview.byType.find((row) => row.type === "image")?.count ?? 0} is`,
               icon: <ImageIcon size={16} />,
@@ -111,7 +114,7 @@ export function CostDashboard() {
               icon: <AudioLines size={16} />,
             },
             {
-              label: "Asset-backed spend",
+              label: "Dosyaya inen harcama",
               value: formatUsd(overview.assetBackedUsd),
               detail: "Dosyaya inmis uretimler",
               icon: <BarChart3 size={16} />,
@@ -119,7 +122,7 @@ export function CostDashboard() {
             {
               label: "Gunluk ortalama",
               value: formatUsd(overview.avgDailyUsd),
-              detail: range === "all" ? "Tum timeline" : RANGE_OPTIONS.find((item) => item.value === range)?.label ?? "",
+              detail: range === "all" ? "Tum zamanlar" : RANGE_OPTIONS.find((item) => item.value === range)?.label ?? "",
               icon: <Sparkles size={16} />,
             },
           ]
@@ -136,7 +139,7 @@ export function CostDashboard() {
 
     try {
       const destination = await save({
-        title: "Cost dashboard CSV export",
+        title: "Harcama paneli CSV indirme",
         defaultPath: `cineai-costs-${range}.csv`,
         filters: [{ name: "CSV", extensions: ["csv"] }],
       });
@@ -157,9 +160,10 @@ export function CostDashboard() {
   if (!activeProject) {
     return (
       <section className="screen-shell">
-        <DashboardState
-          copy="Harcamalari gormek icin once bir proje ac."
-          title="Cost Dashboard"
+        <ProEmptyState
+          icon={DollarSign}
+          title="Harcama Analizi"
+          description="Harcamalari gormek icin once bir proje ac."
         />
       </section>
     );
@@ -172,14 +176,14 @@ export function CostDashboard() {
           <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
             <span style={eyebrowStyle}>
               <DollarSign size={13} />
-              Spend intelligence
+              Harcama Analizi
             </span>
             <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-              Cost Dashboard
+              Harcama Analizi
             </div>
             <p style={copyStyle}>
               Cost log ve asset kayitlarindan uretilen harcama panosu. Model bazli dagilim,
-              shot maliyetleri ve zaman icindeki spend egilimini bu panelde izleyebilirsin.
+              shot maliyetleri ve zaman icindeki harcama egilimini bu panelde izleyebilirsin.
             </p>
           </div>
 
@@ -195,38 +199,31 @@ export function CostDashboard() {
               type="button"
             >
               <Download size={14} />
-              {exporting ? "Export..." : "CSV Export"}
+              {exporting ? "Indiriliyor..." : "CSV Indir"}
             </button>
           </div>
         </header>
 
         <section style={toolbarStyle}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {RANGE_OPTIONS.map((option) => (
-              <button
-                className={range === option.value ? "btn-primary" : "btn-secondary"}
-                key={option.value}
-                onClick={() => setRange(option.value)}
-                style={range === option.value ? activeRangeButtonStyle : rangeButtonStyle}
-                type="button"
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <SegmentGroup
+            options={SEGMENT_OPTIONS}
+            value={range}
+            onChange={(key) => setRange(key as CostRange)}
+          />
           <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
             {overview ? `${overview.recentLogs.length} son hareket gosteriliyor` : "Filtre sec"}
           </div>
         </section>
 
         {loading ? (
-          <DashboardState title="Yukleniyor..." copy="Maliyet verileri okunuyor." />
+          <ProEmptyState icon={DollarSign} title="Yukleniyor..." description="Maliyet verileri okunuyor." />
         ) : error ? (
-          <DashboardState title="Yuklenemedi" copy={error} />
+          <ProEmptyState icon={DollarSign} title="Yuklenemedi" description={error} />
         ) : !overview || overview.totalUsd <= 0 ? (
-          <DashboardState
+          <ProEmptyState
+            icon={DollarSign}
             title="Harcama verisi yok"
-            copy="Bu projede cost log kaydi bulunmuyor. Uretim, video veya upscale akisi calistiginda panel dolacak."
+            description="Bu projede cost log kaydi bulunmuyor. Uretim, video veya upscale akisi calistiginda panel dolacak."
           />
         ) : (
           <>
@@ -245,8 +242,8 @@ export function CostDashboard() {
             <section style={twoColumnGridStyle}>
               <article style={panelStyle}>
                 <SectionHeader
-                  copy="Gunluk toplam spend egilimi"
-                  title="Spend trend"
+                  copy="Gunluk toplam harcama egilimi"
+                  title="Harcama egilimi"
                 />
                 <TrendChart data={overview.daily} />
               </article>
@@ -254,7 +251,7 @@ export function CostDashboard() {
               <article style={panelStyle}>
                 <SectionHeader
                   copy="En pahali modeller ve is tipleri"
-                  title="Dagilim"
+                  title="Model dagilimi"
                 />
                 <div style={{ display: "grid", gap: 18 }}>
                   <BarList
@@ -281,7 +278,7 @@ export function CostDashboard() {
               <article style={panelStyle}>
                 <SectionHeader
                   copy="Shot bazli toplam harcama"
-                  title="Shot costs"
+                  title="Shot maliyetleri"
                 />
                 <div style={tableWrapStyle}>
                   <table style={tableStyle}>
@@ -308,7 +305,7 @@ export function CostDashboard() {
               <article style={panelStyle}>
                 <SectionHeader
                   copy="En yeni maliyet loglari"
-                  title="Recent ledger"
+                  title="Son islemler"
                 />
                 <div style={tableWrapStyle}>
                   <table style={tableStyle}>
@@ -341,7 +338,7 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
   if (data.length === 0) {
     return (
       <div style={chartEmptyStyle}>
-        Bu aralikta gunluk spend verisi yok.
+        Bu aralikta gunluk harcama verisi yok.
       </div>
     );
   }
@@ -372,8 +369,8 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
       <svg style={chartStyle} viewBox={`0 0 ${width} ${height}`}>
         <defs>
           <linearGradient id="costAreaFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="rgba(0,0,0,0.14)" />
-            <stop offset="100%" stopColor="rgba(0,0,0,0.01)" />
+            <stop offset="0%" stopColor="var(--surface-active)" />
+            <stop offset="100%" stopColor="var(--surface-hover)" />
           </linearGradient>
         </defs>
 
@@ -382,7 +379,7 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
           return (
             <line
               key={tick}
-              stroke="rgba(0,0,0,0.06)"
+              stroke="var(--surface-active)"
               strokeDasharray="4 8"
               x1={paddingX}
               x2={width - paddingX}
@@ -405,7 +402,7 @@ function TrendChart({ data }: { data: CostOverview["daily"] }) {
         {points.map((point) => (
           <g key={point.day}>
             <circle cx={point.x} cy={point.y} fill="var(--accent)" r="4.5" />
-            <circle cx={point.x} cy={point.y} fill="rgba(0,0,0,0.08)" r="10" />
+            <circle cx={point.x} cy={point.y} fill="var(--glass-border)" r="10" />
           </g>
         ))}
       </svg>
@@ -516,17 +513,6 @@ function MetricCard({
   );
 }
 
-function DashboardState({ title, copy }: { title: string; copy: string }) {
-  return (
-    <div style={emptyStateStyle}>
-      <div style={{ display: "grid", gap: 10, justifyItems: "center", maxWidth: 420, textAlign: "center" }}>
-        <DollarSign size={34} style={{ color: "var(--accent)" }} />
-        <div style={{ fontSize: 20, fontWeight: 600 }}>{title}</div>
-        <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>{copy}</p>
-      </div>
-    </div>
-  );
-}
 
 function formatUsd(value: number) {
   return new Intl.NumberFormat("en-US", {
@@ -546,7 +532,7 @@ const heroStyle = {
   padding: 24,
   borderRadius: 28,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(135deg, rgba(0,0,0,0.03), transparent 28%), var(--bg-surface)",
+  background: "linear-gradient(135deg, var(--surface-hover), transparent 28%), var(--bg-surface)",
 } satisfies React.CSSProperties;
 
 const eyebrowStyle = {
@@ -556,8 +542,8 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
   fontSize: 11,
   letterSpacing: "0.08em",
@@ -582,15 +568,6 @@ const toolbarStyle = {
   background: "var(--bg-surface)",
 } satisfies React.CSSProperties;
 
-const rangeButtonStyle = {
-  paddingInline: 16,
-  paddingBlock: 10,
-} satisfies React.CSSProperties;
-
-const activeRangeButtonStyle = {
-  ...rangeButtonStyle,
-  boxShadow: "0 12px 24px rgba(0,0,0,0.08)",
-} satisfies React.CSSProperties;
 
 const metricsGridStyle = {
   display: "grid",
@@ -613,7 +590,7 @@ const metricIconStyle = {
   width: 34,
   height: 34,
   borderRadius: 12,
-  background: "rgba(0,0,0,0.04)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
 } satisfies React.CSSProperties;
 
@@ -638,7 +615,7 @@ const chartStyle = {
   height: 220,
   borderRadius: 18,
   border: "1px solid var(--border-subtle)",
-  background: "linear-gradient(180deg, rgba(0,0,0,0.01), rgba(0,0,0,0.02))",
+  background: "linear-gradient(180deg, var(--surface-hover), var(--surface-hover))",
 } satisfies React.CSSProperties;
 
 const chartAxisStyle = {
@@ -661,14 +638,14 @@ const chartEmptyStyle = {
 const barTrackStyle = {
   height: 10,
   borderRadius: 999,
-  background: "rgba(0,0,0,0.04)",
+  background: "var(--surface-hover)",
   overflow: "hidden",
 } satisfies React.CSSProperties;
 
 const barFillStyle = {
   height: "100%",
   borderRadius: 999,
-  background: "linear-gradient(90deg, rgba(0,0,0,0.7), rgba(0,0,0,0.2))",
+  background: "linear-gradient(90deg, var(--accent), var(--text-muted))",
 } satisfies React.CSSProperties;
 
 const tableWrapStyle = {
@@ -698,7 +675,7 @@ const tdPrimaryStyle = {
   padding: "12px 14px",
   fontSize: 13,
   color: "var(--text-primary)",
-  borderBottom: "1px solid rgba(0,0,0,0.04)",
+  borderBottom: "1px solid var(--surface-hover)",
   whiteSpace: "nowrap",
 } satisfies React.CSSProperties;
 
@@ -707,12 +684,3 @@ const tdMutedStyle = {
   color: "var(--text-secondary)",
 } satisfies React.CSSProperties;
 
-const emptyStateStyle = {
-  display: "grid",
-  placeItems: "center",
-  minHeight: 360,
-  padding: 24,
-  borderRadius: 24,
-  border: "1px dashed var(--border-default)",
-  background: "var(--bg-surface)",
-} satisfies React.CSSProperties;

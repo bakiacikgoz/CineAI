@@ -1,5 +1,6 @@
-import { Download } from "lucide-react";
+import { Download, FileText, Film, Link } from "lucide-react";
 import { type ImportPreview } from "@/services/import.service";
+import { ModalShell, MetricCard } from "@/components/ui";
 
 interface ImportPreviewModalProps {
   preview: ImportPreview;
@@ -16,44 +17,42 @@ export function ImportPreviewModal({
 }: ImportPreviewModalProps) {
   const isUpdateFlow = preview.existingShotCount > 0;
 
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 220,
-        display: "grid",
-        placeItems: "center",
-        padding: 20,
-        background: "rgba(0, 0, 0, 0.4)",
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <div
-        onClick={(event) => event.stopPropagation()}
-        style={{
-          width: "min(460px, 100%)",
-          display: "grid",
-          gap: 20,
-          padding: 26,
-          borderRadius: 24,
-          border: "1px solid var(--border-default)",
-          background: "#ffffff",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
-        }}
+  const actionButtons = (
+    <>
+      <button className="btn-secondary" disabled={importing} onClick={onClose} type="button">
+        Iptal
+      </button>
+      <button
+        className="btn-primary"
+        disabled={importing}
+        onClick={onConfirm}
+        type="button"
       >
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 24, fontWeight: 600 }}>
-            {isUpdateFlow ? "Shot guncelleme preview" : "Import preview"}
-          </div>
-          <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-            SHOT markdown dosyalari parse edilip storyboard tablosuna uygulanacak.
-            {isUpdateFlow
-              ? " Ayni shot number'a sahip kayitlar yeni markdown icerigiyle guncellenecek."
-              : " Ilk importta yeni shot kayitlari olusturulacak."}
-          </p>
-        </div>
+        <Download size={15} />
+        {importing
+          ? (isUpdateFlow ? "Guncelleniyor..." : "Ice aktariliyor...")
+          : (isUpdateFlow ? "Shot'lari guncelle" : "Ice aktar")}
+      </button>
+    </>
+  );
+
+  return (
+    <ModalShell
+      title="Storyboard Ice Aktar"
+      subtitle={isUpdateFlow
+        ? "Shot'lari guncelle veya yenilerini ekle"
+        : "Shot'lari ice aktar"}
+      onClose={onClose}
+      width="min(460px, 100%)"
+      footer={actionButtons}
+    >
+      <div style={{ display: "grid", gap: 20, padding: 20 }}>
+        <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7, fontSize: 13 }}>
+          SHOT markdown dosyalari parse edilip storyboard tablosuna uygulanacak.
+          {isUpdateFlow
+            ? " Ayni shot numarasina sahip kayitlar yeni markdown icerigiyle guncellenecek."
+            : " Ilk ice aktarmada yeni shot kayitlari olusturulacak."}
+        </p>
 
         <div
           style={{
@@ -62,65 +61,27 @@ export function ImportPreviewModal({
             gap: 12,
           }}
         >
-          <StatCard label="Main shot" value={preview.totalShots} />
-          <StatCard label="Coverage" value={preview.coverageShots} />
-          <StatCard label="Chain" value={preview.chainLinks} />
+          <MetricCard icon={FileText} label="Ana shot" value={preview.totalShots} />
+          <MetricCard icon={Film} label="Coverage" value={preview.coverageShots} />
+          <MetricCard icon={Link} label="Zincir" value={preview.chainLinks} />
         </div>
 
         <div
           style={{
             padding: "14px 16px",
             borderRadius: 16,
-            border: "1px solid var(--border-subtle)",
-            background: "var(--bg-surface)",
+            border: "1px solid rgba(0, 0, 0, 0.06)",
+            background: "rgba(0, 0, 0, 0.02)",
             color: "var(--text-secondary)",
             fontSize: 13,
             lineHeight: 1.7,
           }}
         >
           {preview.files.length} markdown dosyasi islenecek. Mevcut storyboardda{" "}
-          {preview.existingShotCount} shot var. Bu importta {preview.matchedShotCount} shot
+          {preview.existingShotCount} shot var. Bu ice aktarmada {preview.matchedShotCount} shot
           guncellenecek, {preview.newShotCount} yeni shot eklenecek.
         </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button className="btn-secondary" disabled={importing} onClick={onClose} type="button">
-            Iptal
-          </button>
-          <button
-            className="btn-primary"
-            disabled={importing}
-            onClick={onConfirm}
-            type="button"
-          >
-            <Download size={15} />
-            {importing
-              ? (isUpdateFlow ? "Guncelleniyor..." : "Importing...")
-              : (isUpdateFlow ? "Shotlari guncelle" : "Import")}
-          </button>
-        </div>
       </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value }: { label: string; value: number }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 6,
-        padding: "14px 12px",
-        borderRadius: 16,
-        border: "1px solid var(--border-subtle)",
-        background: "rgba(0, 0, 0, 0.03)",
-        textAlign: "center",
-      }}
-    >
-      <strong style={{ fontSize: 24, color: "var(--text-primary)" }}>{value}</strong>
-      <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
-        {label}
-      </span>
-    </div>
+    </ModalShell>
   );
 }

@@ -32,6 +32,9 @@ const PromptLibrary = lazy(async () => ({
 const Settings = lazy(async () => ({
   default: (await import("@/screens/settings/Settings")).Settings,
 }));
+const ScenarioStudio = lazy(async () => ({
+  default: (await import("@/screens/scenario-studio/ScenarioStudio")).ScenarioStudio,
+}));
 const Storyboard = lazy(async () => ({
   default: (await import("@/screens/storyboard/Storyboard")).Storyboard,
 }));
@@ -71,6 +74,7 @@ export function AppRouter() {
         <Route element={<AppLayout />} path="/">
           <Route element={<Navigate replace to="/dashboard" />} index />
           <Route element={withRouteFallback(<Dashboard />)} path="dashboard" />
+          <Route element={withRouteFallback(<ScenarioStudio />)} path="scenario-studio" />
           <Route element={withRouteFallback(<ImageGenerator />)} path="image-generator" />
           <Route element={withRouteFallback(<VideoGenerator />)} path="video-generator" />
           <Route element={withRouteFallback(<Storyboard />)} path="storyboard" />

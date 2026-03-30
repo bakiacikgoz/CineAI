@@ -1,15 +1,10 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
-  type SyntheticEvent,
 } from "react";
-import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { confirm, message, open } from "@tauri-apps/plugin-dialog";
-import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -37,6 +32,11 @@ import {
 } from "lucide-react";
 import { DialoguePerformanceEditor } from "@/components/audio/DialoguePerformanceEditor";
 import { DialogueTextEditor } from "@/components/audio/DialogueTextEditor";
+import {
+  ImageEditModal,
+  type ImageEditModalDraft,
+  type ImageEditSubmitPayload,
+} from "@/components/media/ImageEditModal";
 import {
   MediaLightbox,
   type MediaLightboxItem,
@@ -102,9 +102,9 @@ import { useQueueStore, type Job } from "@/store/queue.store";
 
 type DetailView = "start" | "end" | "video";
 type MediaView = DetailView | "audio";
+type RightPanelTab = "genel" | "uretim" | "prompt" | "ses";
 type CandidateGroups = Record<AutonomousStage, AutonomousCandidateAsset[]>;
 type VariantBurstView = DetailView;
-type ImageAspectRatio = "1:1" | "16:9" | "9:16" | "4:3" | "3:2";
 
 type StoryboardMediaVariant = {
   id: string;
@@ -125,45 +125,8 @@ type StoryboardMediaVariant = {
   height: number | null;
 };
 
-type ImageEditDraft = {
-  stage: "start" | "end";
-  variantId: string;
-  variantLabel: string;
-  absolutePath: string;
-  previewUrl: string;
-  width: number | null;
-  height: number | null;
-};
-
-type ImageEditPoint = {
-  x: number;
-  y: number;
-};
-
-type ImageEditStroke = {
-  id: string;
-  color: string;
-  size: number;
-  points: ImageEditPoint[];
-};
 
 const EMPTY_GROUPS: CandidateGroups = { start: [], end: [], video: [] };
-const VARIANT_BURST_OPTIONS = [2, 3, 4, 6] as const;
-const IMAGE_ASPECT_RATIOS: ImageAspectRatio[] = ["1:1", "16:9", "9:16", "4:3", "3:2"];
-const IMAGE_EDIT_COLORS = [
-  "rgba(245,158,11,0.96)",
-  "rgba(59,130,246,0.94)",
-  "rgba(239,68,68,0.94)",
-  "rgba(34,197,94,0.94)",
-  "rgba(255,255,255,0.96)",
-] as const;
-const IMAGE_ASPECT_RATIO_VALUES: Record<ImageAspectRatio, number> = {
-  "1:1": 1,
-  "16:9": 16 / 9,
-  "9:16": 9 / 16,
-  "4:3": 4 / 3,
-  "3:2": 3 / 2,
-};
 
 interface ShotDetailPanelProps {
   shot: ShotRow;
@@ -279,89 +242,6 @@ function buildManualVariantOutputSuffix(
   return `manual_${mode}_${batchKey}_v${String(index + 1).padStart(2, "0")}`;
 }
 
-function inferImageAspectRatioFromVariant(
-  variant: Pick<StoryboardMediaVariant, "width" | "height">,
-): ImageAspectRatio {
-  if (!variant.width || !variant.height) {
-    return "16:9";
-  }
-
-  const assetRatio = variant.width / variant.height;
-  let bestMatch: ImageAspectRatio = "16:9";
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  for (const ratio of IMAGE_ASPECT_RATIOS) {
-    const distance = Math.abs(IMAGE_ASPECT_RATIO_VALUES[ratio] - assetRatio);
-
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestMatch = ratio;
-    }
-  }
-
-  return bestMatch;
-}
-
-function createLocalId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildDefaultImageEditPrompt(prompt: string): string {
-  const trimmedPrompt = prompt.trim();
-  const preserveInstruction =
-    "Preserve the original image composition, subject identity, camera angle, lighting, and all unmarked regions. Apply only subtle local edits that follow the markup and keep the rest of the frame unchanged.";
-
-  return trimmedPrompt.length > 0
-    ? `${trimmedPrompt}\n${preserveInstruction}`
-    : "Apply only the local changes indicated by the markup overlay and keep the rest of the image exactly as it is. Do not redesign the frame.";
-}
-
-function dataUrlToBytes(dataUrl: string): Uint8Array {
-  const base64 = dataUrl.split(",")[1] ?? "";
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
-function inferImageMimeType(path: string): string {
-  const normalizedPath = path.toLowerCase();
-
-  if (normalizedPath.endsWith(".png")) {
-    return "image/png";
-  }
-
-  if (normalizedPath.endsWith(".jpg") || normalizedPath.endsWith(".jpeg")) {
-    return "image/jpeg";
-  }
-
-  if (normalizedPath.endsWith(".webp")) {
-    return "image/webp";
-  }
-
-  if (normalizedPath.endsWith(".gif")) {
-    return "image/gif";
-  }
-
-  return "application/octet-stream";
-}
-
-function clampNormalizedCoordinate(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
-
-function strokePointsToSvgPoints(points: ImageEditPoint[]): string {
-  return points.map((point) => `${point.x},${point.y}`).join(" ");
-}
-
 function describeShotQueueJob(job: Job): string {
   switch (job.type) {
     case "image_start":
@@ -395,13 +275,18 @@ export function ShotDetailPanel({
   const navigate = useNavigate();
   const activeProject = useProjectStore((state) => state.activeProject);
   const [activeMediaView, setActiveMediaView] = useState<MediaView>(initialView);
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("genel");
+  const [prodTargets, setProdTargets] = useState<Record<DetailView, boolean>>({ start: true, end: true, video: false });
+  const [prodMode, setProdMode] = useState<"single" | "multi">("single");
+  const [prodVariantCount, setProdVariantCount] = useState(3);
+  const [characterPickerOpen, setCharacterPickerOpen] = useState(false);
   const [activePromptTab, setActivePromptTab] = useState<DetailView>(initialView);
   const [producing, setProducing] = useState<DetailView | null>(null);
   const [burstProducing, setBurstProducing] = useState<VariantBurstView | null>(null);
   const [groups, setGroups] = useState<CandidateGroups>(EMPTY_GROUPS);
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [shotAssets, setShotAssets] = useState<AssetWithTags[]>([]);
-  const [loadingShotAssets, setLoadingShotAssets] = useState(true);
+  const [, setLoadingShotAssets] = useState(true);
   const [variantIndexByView, setVariantIndexByView] = useState<Record<DetailView, number>>({
     start: 0,
     end: 0,
@@ -433,15 +318,8 @@ export function ShotDetailPanel({
   const [selectedLookId, setSelectedLookId] = useState(shot.characterLookId ?? "");
   const [includeCharacterPrompt, setIncludeCharacterPrompt] = useState(Boolean(shot.includeCharacterPrompt));
   const [lightboxItem, setLightboxItem] = useState<MediaLightboxItem | null>(null);
-  const [imageEditDraft, setImageEditDraft] = useState<ImageEditDraft | null>(null);
-  const [imageEditPrompt, setImageEditPrompt] = useState("");
-  const [imageEditAspectRatio, setImageEditAspectRatio] = useState<ImageAspectRatio>("16:9");
-  const [imageEditStrokes, setImageEditStrokes] = useState<ImageEditStroke[]>([]);
-  const [imageEditBrushColor, setImageEditBrushColor] = useState<string>(IMAGE_EDIT_COLORS[0]);
-  const [imageEditBrushSize, setImageEditBrushSize] = useState(18);
+  const [imageEditDraft, setImageEditDraft] = useState<ImageEditModalDraft | null>(null);
   const [submittingImageEdit, setSubmittingImageEdit] = useState(false);
-  const activeImageEditStrokeIdRef = useRef<string | null>(null);
-  const imageEditStageRef = useRef<HTMLDivElement | null>(null);
   const [videoGenerateAudio, setVideoGenerateAudio] = useState(true);
   const [videoShotType, setVideoShotType] = useState<KlingShotType>("customize");
   const [videoDuration, setVideoDuration] = useState<KlingDuration>(clampKlingDuration(shot.durationS));
@@ -472,11 +350,6 @@ export function ShotDetailPanel({
     setIncludeCharacterPrompt(Boolean(shot.includeCharacterPrompt));
     setLightboxItem(null);
     setImageEditDraft(null);
-    setImageEditPrompt("");
-    setImageEditAspectRatio("16:9");
-    setImageEditStrokes([]);
-    setImageEditBrushColor(IMAGE_EDIT_COLORS[0]);
-    setImageEditBrushSize(18);
   }, [shot.characterId, shot.characterLookId, shot.id, shot.includeCharacterPrompt, shot.promptEnd, shot.promptStart, shot.promptVideo]);
 
   useEffect(() => {
@@ -521,20 +394,11 @@ export function ShotDetailPanel({
         return;
       }
 
-      if (imageEditDraft) {
-        if (submittingImageEdit) {
-          return;
-        }
-
-        closeImageEditModal();
-        return;
-      }
-
       onClose();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [imageEditDraft, onClose, submittingImageEdit]);
+  }, [onClose]);
 
   async function refreshAll() {
     await onRefresh();
@@ -939,13 +803,8 @@ export function ShotDetailPanel({
     Boolean(activeVariant?.path) &&
     activePreviewKind === "image" &&
     activeMediaView !== "video";
-  const canSubmitImageEdit =
-    Boolean(imageEditDraft) &&
-    (imageEditPrompt.trim().length > 0 || imageEditStrokes.length > 0);
   const imageModel = resolveImageModel(shot.model);
-  const defaultVideoDuration = clampKlingDuration(shot.durationS);
   const resolvedVideoDuration = videoDuration;
-  const isVideoDurationOverridden = resolvedVideoDuration !== defaultVideoDuration;
   const promptContent = promptDrafts[activePromptTab];
   const videoPromptAnalysis = analyzeKlingVideoPrompt(promptDrafts.video);
   const selectedCharacter =
@@ -1004,8 +863,6 @@ export function ShotDetailPanel({
     (activePromptTab === "start" && promptDrafts.start !== (shot.promptStart ?? "")) ||
     (activePromptTab === "end" && promptDrafts.end !== (shot.promptEnd ?? "")) ||
     (activePromptTab === "video" && promptDrafts.video !== (shot.promptVideo ?? ""));
-  const activePromptEmpty = !promptContent.trim();
-
   function openActiveMediaPreview() {
     if (!activePreviewUrl || activePreviewKind === "audio") {
       return;
@@ -1049,222 +906,52 @@ export function ShotDetailPanel({
   }
 
   function openImageEditModal(variant: StoryboardMediaVariant) {
-    if (variant.stage === "video" || variant.kind !== "image" || !variant.path || !variant.url) {
-      return;
-    }
-
+    if (variant.stage === "video" || variant.kind !== "image" || !variant.path || !variant.url) return;
     setImageEditDraft({
-      stage: variant.stage,
-      variantId: variant.id,
-      variantLabel: variant.filename,
+      id: variant.id,
+      label: variant.filename,
       absolutePath: toAbsoluteProjectPath(projectFolderPath, variant.path),
       previewUrl: variant.url,
       width: variant.width,
       height: variant.height,
     });
-    setImageEditPrompt("");
-    setImageEditAspectRatio(inferImageAspectRatioFromVariant(variant));
-    setImageEditStrokes([]);
-    setImageEditBrushColor(IMAGE_EDIT_COLORS[0]);
-    setImageEditBrushSize(18);
   }
 
   function closeImageEditModal() {
-    if (submittingImageEdit) {
-      return;
-    }
-
-    activeImageEditStrokeIdRef.current = null;
-    setImageEditDraft(null);
-    setImageEditPrompt("");
-    setImageEditStrokes([]);
-    setImageEditBrushColor(IMAGE_EDIT_COLORS[0]);
-    setImageEditBrushSize(18);
+    if (!submittingImageEdit) setImageEditDraft(null);
   }
 
-  function getImageEditPoint(
-    event: ReactPointerEvent<HTMLDivElement>,
-  ): ImageEditPoint | null {
-    const rect = event.currentTarget.getBoundingClientRect();
-
-    if (rect.width <= 0 || rect.height <= 0) {
-      return null;
-    }
-
-    return {
-      x: clampNormalizedCoordinate((event.clientX - rect.left) / rect.width),
-      y: clampNormalizedCoordinate((event.clientY - rect.top) / rect.height),
-    };
-  }
-
-  function handleImageEditPreviewLoad(event: SyntheticEvent<HTMLImageElement>) {
-    const nextWidth = event.currentTarget.naturalWidth;
-    const nextHeight = event.currentTarget.naturalHeight;
-
-    if (!nextWidth || !nextHeight) {
-      return;
-    }
-
-    setImageEditDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      if (current.width === nextWidth && current.height === nextHeight) {
-        return current;
-      }
-
-      return {
-        ...current,
-        width: nextWidth,
-        height: nextHeight,
-      };
-    });
-  }
-
-  function handleImageEditPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!imageEditDraft || submittingImageEdit) {
-      return;
-    }
-
-    const point = getImageEditPoint(event);
-
-    if (!point) {
-      return;
-    }
-
-    const rect = event.currentTarget.getBoundingClientRect();
-    const strokeId = createLocalId();
-    activeImageEditStrokeIdRef.current = strokeId;
-
-    setImageEditStrokes((current) => [
-      ...current,
-      {
-        id: strokeId,
-        color: imageEditBrushColor,
-        size: imageEditBrushSize / Math.max(rect.width, rect.height),
-        points: [point],
-      },
-    ]);
-
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handleImageEditPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const activeStrokeId = activeImageEditStrokeIdRef.current;
-
-    if (!activeStrokeId || submittingImageEdit) {
-      return;
-    }
-
-    const point = getImageEditPoint(event);
-
-    if (!point) {
-      return;
-    }
-
-    setImageEditStrokes((current) =>
-      current.map((stroke) =>
-        stroke.id === activeStrokeId
-          ? { ...stroke, points: [...stroke.points, point] }
-          : stroke,
-      ),
-    );
-  }
-
-  function handleImageEditPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    activeImageEditStrokeIdRef.current = null;
-
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }
-
-  async function buildImageEditReferencePaths(): Promise<string[]> {
-    if (!imageEditDraft) {
-      throw new Error("Duzenlenecek kare bulunamadi.");
-    }
-
-    if (imageEditStrokes.length === 0) {
-      return [imageEditDraft.absolutePath];
-    }
-
-    const imageBytes = await readFile(imageEditDraft.absolutePath);
-    const sourceUrl = URL.createObjectURL(
-      new Blob([imageBytes], { type: inferImageMimeType(imageEditDraft.absolutePath) }),
-    );
-
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const nextImage = new window.Image();
-      nextImage.onload = () => resolve(nextImage);
-      nextImage.onerror = () => reject(new Error("Referans gorseli yuklenemedi."));
-      nextImage.src = sourceUrl;
-    });
-
+  async function handleImageEditSubmit(payload: ImageEditSubmitPayload) {
+    if (!imageEditDraft) return;
+    setSubmittingImageEdit(true);
     try {
-      const width = imageEditDraft.width ?? image.naturalWidth;
-      const height = imageEditDraft.height ?? image.naturalHeight;
-
-      if (!width || !height) {
-        throw new Error("Referans gorsel boyutu okunamadi.");
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-
-      if (!context) {
-        throw new Error("Gorsel duzenleme tuvali hazirlanamadi.");
-      }
-
-      context.drawImage(image, 0, 0, width, height);
-      context.lineCap = "round";
-      context.lineJoin = "round";
-
-      for (const stroke of imageEditStrokes) {
-        if (stroke.points.length === 0) {
-          continue;
-        }
-
-        context.beginPath();
-        context.strokeStyle = stroke.color;
-        context.lineWidth = Math.max(3, stroke.size * Math.max(width, height));
-        context.moveTo(stroke.points[0].x * width, stroke.points[0].y * height);
-
-        for (const point of stroke.points.slice(1)) {
-          context.lineTo(point.x * width, point.y * height);
-        }
-
-        if (stroke.points.length === 1) {
-          context.lineTo(stroke.points[0].x * width, stroke.points[0].y * height);
-        }
-
-        context.stroke();
-      }
-
-      const guideFolder = await join(projectFolderPath, "assets", "images", "_edit-guides");
-      await mkdir(guideFolder, { recursive: true });
-      const guidePath = await join(
-        guideFolder,
-        `guide_${imageEditDraft.stage}_${createLocalId().slice(0, 8)}.png`,
-      );
-      const bytes = dataUrlToBytes(canvas.toDataURL("image/png"));
-      await writeFile(guidePath, bytes);
-
-      return [imageEditDraft.absolutePath, guidePath];
+      const stage = activeMediaView === "end" ? "end" as const : "start" as const;
+      const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const existingStagePath = stage === "start" ? effectiveStartPath : effectiveEndPath;
+      await enqueueStoryboardFrameJob({
+        shotId: shot.id,
+        prompt: payload.prompt,
+        mode: stage,
+        model: "fal-ai/nano-banana-2",
+        aspectRatio: payload.aspectRatio,
+        cfg: shot.cfg ?? 7,
+        steps: 28,
+        priority: 148,
+        outputSuffix: `edit_${stage}_${batchKey}`,
+        assetTags: [`stage:${stage}`, "edited"],
+        persistToShotPath: false,
+        completeStatus: existingStagePath ? "done" : "review",
+        referenceImagePaths: payload.referenceImagePaths,
+      });
+      setActiveMediaView(stage);
+      setVariantIndexByView((current) => ({ ...current, [stage]: 0 }));
+      setImageEditDraft(null);
+      await refreshAll();
+    } catch (error) {
+      await message(error instanceof Error ? error.message : "Gorsel duzenleme kuyruga eklenemedi.", { title: shot.shotNumber, kind: "error" });
     } finally {
-      URL.revokeObjectURL(sourceUrl);
+      setSubmittingImageEdit(false);
     }
-  }
-
-  function undoImageEditStroke() {
-    setImageEditStrokes((current) => current.slice(0, -1));
-  }
-
-  function clearImageEditStrokes() {
-    activeImageEditStrokeIdRef.current = null;
-    setImageEditStrokes([]);
   }
 
   function selectVariant(view: DetailView, index: number) {
@@ -1289,60 +976,6 @@ export function ShotDetailPanel({
         [activeDetailView]: nextIndex,
       };
     });
-  }
-
-  async function submitImageEdit() {
-    if (!imageEditDraft || (!imageEditPrompt.trim() && imageEditStrokes.length === 0)) {
-      return;
-    }
-
-    setSubmittingImageEdit(true);
-
-    try {
-      const referenceImagePaths = await buildImageEditReferencePaths();
-      const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-      const existingStagePath =
-        imageEditDraft.stage === "start" ? effectiveStartPath : effectiveEndPath;
-
-      await enqueueStoryboardFrameJob({
-        shotId: shot.id,
-        prompt: buildDefaultImageEditPrompt(imageEditPrompt),
-        mode: imageEditDraft.stage,
-        model: "fal-ai/nano-banana-2",
-        aspectRatio: imageEditAspectRatio,
-        cfg: shot.cfg ?? 7,
-        steps: 28,
-        priority: 148,
-        outputSuffix: `edit_${imageEditDraft.stage}_${batchKey}`,
-        assetTags: [`stage:${imageEditDraft.stage}`, "edited"],
-        persistToShotPath: false,
-        completeStatus: existingStagePath ? "done" : "review",
-        referenceImagePaths,
-      });
-
-      setActiveMediaView(imageEditDraft.stage);
-      setVariantIndexByView((current) => ({
-        ...current,
-        [imageEditDraft.stage]: 0,
-      }));
-      closeImageEditModal();
-
-      await refreshAll();
-      await message(
-        `${imageEditDraft.stage.toUpperCase()} duzenleme isi Nano Banana 2 ile kuyruga alindi.`,
-        {
-          title: shot.shotNumber,
-          kind: "info",
-        },
-      );
-    } catch (error) {
-      await message(
-        error instanceof Error ? error.message : "Gorsel duzenleme kuyruga eklenemedi.",
-        { title: shot.shotNumber, kind: "error" },
-      );
-    } finally {
-      setSubmittingImageEdit(false);
-    }
   }
 
   async function queueStartFrame() {
@@ -1991,6 +1624,29 @@ export function ShotDetailPanel({
     }
   }
 
+  async function handleUnifiedProduce() {
+    const targets = prodTargets;
+    const isMulti = prodMode === "multi";
+    if (isMulti) {
+      if (targets.start && promptDrafts.start.trim() && !startReferenceMissing) {
+        setVariantBurstCount((c) => ({ ...c, start: prodVariantCount }));
+        await queueFrameVariants("start");
+      }
+      if (targets.end && promptDrafts.end.trim() && !endReferenceMissing) {
+        setVariantBurstCount((c) => ({ ...c, end: prodVariantCount }));
+        await queueFrameVariants("end");
+      }
+      if (targets.video && promptDrafts.video.trim()) {
+        setVariantBurstCount((c) => ({ ...c, video: prodVariantCount }));
+        await queueVideoVariants();
+      }
+    } else {
+      if (targets.start && promptDrafts.start.trim() && !startReferenceMissing) await queueStartFrame();
+      if (targets.end && promptDrafts.end.trim() && !endReferenceMissing) await queueEndFrame();
+      if (targets.video && promptDrafts.video.trim()) await queueVideo();
+    }
+  }
+
   function openAssetLibrary(
     target: "start" | "end" | "video" | "reference" = "start",
     selectedFilePath?: string | null,
@@ -2012,21 +1668,6 @@ export function ShotDetailPanel({
     onClose();
   }
 
-  function openModelManager() {
-    navigate("/model-manager");
-    onClose();
-  }
-
-  function openImageGenerator(stage: "start" | "end" = activeMediaView === "end" ? "end" : "start") {
-    navigate("/image-generator", {
-      state: {
-        shotId: shot.id,
-        shotStage: stage,
-      },
-    });
-    onClose();
-  }
-
   function openImageGeneratorWithReference(referencePath: string) {
     navigate("/image-generator", {
       state: {
@@ -2036,2191 +1677,806 @@ export function ShotDetailPanel({
     onClose();
   }
 
-  function openVideoGenerator() {
-    navigate("/video-generator", {
-      state: {
-        shotId: shot.id,
-      },
-    });
-    onClose();
-  }
-
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 160, display: "grid", placeItems: "center", padding: 28, background: "rgba(0,0,0,0.4)", backdropFilter: "blur(8px)" }}>
-        <div onClick={(event) => event.stopPropagation()} style={{ width: "min(1320px, calc(100vw - 56px))", height: "min(900px, calc(100vh - 56px))", minHeight: 660, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", borderRadius: 32, overflow: "hidden", border: "1px solid #e8e8e8", background: "#ffffff", boxShadow: "0 24px 64px rgba(0,0,0,0.12)" }}>
-        <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, padding: "18px 22px", borderBottom: "1px solid #e8e8e8", background: "#ffffff" }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "inline-flex", width: "fit-content", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(0,0,0,0.04)", color: "var(--accent)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}><Clapperboard size={13} />Shot inspector</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 24, letterSpacing: "-0.04em" }}>{shot.shotNumber}</strong>
-              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{shot.shotType.toUpperCase()} / {shot.durationS ?? "--"}s / A{shot.act ?? "-"} S{shot.scene ?? "-"}</span>
-              {shot.isArchived ? (
-                <span style={{ padding: "4px 10px", borderRadius: 999, background: "rgba(0,0,0,0.06)", color: "var(--text-secondary)", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                  Archived
-                </span>
-              ) : null}
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 160, display: "grid", placeItems: "center", padding: 28, background: "var(--backdrop-bg)", backdropFilter: "blur(12px)" }}>
+        <div onClick={(event) => event.stopPropagation()} style={{ width: "min(1360px, calc(100vw - 56px))", height: "min(920px, calc(100vh - 56px))", minHeight: 660, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", borderRadius: 28, overflow: "hidden", border: "1px solid var(--glass-border)", background: "var(--bg-base)", boxShadow: "var(--shadow-modal)" }}>
+
+        {/* ── HEADER ─────────────────────────────────────────── */}
+        <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, padding: "14px 22px", borderBottom: "1px solid var(--surface-active)", background: "var(--surface-tint)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: "var(--surface-hover)", color: "var(--text-secondary)", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}><Clapperboard size={12} />Shot Inspector</div>
+            <strong style={{ fontSize: 22, letterSpacing: "-0.04em", color: "var(--text-primary)" }}>{shot.shotNumber}</strong>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-muted)" }}>
+              <span style={{ padding: "3px 8px", borderRadius: 6, background: "var(--surface-hover)", fontWeight: 600, fontSize: 10, letterSpacing: "0.06em" }}>{shot.shotType.toUpperCase()}</span>
+              <span>{shot.durationS ?? "--"}s</span>
+              <span style={{ color: "var(--border-strong)" }}>·</span>
+              <span>A{shot.act ?? "-"} S{shot.scene ?? "-"}</span>
             </div>
+            {shot.isArchived ? (
+              <span style={{ padding: "3px 8px", borderRadius: 6, background: "rgba(239,68,68,0.08)", color: "var(--status-error)", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Arsivde</span>
+            ) : null}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button className="btn-secondary" type="button" onClick={() => void handleArchiveToggle()} style={{ padding: "8px 12px", fontSize: 12 }}>
-              {shot.isArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-              {shot.isArchived ? "Restore" : "Archive"}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="btn-secondary" type="button" onClick={() => void handleArchiveToggle()} style={{ padding: "7px 12px", fontSize: 11, borderRadius: 8 }}>
+              {shot.isArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+              {shot.isArchived ? "Geri al" : "Arsivle"}
             </button>
-            <button type="button" onClick={onClose} className="icon-button" style={{ width: 40, height: 40, borderRadius: 999 }} aria-label="Detay modalini kapat"><X size={16} /></button>
+            <button type="button" onClick={onClose} className="icon-button" style={{ width: 36, height: 36, borderRadius: 10 }} aria-label="Kapat"><X size={15} /></button>
           </div>
         </header>
 
-        <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(390px, 0.92fr)" }}>
-          <section style={{ minWidth: 0, minHeight: 0, padding: 22, display: "grid", gridTemplateRows: "auto minmax(360px, 1.05fr) minmax(0, 1fr)", gap: 16, borderRight: "1px solid var(--border-subtle)", overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
+        {/* ── BODY: SOL + SAG ────────────────────────────────── */}
+        <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1.25fr) minmax(370px, 0.85fr)" }}>
+
+          {/* ════════ SOL PANEL: MEDYA ════════ */}
+          <section style={{ minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(320px, 1fr) auto", borderRight: "1px solid var(--surface-active)", overflow: "hidden" }}>
+
+            {/* ── Medya Tab Bar ── */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--surface-tint)" }}>
+              <div style={{ display: "flex", gap: 4 }}>
                 {([
-                  { key: "start", status: mediaByView.start.status },
-                  { key: "end", status: mediaByView.end.status },
-                  { key: "video", status: mediaByView.video.status },
-                  { key: "audio", status: shot.audioStatus },
-                ] as Array<{ key: MediaView; status: string }>).map((view) => (
-                  <button key={view.key} type="button" onClick={() => setActiveMediaView(view.key)} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 999, border: `1px solid ${activeMediaView === view.key ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.06)"}`, background: activeMediaView === view.key ? "rgba(0,0,0,0.06)" : "rgba(0,0,0,0.02)", color: activeMediaView === view.key ? "var(--accent)" : "var(--text-secondary)", cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                    {view.key}<span style={{ padding: "2px 7px", borderRadius: 999, background: "rgba(0,0,0,0.06)", color: statusColor(view.status), fontSize: 9 }}>{view.status}</span>
+                  { key: "start" as MediaView, label: "START", status: mediaByView.start.status },
+                  { key: "end" as MediaView, label: "END", status: mediaByView.end.status },
+                  { key: "video" as MediaView, label: "VIDEO", status: mediaByView.video.status },
+                  { key: "audio" as MediaView, label: "SES", status: shot.audioStatus },
+                ]).map((view) => (
+                  <button
+                    key={view.key}
+                    type="button"
+                    onClick={() => setActiveMediaView(view.key)}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 6,
+                      padding: "7px 12px", borderRadius: 8,
+                      border: "none",
+                      background: activeMediaView === view.key ? "var(--glass-border)" : "transparent",
+                      color: activeMediaView === view.key ? "var(--text-primary)" : "var(--text-muted)",
+                      cursor: "pointer", fontSize: 11, fontWeight: 600, letterSpacing: "0.04em",
+                      transition: "all 120ms ease",
+                    }}
+                  >
+                    {view.label}
+                    <span style={{
+                      width: 7, height: 7, borderRadius: 999,
+                      background: statusColor(view.status),
+                      opacity: view.status === "none" || view.status === "pending" ? 0.35 : 1,
+                    }} />
                   </button>
                 ))}
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "8px 12px", borderRadius: 999, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.02)" }}>
-                {activePreviewPath
-                  ? `${activeVariantIndex + 1}/${Math.max(activeVariants.length, 1)} - ${activePreviewFilename}`
-                  : `${activeMedia.label} henuz uretilmedi`}
-              </div>
+              <span style={{ fontSize: 10, color: "var(--text-muted)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {activePreviewPath ? activePreviewFilename : `${activeMedia.label} bekleniyor`}
+              </span>
             </div>
 
-            <div style={{ position: "relative", minHeight: 360, borderRadius: 28, border: "1px solid #e8e8e8", background: "#f3f3f4", overflow: "hidden", display: "grid" }}>
+            {/* ── Preview Alani ── */}
+            <div style={{ position: "relative", minHeight: 320, background: "var(--surface-tint)", overflow: "hidden", display: "grid" }}>
               {!activePreviewUrl ? (
-                <div style={{ height: "100%", minHeight: 420, display: "grid", placeItems: "center", padding: 28, textAlign: "center", color: "var(--text-muted)", gap: 12 }}>
-                  {activePreviewKind === "video" ? <PlayCircle size={40} /> : activePreviewKind === "audio" ? <AudioLines size={40} /> : <ImageIcon size={40} />}
-                  <div style={{ fontSize: 16, fontWeight: 600, color: "var(--text-secondary)" }}>{activeMedia.label} preview hazir degil</div>
+                <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 28, textAlign: "center", color: "var(--text-muted)", gap: 10 }}>
+                  {activePreviewKind === "video" ? <PlayCircle size={36} strokeWidth={1.5} /> : activePreviewKind === "audio" ? <AudioLines size={36} strokeWidth={1.5} /> : <ImageIcon size={36} strokeWidth={1.5} />}
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{activeMedia.label} henuz hazir degil</div>
                 </div>
               ) : activePreviewKind === "audio" ? (
-                <div style={{ height: "100%", minHeight: 420, display: "grid", alignContent: "center", justifyItems: "center", gap: 16, padding: 28, textAlign: "center" }}>
-                  <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-                    <div style={{ display: "inline-flex", justifyContent: "center", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--accent)" }}>
-                      <AudioLines size={16} />
-                      Shot dialogue audio
-                    </div>
-                    <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                      {dialogueAudioDetail?.audioDirection?.dialoguePreview ??
-                        shot.audioDialoguePreview ??
-                        "Bu shot icin dialogue transcript bulunmuyor."}
-                    </div>
+                <div style={{ height: "100%", display: "grid", alignContent: "center", justifyItems: "center", gap: 14, padding: 28, textAlign: "center" }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                    <AudioLines size={14} />Shot diyalog sesi
                   </div>
-                  <audio controls src={activePreviewUrl} style={{ width: "min(560px, 100%)" }} />
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-                    <button
-                      className="btn-primary"
-                      disabled={queueingDialogueAudio || loadingDialogueAudioDetail}
-                      onClick={() => void handleQueueDialogueAudio()}
-                      type="button"
-                    >
-                      <PlayCircle size={14} />
-                      {queueingDialogueAudio ? "Queueing..." : "Bu shot'i yeniden seslendir"}
-                    </button>
-                    {dialogueAudioDetail?.characterCount ? (
-                      <span style={{ display: "inline-flex", alignItems: "center", padding: "7px 10px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.06)", background: "rgba(0,0,0,0.02)", fontSize: 11, color: "var(--text-secondary)" }}>
-                        {dialogueAudioDetail.characterCount} chars
-                      </span>
-                    ) : null}
+                  <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, maxWidth: 480 }}>
+                    {dialogueAudioDetail?.audioDirection?.dialoguePreview ?? shot.audioDialoguePreview ?? "Bu shot icin dialogue transcript bulunmuyor."}
                   </div>
+                  <audio controls src={activePreviewUrl} style={{ width: "min(520px, 100%)" }} />
                 </div>
               ) : activePreviewKind === "video" ? (
-                <video key={activePreviewUrl} src={activePreviewUrl} controls playsInline poster={videoPosterUrl} style={{ width: "100%", height: "100%", objectFit: "contain", background: "#f3f3f4" }} />
+                <video key={activePreviewUrl} src={activePreviewUrl} controls playsInline poster={videoPosterUrl} style={{ width: "100%", height: "100%", objectFit: "contain", background: "var(--surface-tint)" }} />
               ) : (
-                <img src={activePreviewUrl} alt={`${shot.shotNumber} ${activeMedia.label}`} style={{ width: "100%", height: "100%", objectFit: "contain", background: "#f3f3f4" }} />
+                <img src={activePreviewUrl} alt={`${shot.shotNumber} ${activeMedia.label}`} style={{ width: "100%", height: "100%", objectFit: "contain", background: "var(--surface-tint)" }} />
               )}
+
+              {/* Overlay kontrolleri */}
               {activePreviewUrl ? (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 14,
-                    right: 14,
-                    display: "flex",
-                    gap: 8,
-                  }}
-                >
+                <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 6 }}>
                   {activePreviewPath ? (
-                    <button
-                      className="btn-secondary"
-                      onClick={() =>
-                        void handleDownloadMedia(activePreviewPath, activePreviewFilename, shot.shotNumber)
-                      }
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 999,
-                        background: "rgba(255, 255, 255, 0.88)",
-                        borderColor: "rgba(0, 0, 0, 0.1)",
-                        color: "#1a1c1c",
-                        backdropFilter: "blur(10px)",
-                      }}
-                      type="button"
-                    >
-                      <Download size={13} />
-                      Indir
+                    <button className="btn-secondary" onClick={() => void handleDownloadMedia(activePreviewPath, activePreviewFilename, shot.shotNumber)} style={{ padding: "6px 10px", borderRadius: 8, background: "var(--glass-bg)", borderColor: "var(--glass-border)", color: "var(--text-primary)", backdropFilter: "blur(10px)", fontSize: 11 }} type="button">
+                      <Download size={12} />Indir
                     </button>
                   ) : null}
-                  <button
-                    className="btn-secondary"
-                    onClick={openActiveMediaPreview}
-                    disabled={activePreviewKind === "audio"}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      background: "rgba(0, 0, 0, 0.78)",
-                      borderColor: "rgba(255, 255, 255, 0.2)",
-                      color: "#ffffff",
-                      backdropFilter: "blur(10px)",
-                    }}
-                    type="button"
-                  >
-                    <Expand size={13} />
-                    Buyut
+                  <button className="btn-secondary" onClick={openActiveMediaPreview} disabled={activePreviewKind === "audio"} style={{ padding: "6px 10px", borderRadius: 8, background: "rgba(0,0,0,0.72)", borderColor: "rgba(255,255,255,0.15)", color: "var(--on-accent)", backdropFilter: "blur(10px)", fontSize: 11 }} type="button">
+                    <Expand size={12} />Buyut
                   </button>
                 </div>
               ) : null}
+
+              {/* Varyant ok'lari */}
               {activeVariants.length > 1 ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => stepActiveVariant(-1)}
-                    className="icon-button"
-                    aria-label="Onceki varyant"
-                    style={{
-                      position: "absolute",
-                      left: 14,
-                      top: "50%",
-                      transform: "translateY(-50%)",
-                      width: 42,
-                      height: 42,
-                      borderRadius: 999,
-                      background: "rgba(255, 255, 255, 0.88)",
-                      border: "1px solid rgba(0, 0, 0, 0.1)",
-                      color: "#1a1c1c",
-                      backdropFilter: "blur(10px)",
-                    }}
-                  >
-                    <ChevronLeft size={16} />
+                  <button type="button" onClick={() => stepActiveVariant(-1)} className="icon-button" aria-label="Onceki" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 38, height: 38, borderRadius: 10, background: "var(--glass-bg)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", backdropFilter: "blur(10px)" }}>
+                    <ChevronLeft size={15} />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => stepActiveVariant(1)}
-                    className="icon-button"
-                    aria-label="Sonraki varyant"
-                    style={{
-                      position: "absolute",
-                      right: 14,
-                      top: "50%",
-                      transform: "translateY(-50%)",
-                      width: 42,
-                      height: 42,
-                      borderRadius: 999,
-                      background: "rgba(255, 255, 255, 0.88)",
-                      border: "1px solid rgba(0, 0, 0, 0.1)",
-                      color: "#1a1c1c",
-                      backdropFilter: "blur(10px)",
-                    }}
-                  >
-                    <ChevronRight size={16} />
+                  <button type="button" onClick={() => stepActiveVariant(1)} className="icon-button" aria-label="Sonraki" style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", width: 38, height: 38, borderRadius: 10, background: "var(--glass-bg)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", backdropFilter: "blur(10px)" }}>
+                    <ChevronRight size={15} />
                   </button>
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: 16,
-                      bottom: 16,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      background: "rgba(255, 255, 255, 0.88)",
-                      border: "1px solid rgba(0, 0, 0, 0.1)",
-                      color: "#1a1c1c",
-                      fontSize: 11,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                    }}
-                  >
+                  <div style={{ position: "absolute", left: 12, bottom: 12, display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: "var(--glass-bg)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontSize: 10, fontWeight: 600, letterSpacing: "0.04em" }}>
                     {activeVariantIndex + 1} / {activeVariants.length} varyant
                   </div>
                 </>
               ) : null}
             </div>
 
-            <div style={{ display: "grid", gap: 12, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", paddingRight: 4 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
-                {([
-                  { key: "start", kind: "image" },
-                  { key: "end", kind: "image" },
-                  { key: "video", kind: "video" },
-                  { key: "audio", kind: "audio" },
-                ] as Array<{ key: MediaView; kind: "image" | "video" | "audio" }>).map((view) => (
-                  <button key={view.key} type="button" onClick={() => setActiveMediaView(view.key)} style={{ display: "grid", gap: 8, padding: "12px 14px", borderRadius: 18, border: `1px solid ${activeMediaView === view.key ? "rgba(0,0,0,0.12)" : "var(--border-subtle)"}`, background: activeMediaView === view.key ? "rgba(0,0,0,0.04)" : "rgba(0,0,0,0.02)", textAlign: "left", cursor: "pointer" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>{view.kind === "video" ? <PlayCircle size={15} /> : view.kind === "audio" ? <AudioLines size={15} /> : <ImageIcon size={15} />}<strong style={{ fontSize: 12 }}>{view.key.toUpperCase()}</strong></div>
-                    <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                      {view.key === "audio"
-                        ? dialogueAudioUrl
-                          ? "Hazir preview"
-                          : "Henuz uretilmedi"
-                        : storyboardVariants[view.key].length > 0
-                          ? `${storyboardVariants[view.key].length} varyant`
-                          : mediaByView[view.key].url
-                            ? "Hazir preview"
-                            : "Henuz uretilmedi"}
-                    </div>
-                  </button>
-                ))}
+            {/* ── Varyant Seridi + Aksiyonlar ── */}
+            <div style={{ minHeight: 0, maxHeight: 280, overflowY: "auto", overscrollBehavior: "contain", padding: "12px 20px 16px", display: "grid", gap: 10, alignContent: "start", borderTop: "1px solid var(--surface-hover)" }}>
+              {/* Aksiyon bar */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                  {isAudioMediaView ? "Ses islemleri" : `${activeMediaView.toUpperCase()} varyantlari`}
+                </span>
+                {isAudioMediaView ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {shot.audioMasterPath ? (
+                      <button type="button" className="btn-secondary" onClick={() => void handleDownloadMedia(shot.audioMasterPath, activePreviewFilename, `${shot.shotNumber} SES`)} style={{ padding: "5px 10px", fontSize: 10, borderRadius: 7 }}>
+                        <Download size={11} />Indir
+                      </button>
+                    ) : null}
+                    <button type="button" className="btn-primary" onClick={() => void handleQueueDialogueAudio()} disabled={queueingDialogueAudio || loadingDialogueAudioDetail} style={{ padding: "5px 10px", fontSize: 10, borderRadius: 7 }}>
+                      <PlayCircle size={11} />
+                      {queueingDialogueAudio ? "Kuyrukta..." : shot.audioMasterPath ? "Yeniden uret" : "Seslendir"}
+                    </button>
+                  </div>
+                ) : activeVariant ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    {activeVariant.isSelected ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, background: "rgba(34,197,94,0.1)", color: "var(--status-success)", fontSize: 10, fontWeight: 700 }}>
+                        <Check size={10} />Aktif
+                      </span>
+                    ) : (
+                      <button type="button" className="btn-primary" onClick={() => void handleUseVariant(activeVariant)} disabled={assigningVariantId === activeVariant.id} style={{ padding: "4px 10px", fontSize: 10, borderRadius: 7 }}>
+                        {assigningVariantId === activeVariant.id ? "..." : "Kullan"}
+                      </button>
+                    )}
+                    {activeVariant.path ? (
+                      <button type="button" className="btn-secondary" onClick={() => void handleDownloadMedia(activeVariant.path, activeVariant.filename, `${shot.shotNumber} ${activeMediaView.toUpperCase()}`)} style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7 }}>
+                        <Download size={10} />
+                      </button>
+                    ) : null}
+                    {canEditActiveVariant ? (
+                      <button type="button" className="btn-secondary" onClick={() => openImageEditModal(activeVariant)} disabled={submittingImageEdit} style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7 }}>
+                        <Pencil size={10} />
+                      </button>
+                    ) : null}
+                    {activeVariant.isSelected ? (
+                      <button type="button" className="btn-secondary" onClick={() => void handleDisableActiveMedia(activeMediaView)} disabled={clearingMediaView === activeMediaView} style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7 }}>
+                        <X size={10} />
+                      </button>
+                    ) : null}
+                    {canDeleteActiveVariant ? (
+                      <button type="button" className="btn-secondary" onClick={() => void handleDeleteVariant(activeVariant)} disabled={deletingVariantId === activeVariant.id} style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7, borderColor: "rgba(239,68,68,0.2)", color: "var(--status-error)" }}>
+                        <Trash2 size={10} />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
-              <div style={{ display: "grid", gap: 10, padding: "12px 14px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.02)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <div style={{ display: "grid", gap: 2 }}>
-                    <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                      {activeMediaView === "audio" ? "AUDIO actions" : `${activeMediaView.toUpperCase()} slider`}
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                      {isAudioMediaView
-                        ? dialogueAudioUrl
-                          ? "Shot audio hazir"
-                          : "Bu shot icin audio henuz uretilmedi."
-                        : activeVariants.length > 0
-                        ? `${activeVariants.length} kayit bulundu`
-                        : loadingShotAssets
-                          ? "Shot assetleri yukleniyor..."
-                          : "Bu slot icin varyant yok."}
-                    </div>
+              {/* Varyant thumbnailleri */}
+              {!isAudioMediaView && activeVariants.length > 0 ? (
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+                  {activeVariants.map((variant, index) => (
+                    <button key={variant.id} type="button" onClick={() => selectVariant(activeMediaView, index)} style={{ flex: "0 0 88px", display: "grid", gap: 4, padding: 5, borderRadius: 10, border: activeVariantIndex === index ? "2px solid var(--border-default)" : variant.isSelected ? "2px solid rgba(34,197,94,0.3)" : "1px solid var(--surface-active)", background: activeVariantIndex === index ? "var(--surface-hover)" : "transparent", cursor: "pointer", textAlign: "left" }}>
+                      <div style={{ borderRadius: 7, overflow: "hidden", aspectRatio: "16 / 10", background: "var(--canvas-bg)" }}>
+                        {variant.url ? (
+                          variant.kind === "video" ? (
+                            <video src={variant.url} muted playsInline preload="metadata" poster={videoPosterUrl} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                          ) : (
+                            <img src={variant.url} alt={variant.filename} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                          )
+                        ) : (
+                          <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
+                            {variant.kind === "video" ? <PlayCircle size={14} /> : <ImageIcon size={14} />}
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 9, fontWeight: 600, color: variant.isSelected ? "var(--status-success)" : "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {variant.isSelected ? "Aktif" : `V${index + 1}`}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              {/* Varyant detay */}
+              {!isAudioMediaView && activeVariant ? (
+                <div style={{ display: "flex", alignItems: "start", gap: 8 }}>
+                  <div style={{ flex: 1, maxHeight: 64, overflowY: "auto", fontSize: 10, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                    {activeVariant.modelUsed ? `${activeVariant.modelUsed} · ` : ""}{activeVariant.resolution ? `${activeVariant.resolution} · ` : ""}{activeVariant.prompt ?? getShotPromptForView(shot, activeMediaView) ?? "Prompt kaydi yok."}
                   </div>
-                  {isAudioMediaView ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      {shot.audioMasterPath ? (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() =>
-                            void handleDownloadMedia(
-                              shot.audioMasterPath,
-                              activePreviewFilename,
-                              `${shot.shotNumber} AUDIO`,
-                            )
-                          }
-                          style={{ padding: "8px 12px", fontSize: 11 }}
-                        >
-                          <Download size={13} />
-                          Indir
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        onClick={() => void handleQueueDialogueAudio()}
-                        disabled={queueingDialogueAudio || loadingDialogueAudioDetail}
-                        style={{ padding: "8px 12px", fontSize: 11 }}
-                      >
-                        <PlayCircle size={13} />
-                        {queueingDialogueAudio ? "Queueing..." : shot.audioMasterPath ? "Regenerate AUDIO" : "Generate AUDIO"}
-                      </button>
-                    </div>
-                  ) : activeVariant ? (
-                    activeVariant.isSelected ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.22)", background: "rgba(34,197,94,0.12)", color: "var(--status-success)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                          <Check size={13} />
-                          Aktif {activeMediaView.toUpperCase()}
-                        </div>
-                        {activeVariant.path ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() =>
-                              void handleDownloadMedia(
-                                activeVariant.path,
-                                activeVariant.filename,
-                                `${shot.shotNumber} ${activeMediaView.toUpperCase()}`,
-                              )
-                            }
-                            style={{ padding: "8px 12px", fontSize: 11 }}
-                          >
-                            <Download size={13} />
-                            Indir
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => void handleDisableActiveMedia(activeMediaView)}
-                          disabled={clearingMediaView === activeMediaView}
-                          style={{ padding: "8px 12px", fontSize: 11 }}
-                        >
-                          <X size={13} />
-                          {clearingMediaView === activeMediaView
-                            ? "Temizleniyor..."
-                            : "Devre disi birak"}
-                        </button>
-                        {canEditActiveVariant ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() => openImageEditModal(activeVariant)}
-                            disabled={submittingImageEdit}
-                            style={{ padding: "8px 12px", fontSize: 11 }}
-                          >
-                            <Pencil size={13} />
-                            Duzenle
-                          </button>
-                        ) : null}
-                        {canDeleteActiveVariant ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() => void handleDeleteVariant(activeVariant)}
-                            disabled={deletingVariantId === activeVariant.id}
-                            style={{ padding: "8px 12px", fontSize: 11, borderColor: "rgba(239,68,68,0.28)", color: "var(--status-error)" }}
-                          >
-                            <Trash2 size={13} />
-                            {deletingVariantId === activeVariant.id ? "Siliniyor..." : "Sil"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        {activeVariant.path ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() =>
-                              void handleDownloadMedia(
-                                activeVariant.path,
-                                activeVariant.filename,
-                                `${shot.shotNumber} ${activeMediaView.toUpperCase()}`,
-                              )
-                            }
-                            style={{ padding: "8px 12px", fontSize: 11 }}
-                          >
-                            <Download size={13} />
-                            Indir
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="btn-primary"
-                          onClick={() => void handleUseVariant(activeVariant)}
-                          disabled={assigningVariantId === activeVariant.id}
-                          style={{ padding: "8px 12px", fontSize: 11 }}
-                        >
-                          {assigningVariantId === activeVariant.id
-                            ? "Kaydediliyor..."
-                            : `${activeMediaView.toUpperCase()} olarak kullan`}
-                        </button>
-                        {canEditActiveVariant ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() => openImageEditModal(activeVariant)}
-                            disabled={submittingImageEdit}
-                            style={{ padding: "8px 12px", fontSize: 11 }}
-                          >
-                            <Pencil size={13} />
-                            Duzenle
-                          </button>
-                        ) : null}
-                        {canDeleteActiveVariant ? (
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() => void handleDeleteVariant(activeVariant)}
-                            disabled={deletingVariantId === activeVariant.id}
-                            style={{ padding: "8px 12px", fontSize: 11, borderColor: "rgba(239,68,68,0.28)", color: "var(--status-error)" }}
-                          >
-                            <Trash2 size={13} />
-                            {deletingVariantId === activeVariant.id ? "Siliniyor..." : "Sil"}
-                          </button>
-                        ) : null}
-                      </div>
-                    )
+                  {activeVariant.kind === "image" && activeVariant.path ? (
+                    <button className="btn-secondary" onClick={() => openImageGeneratorWithReference(toAbsoluteProjectPath(projectFolderPath, activeVariant.path!))} style={{ flex: "0 0 auto", padding: "4px 8px", fontSize: 10, borderRadius: 7 }} type="button">
+                      <ImageIcon size={10} />Referans yap
+                    </button>
                   ) : null}
                 </div>
+              ) : isAudioMediaView && dialogueAudioDetail?.resolvedLines.length ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {dialogueAudioDetail.resolvedLines.map((line, index) => (
+                    <span key={`${line.speakerKey}-${index}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: "var(--surface-hover)", fontSize: 10, color: "var(--text-secondary)" }}>
+                      <strong style={{ color: "var(--text-primary)" }}>{line.speaker}</strong>
+                      <span style={{ color: "var(--text-muted)" }}>{line.voiceName ?? "ses yok"}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : isAudioMediaView && dialogueAudioDetail?.blockerReason ? (
+                <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(239,68,68,0.06)", color: "var(--text-secondary)", fontSize: 10, lineHeight: 1.6 }}>
+                  {dialogueAudioDetail.blockerReason}
+                </div>
+              ) : null}
+            </div>
+          </section>
 
-                {!isAudioMediaView && activeVariants.length > 0 ? (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4 }}>
-                      {activeVariants.map((variant, index) => (
-                        <button
-                          key={variant.id}
-                          type="button"
-                          onClick={() => selectVariant(activeMediaView, index)}
-                          style={{
-                            flex: "0 0 108px",
-                            display: "grid",
-                            gap: 8,
-                            padding: 8,
-                            borderRadius: 14,
-                            border:
-                              activeVariantIndex === index
-                                ? "1px solid rgba(0,0,0,0.14)"
-                                : variant.isSelected
-                                  ? "1px solid rgba(34,197,94,0.24)"
-                                  : "1px solid rgba(0,0,0,0.06)",
-                            background:
-                              activeVariantIndex === index
-                                ? "rgba(0,0,0,0.04)"
-                                : "rgba(0,0,0,0.02)",
-                            cursor: "pointer",
-                            textAlign: "left",
-                          }}
-                        >
-                          <div style={{ borderRadius: 10, overflow: "hidden", aspectRatio: "4 / 3", background: "#eeeeee" }}>
-                            {variant.url ? (
-                              variant.kind === "video" ? (
-                                <video src={variant.url} muted playsInline preload="metadata" poster={videoPosterUrl} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                              ) : (
-                                <img src={variant.url} alt={variant.filename} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                              )
-                            ) : (
-                              <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
-                                {variant.kind === "video" ? <PlayCircle size={18} /> : <ImageIcon size={18} />}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: "grid", gap: 2 }}>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: variant.isSelected ? "var(--status-success)" : "var(--text-primary)" }}>
-                              {variant.isSelected ? "Aktif secim" : `Varyant ${index + 1}`}
-                            </span>
-                            <span style={{ fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {variant.filename}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                    {activeVariant ? (
-                      <div style={{ display: "grid", gap: 10 }}>
-                        <div style={{ maxHeight: 108, overflowY: "auto", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7, paddingRight: 6 }}>
-                          {activeVariant.modelUsed ? `${activeVariant.modelUsed} / ` : ""}
-                          {activeVariant.resolution ? `${activeVariant.resolution} / ` : ""}
-                          {activeVariant.prompt ?? getShotPromptForView(shot, activeMediaView) ?? "Prompt kaydi yok."}
-                        </div>
-                        {activeVariant.kind === "image" && activeVariant.path ? (
-                          <button
-                            className="btn-secondary"
-                            onClick={() =>
-                              openImageGeneratorWithReference(
-                                toAbsoluteProjectPath(projectFolderPath, activeVariant.path!),
-                              )
-                            }
-                            style={{ width: "fit-content", padding: "7px 10px", fontSize: 11 }}
-                            type="button"
-                          >
-                            <ImageIcon size={13} />
-                            Still Lab'e referans yap
-                          </button>
-                        ) : null}
+          {/* ════════ SAG PANEL: KONTROL TAB'LARI ════════ */}
+          <section style={{ minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", overflow: "hidden" }}>
+
+            {/* ── Tab Bar ── */}
+            <nav style={{ display: "flex", gap: 0, padding: "0 20px", borderBottom: "1px solid var(--surface-active)", background: "var(--surface-tint)" }}>
+              {([
+                { key: "genel" as RightPanelTab, label: "Genel", icon: Clapperboard },
+                { key: "uretim" as RightPanelTab, label: "\u00DCretim", icon: Sparkles },
+                { key: "prompt" as RightPanelTab, label: "Prompt", icon: Pencil },
+                { key: "ses" as RightPanelTab, label: "Ses", icon: AudioLines },
+              ]).map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setRightPanelTab(tab.key)}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "12px 16px 10px", border: "none",
+                    borderBottom: rightPanelTab === tab.key ? "2px solid var(--accent)" : "2px solid transparent",
+                    background: "transparent",
+                    color: rightPanelTab === tab.key ? "var(--accent)" : "var(--text-muted)",
+                    fontSize: 12, fontWeight: rightPanelTab === tab.key ? 600 : 500,
+                    cursor: "pointer", transition: "all 120ms ease",
+                  }}
+                >
+                  <tab.icon size={13} />{tab.label}
+                </button>
+              ))}
+            </nav>
+
+            {/* ── Tab Icerik (Scrollable) ── */}
+            <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "20px 20px 28px" }}>
+
+              {/* ━━━━ GENEL TAB ━━━━ */}
+              {rightPanelTab === "genel" && (
+                <div style={{ display: "grid", gap: 20 }}>
+
+                  {/* ── Shot Ozet ── */}
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "var(--gradient-header)", borderBottom: "1px solid var(--surface-hover)" }}>
+                      <div style={{ display: "grid", gap: 2 }}>
+                        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>Shot ozeti</h3>
+                        <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>{shot.summaryTr ?? "Turkce ozet bulunmuyor."}</p>
                       </div>
-                    ) : null}
-                  </div>
-                ) : isAudioMediaView ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {dialogueAudioDetail?.blockerReason ? (
-                      <div style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.04)", color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>
-                        {dialogueAudioDetail.blockerReason}
-                      </div>
-                    ) : null}
-                    {dialogueAudioDetail?.resolvedLines.length ? (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                        {dialogueAudioDetail.resolvedLines.map((line, index) => (
-                          <span key={`${line.speakerKey}-${index}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.08)", background: "rgba(0,0,0,0.04)", fontSize: 11, color: "var(--text-secondary)" }}>
-                            <strong style={{ color: "var(--text-primary)" }}>{line.speaker}</strong>
-                            <span>{line.resolvedTargetLabel ?? "unresolved"}</span>
-                            <span>{line.voiceName ?? line.voiceId ?? "voice missing"}</span>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {[{ l: "IMG", s: shot.imageStatus }, { l: "VID", s: shot.videoStatus }, { l: "SES", s: shot.audioStatus }].map((x) => (
+                          <span key={x.l} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, background: x.s === "done" ? "rgba(34,197,94,0.08)" : x.s === "generating" ? "rgba(245,158,11,0.1)" : "var(--surface-hover)", fontSize: 10, fontWeight: 600, color: x.s === "done" ? "var(--status-success)" : x.s === "generating" ? "var(--status-warning)" : "var(--text-muted)" }}>
+                            <span style={{ width: 5, height: 5, borderRadius: 999, background: "currentColor" }} />{x.l}
                           </span>
                         ))}
                       </div>
-                    ) : (
-                      <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                        Bu shot icin parse edilen dialogue line yok.
-                      </div>
-                    )}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", borderBottom: "1px solid var(--surface-hover)" }}>
+                      {[{ l: "Gorsel model", v: imageModel }, { l: "Video model", v: "Kling v3 Pro" }, { l: "CFG", v: shot.cfg ? String(shot.cfg) : "--" }, { l: "Preset", v: shot.klingPreset ?? "Varsayilan" }].map((m, i) => (
+                        <div key={m.l} style={{ padding: "12px 16px", borderRight: i < 3 ? "1px solid var(--surface-hover)" : "none" }}>
+                          <div style={{ fontSize: 10, fontWeight: 500, color: "var(--text-muted)", marginBottom: 3 }}>{m.l}</div>
+                          <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, padding: "14px 20px" }}>
+                      <button className="btn-primary" onClick={() => void handleBootstrap()} disabled={stageAction !== null} type="button" style={{ padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 10 }}>
+                        <Sparkles size={14} />{stageAction ? "Hazirlaniyor..." : `Otonom x${AUTONOMOUS_VARIANT_COUNT}`}
+                      </button>
+                      <button className="btn-secondary" onClick={() => void refreshAll()} type="button" style={{ padding: "8px 14px", fontSize: 12, fontWeight: 500, borderRadius: 10 }}>
+                        <RefreshCw size={14} />Yenile
+                      </button>
+                    </div>
                   </div>
-                ) : null}
-              </div>
-            </div>
-          </section>
 
-          <section
-            style={{
-              minWidth: 0,
-              minHeight: 0,
-              padding: 22,
-              display: "grid",
-              alignContent: "start",
-              gap: 14,
-              overflowY: "auto",
-              overscrollBehavior: "contain",
-            }}
-          >
-            <section style={{ display: "grid", gap: 10, padding: "14px 16px", borderRadius: 22, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.01)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><span>Shot capsule</span><span>{shot.imageStatus} / {shot.videoStatus} / {shot.audioStatus}</span></div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>{shot.summaryTr ?? "Bu shot icin Turkce ozet bulunmuyor."}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-                <MetaChip label="Image model" value={imageModel} />
-                <MetaChip label="Video model" value="kling-video/v3/pro" />
-                <MetaChip label="CFG" value={shot.cfg ? String(shot.cfg) : "--"} />
-                <MetaChip label="Preset" value={shot.klingPreset ?? "Shot default"} />
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button className="btn-primary" onClick={() => void handleBootstrap()} disabled={stageAction !== null} type="button"><Sparkles size={15} />{stageAction ? "Preparing..." : `Autonomous x${AUTONOMOUS_VARIANT_COUNT}`}</button>
-                <button className="btn-secondary" onClick={() => void refreshAll()} type="button"><RefreshCw size={14} />Refresh</button>
-              </div>
-            </section>
-
-            {shouldShowProductionState ? (
-              <section
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  padding: "14px 16px",
-                  borderRadius: 18,
-                  border: "1px solid rgba(0,0,0,0.1)",
-                  background: "rgba(0,0,0,0.03)",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 10,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--accent)",
-                    }}
-                  >
-                    <LoaderCircle className="spin-slow" size={13} />
-                    Production status
-                  </div>
-                  {shotQueueJobs.length > 1 ? (
-                    <button
-                      className="btn-secondary"
-                      type="button"
-                      onClick={handleCancelAllShotJobs}
-                      style={{ padding: "7px 10px", fontSize: 11 }}
-                    >
-                      <X size={13} />
-                      Tumunu iptal et
-                    </button>
-                  ) : null}
-                </div>
-
-                {productionNotice ? (
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                    {productionNotice}
-                  </div>
-                ) : null}
-
-                {shotQueueJobs.length > 0 ? (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {shotQueueJobs.slice(0, 3).map((job) => {
-                      const progressValue =
-                        job.status === "queued"
-                          ? 12
-                          : Math.max(8, Math.min(100, Math.round(job.progress || 0)));
-
-                      return (
-                        <div
-                          key={job.id}
-                          style={{
-                            display: "grid",
-                            gap: 6,
-                            padding: "10px 12px",
-                            borderRadius: 14,
-                            border: "1px solid rgba(0,0,0,0.06)",
-                            background: "rgba(0,0,0,0.02)",
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              gap: 10,
-                              fontSize: 12,
-                              color: "var(--text-secondary)",
-                            }}
-                          >
-                            <span>{describeShotQueueJob(job)}</span>
-                            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                              <span style={{ color: "var(--accent)", fontWeight: 600 }}>
-                                {job.status === "queued" ? "Sirada" : `%${progressValue}`}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleCancelShotJob(job.id)}
-                                className="btn-secondary"
-                                style={{ padding: "5px 8px", fontSize: 11 }}
-                              >
-                                <X size={12} />
-                                Iptal
-                              </button>
-                            </div>
-                          </div>
-                          <div
-                            style={{
-                              height: 6,
-                              borderRadius: 999,
-                              overflow: "hidden",
-                              background: "rgba(0,0,0,0.06)",
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: `${progressValue}%`,
-                                height: "100%",
-                                borderRadius: 999,
-                                background: "linear-gradient(90deg, #1a1c1c, #4b5563)",
-                              }}
-                            />
+                  {/* ── Uretim Durumu ── */}
+                  {shouldShowProductionState ? (
+                    <div style={{ borderRadius: 16, border: "1px solid rgba(245,158,11,0.18)", background: "linear-gradient(135deg, rgba(245,158,11,0.04) 0%, rgba(245,158,11,0.02) 100%)", overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid rgba(245,158,11,0.1)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(245,158,11,0.12)", display: "grid", placeItems: "center" }}><LoaderCircle className="spin-slow" size={14} style={{ color: "var(--status-warning)" }} /></div>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Uretim aktif</div>
+                            {productionNotice ? <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 1 }}>{productionNotice}</div> : null}
                           </div>
                         </div>
-                      );
-                    })}
-
-                    {shotQueueJobs.length > 3 ? (
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                        +{shotQueueJobs.length - 3} ek is kuyrukta veya calisiyor.
+                        {shotQueueJobs.length > 1 ? <button className="btn-secondary" type="button" onClick={handleCancelAllShotJobs} style={{ padding: "6px 12px", fontSize: 11, fontWeight: 500, borderRadius: 8 }}><X size={12} />Tumunu iptal</button> : null}
                       </div>
-                    ) : null}
-                  </div>
-                ) : shot.imageStatus === "generating" ||
-                  shot.videoStatus === "generating" ||
-                  shot.audioStatus === "generating" ? (
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                    Shot uretim durumu guncelleniyor. Ilgili is queue katmaninda aktif.
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-
-            {dialogueAudioDetail || shot.audioStatus !== "none" || shot.audioDialoguePreview ? (
-              <section
-                style={{
-                  display: "grid",
-                  gap: 12,
-                  padding: "14px 16px",
-                  borderRadius: 18,
-                  border: "1px solid rgba(59,130,246,0.18)",
-                  background: "rgba(59,130,246,0.05)",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <div
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                        color: "rgba(59,130,246,0.9)",
-                      }}
-                    >
-                      <PlayCircle size={13} />
-                      Dialogue audio
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                      {dialogueAudioDetail?.audioDirection?.dialoguePreview ??
-                        shot.audioDialoguePreview ??
-                        "Bu shot icin parse edilen diyalog transcript yok."}
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "7px 10px",
-                      borderRadius: 999,
-                      border: "1px solid rgba(0,0,0,0.06)",
-                      background: "rgba(0,0,0,0.02)",
-                      fontSize: 11,
-                      color: "var(--text-secondary)",
-                    }}
-                  >
-                    <span>Status</span>
-                    <strong style={{ color: statusColor(activeDialogueShot.audioStatus) }}>
-                      {activeDialogueShot.audioStatus}
-                    </strong>
-                  </div>
-                </div>
-
-                {loadingDialogueAudioDetail ? (
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                    Dialogue audio detayi yukleniyor.
-                  </div>
-                ) : null}
-
-                {dialogueAudioDetail?.resolvedLines.length ? (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {dialogueAudioDetail.resolvedLines.map((line, index) => (
-                      <span
-                        key={`${line.speakerKey}-${index}`}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border: "1px solid rgba(0,0,0,0.08)",
-                          background: "rgba(0,0,0,0.04)",
-                          fontSize: 11,
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        <strong style={{ color: "var(--text-primary)" }}>{line.speaker}</strong>
-                        <span>{line.resolvedTargetLabel ?? "unresolved"}</span>
-                        <span>{line.voiceName ?? line.voiceId ?? "voice missing"}</span>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-
-                {dialogueAudioDetail?.blockerReason ? (
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 14,
-                      border: "1px solid rgba(0,0,0,0.12)",
-                      background: "rgba(0,0,0,0.04)",
-                      color: "var(--text-secondary)",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    {dialogueAudioDetail.blockerReason}
-                  </div>
-                ) : null}
-
-                <DialogueTextEditor
-                  busy={queueingDialogueAudio || loadingDialogueAudioDetail}
-                  description="Speaker etiketleri sabit kalir. Bu shot icin seslendirilecek replikleri burada hizlica duzenleyebilirsin."
-                  hasOverride={Boolean(dialogueAudioDetail?.hasDialogueOverride)}
-                  lines={dialogueAudioDetail?.audioDirection?.dialogueLines ?? []}
-                  onClear={handleClearDialogueOverride}
-                  onSave={handleSaveDialogueOverride}
-                  title="Shot seslendirme metnini duzenle"
-                />
-
-                <DialoguePerformanceEditor
-                  busy={queueingDialogueAudio || loadingDialogueAudioDetail}
-                  description="Bu shot icin duygu/pacing preset'i, yonetmen notu ve OpenRouter ara katmanini acik veya kapali kullanma secimi."
-                  hasOverride={Boolean(dialogueAudioDetail?.hasGenerationProfileOverride)}
-                  onClear={handleClearDialogueGenerationProfile}
-                  onSave={handleSaveDialogueGenerationProfile}
-                  profile={
-                    dialogueAudioDetail?.generationProfile ?? {
-                      useOptimizer: true,
-                      performancePreset: "auto",
-                      performanceNote: null,
-                    }
-                  }
-                  title="Shot duygu tonu ve optimizer"
-                />
-
-                {dialogueAudioUrl ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <audio controls src={dialogueAudioUrl} style={{ width: "100%" }} />
-                    {activeDialogueTake ? (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                        <span
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            padding: "7px 10px",
-                            borderRadius: 999,
-                            border: "1px solid rgba(0,0,0,0.06)",
-                            background: "rgba(0,0,0,0.02)",
-                            fontSize: 11,
-                            color: "var(--text-secondary)",
-                          }}
-                        >
-                          master {formatAudioTakeLabel(activeDialogueTake)}
-                        </span>
-                        <span
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            padding: "7px 10px",
-                            borderRadius: 999,
-                            border: "1px solid rgba(0,0,0,0.06)",
-                            background: "rgba(0,0,0,0.02)",
-                            fontSize: 11,
-                            color: "var(--text-secondary)",
-                          }}
-                        >
-                          {formatAudioTakeCreatedAt(activeDialogueTake.createdAt)}
-                        </span>
-                        {activeDialogueTake.outputFormat ? (
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              padding: "7px 10px",
-                              borderRadius: 999,
-                              border: "1px solid rgba(0,0,0,0.06)",
-                              background: "rgba(0,0,0,0.02)",
-                              fontSize: 11,
-                              color: "var(--text-secondary)",
-                            }}
-                          >
-                            {activeDialogueTake.outputFormat}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {historicalDialogueTakes.length > 0 ? (
-                      <details
-                        style={{
-                          borderRadius: 16,
-                          border: "1px solid rgba(0,0,0,0.08)",
-                          background: "rgba(255,255,255,0.55)",
-                          padding: "10px 12px",
-                        }}
-                      >
-                        <summary
-                          style={{
-                            cursor: "pointer",
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                          }}
-                        >
-                          Onceki take&apos;ler ({historicalDialogueTakes.length})
-                        </summary>
-                        <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
-                          {historicalDialogueTakes.map((take) => {
-                            const takeUrl = convertFileSrc(
-                              toAbsoluteProjectPath(projectFolderPath, take.relativePath),
-                            );
-
+                      {shotQueueJobs.length > 0 ? (
+                        <div style={{ padding: "12px 20px 16px", display: "grid", gap: 8 }}>
+                          {shotQueueJobs.slice(0, 4).map((job) => {
+                            const pv = job.status === "queued" ? 12 : Math.max(8, Math.min(100, Math.round(job.progress || 0)));
                             return (
-                              <div
-                                key={take.id}
-                                style={{
-                                  display: "grid",
-                                  gap: 8,
-                                  paddingTop: 12,
-                                  borderTop: "1px solid rgba(0,0,0,0.08)",
-                                }}
-                              >
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                  <span
-                                    style={{
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      padding: "6px 10px",
-                                      borderRadius: 999,
-                                      border: "1px solid rgba(0,0,0,0.06)",
-                                      background: "rgba(0,0,0,0.02)",
-                                      fontSize: 11,
-                                      color: "var(--text-secondary)",
-                                    }}
-                                  >
-                                    {formatAudioTakeLabel(take)}
-                                  </span>
-                                  <span
-                                    style={{
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      padding: "6px 10px",
-                                      borderRadius: 999,
-                                      border: "1px solid rgba(0,0,0,0.06)",
-                                      background: "rgba(0,0,0,0.02)",
-                                      fontSize: 11,
-                                      color: "var(--text-secondary)",
-                                    }}
-                                  >
-                                    {formatAudioTakeCreatedAt(take.createdAt)}
-                                  </span>
-                                  {take.outputFormat ? (
-                                    <span
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        padding: "6px 10px",
-                                        borderRadius: 999,
-                                        border: "1px solid rgba(0,0,0,0.06)",
-                                        background: "rgba(0,0,0,0.02)",
-                                        fontSize: 11,
-                                        color: "var(--text-secondary)",
-                                      }}
-                                    >
-                                      {take.outputFormat}
-                                    </span>
-                                  ) : null}
+                              <div key={job.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                <div style={{ flex: 1, display: "grid", gap: 4 }}>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                    <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)" }}>{describeShotQueueJob(job)}</span>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: job.status === "queued" ? "var(--text-muted)" : "var(--status-warning)", fontVariantNumeric: "tabular-nums" }}>{job.status === "queued" ? "Sirada" : `%${pv}`}</span>
+                                  </div>
+                                  <div style={{ height: 3, borderRadius: 999, background: "var(--surface-active)" }}><div style={{ width: `${pv}%`, height: "100%", borderRadius: 999, background: "linear-gradient(90deg, #f59e0b, #d97706)", transition: "width 400ms cubic-bezier(0.4,0,0.2,1)" }} /></div>
                                 </div>
-                                <audio controls src={takeUrl} style={{ width: "100%" }} />
+                                <button type="button" onClick={() => handleCancelShotJob(job.id)} className="icon-button" style={{ width: 26, height: 26, borderRadius: 7, flexShrink: 0 }}><X size={11} /></button>
                               </div>
                             );
                           })}
+                          {shotQueueJobs.length > 4 ? <div style={{ fontSize: 11, color: "var(--text-muted)", paddingTop: 4 }}>+{shotQueueJobs.length - 4} ek is kuyrukta</div> : null}
                         </div>
-                      </details>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                    {activeDialogueShot.audioStatus === "done"
-                      ? "Dialogue master dosyasi bekleniyor."
-                      : "Heniz uretilmis dialogue audio yok."}
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button
-                    className="btn-primary"
-                    disabled={
-                      queueingDialogueAudio ||
-                      loadingDialogueAudioDetail
-                    }
-                    onClick={() => void handleQueueDialogueAudio()}
-                    type="button"
-                  >
-                    <PlayCircle size={14} />
-                    {queueingDialogueAudio
-                      ? "Queueing..."
-                      : activeDialogueTake
-                        ? "Regenerate dialogue"
-                        : "Generate dialogue"}
-                  </button>
-                  {dialogueAudioDetail?.characterCount ? (
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        padding: "7px 10px",
-                        borderRadius: 999,
-                        border: "1px solid rgba(0,0,0,0.06)",
-                        background: "rgba(0,0,0,0.02)",
-                        fontSize: 11,
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {dialogueAudioDetail.characterCount} chars
-                    </span>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            {shot.chainStatus === "continue" ? (
-              <section style={{ display: "grid", gap: 6, padding: "12px 14px", borderRadius: 18, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.04)", color: "var(--text-primary)" }}>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}><Link2 size={13} />Chain continue</div>
-                <div style={{ fontSize: 12, lineHeight: 1.65 }}>
-                  START referansi onceki shot&apos;in secilen END sonucundan gelir. END yoksa sistem
-                  otomatik olarak onceki shot&apos;in START karesine duser.
-                </div>
-              </section>
-            ) : null}
-
-            {shot.requiresExternalReference ? (
-              <section
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  padding: "14px 16px",
-                  borderRadius: 18,
-                  border: `1px solid ${missingExternalReference ? "rgba(0,0,0,0.12)" : "rgba(34,197,94,0.22)"}`,
-                  background: missingExternalReference
-                    ? "rgba(0,0,0,0.04)"
-                    : "rgba(34,197,94,0.08)",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: missingExternalReference ? "var(--text-primary)" : "var(--status-success)" }}>
-                      <AlertTriangle size={13} />
-                      External reference
+                      ) : (shot.imageStatus === "generating" || shot.videoStatus === "generating" || shot.audioStatus === "generating") ? (
+                        <div style={{ padding: "12px 20px 16px", fontSize: 12, color: "var(--text-secondary)" }}>Uretim aktif, durum guncelleniyor...</div>
+                      ) : null}
                     </div>
-                    <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                      {shot.externalReferenceName
-                        ? `Beklenen dosya: ${shot.externalReferenceName}`
-                        : "Bu shot harici referans gorseli bekliyor."}
-                    </div>
-                  </div>
-                  {externalReferenceUrl ? (
-                    <button
-                      onClick={() =>
-                        setLightboxItem({
-                          kind: "image",
-                          src: externalReferenceUrl,
-                          title: `${shot.shotNumber} / External reference`,
-                          subtitle: shot.externalReferenceName ?? "Harici referans",
-                          description: shot.externalReferenceNotes ?? "Bu shot icin yuklu referans gorseli.",
-                          downloadPath: shot.externalReferencePath
-                            ? toAbsoluteProjectPath(projectFolderPath, shot.externalReferencePath)
-                            : null,
-                          downloadName:
-                            shot.externalReferenceName ??
-                            shot.externalReferencePath?.split(/[\\/]/).pop() ??
-                            null,
-                        })
-                      }
-                      style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer" }}
-                      type="button"
-                    >
-                      <img
-                        src={externalReferenceUrl}
-                        alt={`${shot.shotNumber} reference`}
-                        style={{
-                          width: 72,
-                          aspectRatio: "4 / 3",
-                          borderRadius: 12,
-                          objectFit: "cover",
-                          border: "1px solid var(--border-subtle)",
-                        }}
-                      />
-                    </button>
                   ) : null}
-                </div>
 
-                {shot.externalReferenceNotes ? (
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                    {shot.externalReferenceNotes}
-                  </div>
-                ) : null}
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="btn-secondary"
-                    type="button"
-                    disabled={updatingReference}
-                    onClick={() => void handleUploadReference()}
-                  >
-                    <Upload size={14} />
-                    {shot.externalReferencePath ? "Replace reference" : "Upload reference"}
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    type="button"
-                    onClick={() => openAssetLibrary("reference", shot.externalReferencePath)}
-                  >
-                    <Link2 size={14} />
-                    Asset Library
-                  </button>
-                  {shot.externalReferencePath ? (
-                    <button
-                      className="btn-secondary"
-                      type="button"
-                      disabled={updatingReference}
-                      onClick={() => void handleClearReference()}
-                    >
-                      <Trash2 size={14} />
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-
-                {missingExternalReference ? (
-                  <div style={{ fontSize: 11, color: "var(--text-primary)", lineHeight: 1.6 }}>
-                    Bu shot icin START, END veya coverage gorseli uretmeden once referans gorsel yuklenmeli.
-                    {shot.chainStatus === "continue"
-                      ? " Zincir START continuity onceki END ile kurulur; END yoksa onceki START kullanilir. Ama sahne referansi yine END ve coverage icin gerekli olabilir."
-                      : ""}
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 11, color: "var(--status-success)", lineHeight: 1.6 }}>
-                    Harici referans gorseli hazir. Uretim bu referansi kullanabilir.
-                  </div>
-                )}
-              </section>
-            ) : null}
-
-            <section style={{ display: "grid", gap: 8, padding: "14px 16px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.01)" }}>
-              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Character binding</div>
-              {loadingCharacters ? (
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Karakterler yukleniyor...</div>
-              ) : characters.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  Once Characters ekranindan bir continuity profili olustur.
-                </div>
-              ) : (
-                <>
-                  <select
-                    onChange={(event) => {
-                      const nextCharacterId = event.target.value;
-                      setSelectedCharacterId(nextCharacterId);
-                      const nextCharacter = characters.find((character) => character.id === nextCharacterId);
-                      setSelectedLookId(nextCharacter?.defaultLookId ?? nextCharacter?.looks[0]?.id ?? "");
-                    }}
-                    style={panelInputStyle}
-                    value={selectedCharacterId}
-                  >
-                    <option value="">Karakter sec</option>
-                    {characters.map((character) => (
-                      <option key={character.id} value={character.id}>
-                        {character.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    disabled={!selectedCharacter}
-                    onChange={(event) => setSelectedLookId(event.target.value)}
-                    style={panelInputStyle}
-                    value={selectedLookId}
-                  >
-                    <option value="">Look sec</option>
-                    {selectedCharacter?.looks.map((look) => (
-                      <option key={look.id} value={look.id}>
-                        {look.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--text-secondary)" }}>
-                    <input
-                      checked={includeCharacterPrompt}
-                      onChange={(event) => setIncludeCharacterPrompt(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>Karakter prompt hint'ini START/END/VIDEO promptlarina ekle</span>
-                  </label>
-
-                  {selectedLook ? (
-                    <div style={{ display: "grid", gap: 8, padding: "12px 12px 14px", borderRadius: 16, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.02)" }}>
-                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                        {selectedCharacterPreview ? (
-                          <button
-                            onClick={() =>
-                              setLightboxItem({
-                                kind: "image",
-                                src: selectedCharacterPreview,
-                                title: `${selectedCharacter?.name ?? "Character"} / ${selectedLook.name}`,
-                                subtitle: "Continuity look preview",
-                                description:
-                                  selectedLook.promptHint ??
-                                  selectedCharacter?.promptHint ??
-                                  "Continuity hint hazir degil.",
-                                downloadPath: selectedLook.primaryImage || selectedLook.refImages[0]
-                                  ? toAbsoluteProjectPath(
-                                      projectFolderPath,
-                                      selectedLook.primaryImage ?? selectedLook.refImages[0],
-                                    )
-                                  : null,
-                                downloadName:
-                                  (selectedLook.primaryImage ?? selectedLook.refImages[0])
-                                    ?.split(/[\\/]/)
-                                    .pop() ?? null,
-                              })
-                            }
-                            style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer" }}
-                            type="button"
-                          >
-                            <img
-                              alt={selectedLook.name}
-                              src={selectedCharacterPreview}
-                              style={{ width: 72, aspectRatio: "4 / 3", borderRadius: 12, objectFit: "cover", border: "1px solid var(--border-subtle)" }}
-                            />
-                          </button>
-                        ) : null}
-                        <div style={{ display: "grid", gap: 4 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600 }}>
-                            {selectedCharacter?.name} / {selectedLook.name}
-                          </div>
-                          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                            {selectedLook.promptHint ?? selectedCharacter?.promptHint ?? "Continuity hint hazir degil."}
-                          </div>
-                        </div>
+                  {/* ── Zincir Devam ── */}
+                  {shot.chainStatus === "continue" ? (
+                    <div style={{ display: "flex", alignItems: "start", gap: 12, padding: "14px 18px", borderRadius: 12, background: "var(--surface-hover)", border: "1px solid var(--surface-hover)" }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--surface-hover)", display: "grid", placeItems: "center", flexShrink: 0 }}><Link2 size={15} style={{ color: "var(--text-secondary)" }} /></div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>Zincir devam</div>
+                        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>START referansi onceki shot&apos;in END karesinden otomatik alinir.</div>
                       </div>
+                    </div>
+                  ) : null}
 
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button className="btn-secondary" disabled={!selectedCharacterId || !selectedLookId || bindingCharacter} onClick={() => void handleApplyCharacterBinding()} type="button">
-                          <Link2 size={14} />
-                          {bindingCharacter ? "Kaydediliyor..." : "Shot'a bagla"}
-                        </button>
-                        {shot.characterLookId ? (
-                          <button className="btn-secondary" disabled={bindingCharacter} onClick={() => void handleClearCharacterBinding()} type="button">
-                            <Trash2 size={14} />
-                            Baglantiyi temizle
+                  {/* ── Harici Referans ── */}
+                  {shot.requiresExternalReference ? (
+                    <div style={{ borderRadius: 16, border: `1px solid ${missingExternalReference ? "rgba(239,68,68,0.15)" : "rgba(34,197,94,0.15)"}`, background: missingExternalReference ? "linear-gradient(135deg, rgba(239,68,68,0.03) 0%, rgba(239,68,68,0.01) 100%)" : "linear-gradient(135deg, rgba(34,197,94,0.04) 0%, rgba(34,197,94,0.01) 100%)", overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px 20px" }}>
+                        <div style={{ width: 36, height: 36, borderRadius: 10, background: missingExternalReference ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", display: "grid", placeItems: "center", flexShrink: 0 }}><AlertTriangle size={16} style={{ color: missingExternalReference ? "var(--status-error)" : "var(--status-success)" }} /></div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>Harici referans {missingExternalReference ? "gerekli" : "hazir"}</div>
+                          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{shot.externalReferenceName ? `Beklenen: ${shot.externalReferenceName}` : "Bu shot harici referans gorseli bekliyor."}</div>
+                        </div>
+                        {externalReferenceUrl ? (
+                          <button onClick={() => setLightboxItem({ kind: "image", src: externalReferenceUrl, title: `${shot.shotNumber} / Harici referans`, subtitle: shot.externalReferenceName ?? "Referans", description: shot.externalReferenceNotes ?? "Yuklu referans gorseli.", downloadPath: shot.externalReferencePath ? toAbsoluteProjectPath(projectFolderPath, shot.externalReferencePath) : null, downloadName: shot.externalReferenceName ?? shot.externalReferencePath?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
+                            <img src={externalReferenceUrl} alt="ref" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover", border: "1px solid var(--glass-border)" }} />
                           </button>
                         ) : null}
                       </div>
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </section>
-
-            <section style={{ display: "grid", gap: 8 }}>
-              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Single actions</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <button className="btn-secondary" disabled={activePromptTab === "start" ? activePromptEmpty : !promptDrafts.start.trim() || producing !== null || burstProducing !== null || startReferenceMissing} onClick={() => void queueStartFrame()} type="button"><Clapperboard size={14} />{producing === "start" ? "Queueing..." : "Start"}</button>
-                <button className="btn-secondary" disabled={!promptDrafts.end.trim() || producing !== null || burstProducing !== null || endReferenceMissing} onClick={() => void queueEndFrame()} type="button"><Clapperboard size={14} />{producing === "end" ? "Queueing..." : "End"}</button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, auto) 1fr", gap: 8 }}>
-                <select
-                  value={variantBurstCount.start}
-                  onChange={(event) =>
-                    setVariantBurstCount((current) => ({
-                      ...current,
-                      start: Number.parseInt(event.target.value, 10),
-                    }))
-                  }
-                  style={panelInputStyle}
-                >
-                  {VARIANT_BURST_OPTIONS.map((count) => (
-                    <option key={`start-${count}`} value={count}>
-                      x{count}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn-secondary"
-                  disabled={!promptDrafts.start.trim() || producing !== null || burstProducing !== null || startReferenceMissing}
-                  onClick={() => void queueFrameVariants("start")}
-                  type="button"
-                >
-                  <Sparkles size={14} />
-                  {burstProducing === "start"
-                    ? "START varyantlari kuyrukta..."
-                    : `${variantBurstCount.start} START varyanti uret`}
-                </button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, auto) 1fr", gap: 8 }}>
-                <select
-                  value={variantBurstCount.end}
-                  onChange={(event) =>
-                    setVariantBurstCount((current) => ({
-                      ...current,
-                      end: Number.parseInt(event.target.value, 10),
-                    }))
-                  }
-                  style={panelInputStyle}
-                >
-                  {VARIANT_BURST_OPTIONS.map((count) => (
-                    <option key={`end-${count}`} value={count}>
-                      x{count}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn-secondary"
-                  disabled={!promptDrafts.end.trim() || producing !== null || burstProducing !== null || endReferenceMissing}
-                  onClick={() => void queueFrameVariants("end")}
-                  type="button"
-                >
-                  <Sparkles size={14} />
-                  {burstProducing === "end"
-                    ? "END varyantlari kuyrukta..."
-                    : `${variantBurstCount.end} END varyanti uret`}
-                </button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, auto) 1fr", gap: 8 }}>
-                <select
-                  value={variantBurstCount.video}
-                  onChange={(event) =>
-                    setVariantBurstCount((current) => ({
-                      ...current,
-                      video: Number.parseInt(event.target.value, 10),
-                    }))
-                  }
-                  style={panelInputStyle}
-                >
-                  {VARIANT_BURST_OPTIONS.map((count) => (
-                    <option key={`video-${count}`} value={count}>
-                      x{count}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn-secondary"
-                  disabled={
-                    !promptDrafts.video.trim() ||
-                    producing !== null ||
-                    burstProducing !== null ||
-                    clearingMediaView !== null
-                  }
-                  onClick={() => void queueVideoVariants()}
-                  type="button"
-                >
-                  <Sparkles size={14} />
-                  {burstProducing === "video"
-                    ? "Video varyantlari kuyrukta..."
-                    : `${variantBurstCount.video} video varyanti uret`}
-                </button>
-              </div>
-              <button className="btn-primary" disabled={!promptDrafts.video.trim() || producing !== null || burstProducing !== null || clearingMediaView !== null} onClick={() => void queueVideo()} type="button"><Video size={15} />{producing === "video" ? "Queueing video..." : "Produce video"}</button>
-              <button className="btn-secondary" disabled={!shot.videoPath || upscaling || producing !== null || burstProducing !== null || clearingMediaView !== null} onClick={() => void queueUpscale()} type="button"><ArrowUpToLine size={15} />{upscaling ? "Queueing 4K..." : "Produce 4K upscale"}</button>
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  padding: "12px 14px",
-                  borderRadius: 16,
-                  border: "1px solid var(--border-subtle)",
-                  background: "rgba(0,0,0,0.02)",
-                }}
-              >
-                <div style={{ display: "grid", gap: 4 }}>
-                  <span style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                    Video duration
-                  </span>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                    Varsayilan sure shot duration alanindan gelir. Istersen bu modal icin manüel override edebilirsin.
-                  </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <select
-                    onChange={(event) =>
-                      setVideoDuration(Number(event.target.value) as KlingDuration)
-                    }
-                    style={{ ...panelInputStyle, width: 120 }}
-                    value={resolvedVideoDuration}
-                  >
-                    {KLING_V3_DURATION_VALUES.map((value) => (
-                      <option key={value} value={value}>
-                        {value}s
-                      </option>
-                    ))}
-                  </select>
-                  {isVideoDurationOverridden ? (
-                    <button
-                      className="btn-secondary"
-                      onClick={() => setVideoDuration(defaultVideoDuration)}
-                      style={{ padding: "10px 12px" }}
-                      type="button"
-                    >
-                      Shot suresine don
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                Bu shot icin default sure {shot.durationS ?? "bos"}s. Kling tarafina su an {resolvedVideoDuration}s
-                {isVideoDurationOverridden ? " (manuel override)" : " (shot default)"} gonderilecek.
-              </div>
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "12px 14px",
-                  borderRadius: 16,
-                  border: "1px solid var(--border-subtle)",
-                  background: "rgba(0,0,0,0.02)",
-                }}
-              >
-                <div style={{ display: "grid", gap: 4 }}>
-                  <span style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                    Native audio
-                  </span>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                    Bu toggle aciksa Kling istegi `generate_audio=true` ile gider.
-                    {videoPromptAnalysis.hasAudioDirection
-                      ? " Prompt icinde audio direction da algilandi."
-                      : " Promptta audio direction yoksa bile sesi zorlayabilirsin."}
-                  </span>
-                </div>
-                <input
-                  checked={videoGenerateAudio}
-                  onChange={(event) => setVideoGenerateAudio(event.target.checked)}
-                  style={{ width: 18, height: 18, accentColor: "var(--accent)" }}
-                  type="checkbox"
-                />
-              </label>
-              {videoPromptAnalysis.detectedMultiShot ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 10,
-                    padding: "12px 14px",
-                    borderRadius: 16,
-                    border: "1px solid rgba(0, 0, 0, 0.12)",
-                    background: "rgba(0, 0, 0, 0.04)",
-                  }}
-                >
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <span style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                      Multi-shot algilandi
-                    </span>
-                    <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                      Prompt icinde {videoPromptAnalysis.shotCount} alt shot bulundu. Istek `multi_prompt`
-                      ile gonderilecek.
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {(["customize", "intelligent"] as KlingShotType[]).map((value) => (
-                      <button
-                        key={value}
-                        className={videoShotType === value ? "btn-primary" : "btn-secondary"}
-                        onClick={() => setVideoShotType(value)}
-                        style={{ flex: 1 }}
-                        type="button"
-                      >
-                        {value}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </section>
-
-            <section style={{ display: "grid", gap: 8, padding: "14px 16px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.01)" }}>
-              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Asset handoff</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("start", shot.imageStartPath)}>
-                  <ImageIcon size={14} />
-                  Pick START
-                </button>
-                <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("end", shot.imageEndPath)}>
-                  <ImageIcon size={14} />
-                  Pick END
-                </button>
-                <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("video", shot.video4kPath ?? shot.videoPath)}>
-                  <Video size={14} />
-                  Pick VIDEO
-                </button>
-                <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("reference", shot.externalReferencePath)}>
-                  <Link2 size={14} />
-                  Pick REFERENCE
-                </button>
-              </div>
-            </section>
-
-            <section style={{ display: "grid", gap: 8, padding: "14px 16px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.01)" }}>
-              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>Workflow links</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("start", shot.imageStartPath)}>
-                  <Link2 size={14} />
-                  Asset Library
-                </button>
-                <button className="btn-secondary" type="button" onClick={() => openImageGenerator(activeMediaView === "end" ? "end" : "start")}>
-                  <ImageIcon size={14} />
-                  Image Generator
-                </button>
-                <button className="btn-secondary" type="button" onClick={openVideoGenerator}>
-                  <Video size={14} />
-                  Video Generator
-                </button>
-                <button className="btn-secondary" type="button" onClick={openPromptLibrary}>
-                  <Sparkles size={14} />
-                  Prompt Library
-                </button>
-                <button className="btn-secondary" type="button" onClick={openModelManager}>
-                  <RefreshCw size={14} />
-                  Model Presets
-                </button>
-              </div>
-            </section>
-
-            <section
-              style={{
-                borderRadius: 22,
-                border: "1px solid var(--border-subtle)",
-                background: "var(--bg-elevated)",
-                display: "grid",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><Sparkles size={13} />Autonomous candidates</div>
-                {loadingGroups ? <LoaderCircle className="spin-slow" size={14} /> : null}
-              </div>
-              <div style={{ padding: 14, display: "grid", gap: 12 }}>
-                {(["start", "end", "video"] as AutonomousStage[]).map((stage) => (
-                  <div key={stage} style={{ display: "grid", gap: 10, padding: "12px 12px 14px", borderRadius: 18, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.01)" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ display: "grid", gap: 2 }}>
-                        <span style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>{stage}</span>
-                        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{groups[stage].length > 0 ? `${groups[stage].length} aday` : "Aday yok"}</span>
+                      <div style={{ display: "flex", gap: 6, padding: "0 20px 16px" }}>
+                        <button className="btn-secondary" type="button" disabled={updatingReference} onClick={() => void handleUploadReference()} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Upload size={13} />{shot.externalReferencePath ? "Degistir" : "Yukle"}</button>
+                        <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("reference", shot.externalReferencePath)} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Link2 size={13} />Kutuphane</button>
+                        {shot.externalReferencePath ? <button className="btn-secondary" type="button" disabled={updatingReference} onClick={() => void handleClearReference()} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8, borderColor: "rgba(239,68,68,0.18)", color: "var(--status-error)" }}><Trash2 size={13} />Kaldir</button> : null}
                       </div>
-                      <button className="btn-secondary" onClick={() => void handleRegenerate(stage)} disabled={stageAction !== null} type="button" style={{ padding: "7px 10px", fontSize: 11 }}><RefreshCw size={13} />{stageAction === stage ? "Queueing..." : groups[stage].length > 0 ? "Regenerate 4" : "Generate 4"}</button>
                     </div>
+                  ) : null}
 
-                    {groups[stage].length === 0 ? (
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>{loadingGroups ? "Yukleniyor..." : "Bu stage icin henuz aday yok."}</div>
-                    ) : (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(124px, 1fr))", gap: 10 }}>
-                        {groups[stage].map((asset) => {
-                          const assetUrl = convertFileSrc(toAbsoluteProjectPath(projectFolderPath, asset.file_path));
-                          const isVideo = asset.type === "video";
-                          return (
-                            <div key={asset.id} style={{ display: "grid", gap: 8, padding: 8, borderRadius: 16, border: `1px solid ${asset.isSelected ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.06)"}`, background: asset.isSelected ? "rgba(0,0,0,0.04)" : "rgba(0,0,0,0.02)" }}>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setLightboxItem({
-                                    kind: isVideo ? "video" : "image",
-                                    src: assetUrl,
-                                    title: `${shot.shotNumber} / ${stage.toUpperCase()} / ${asset.filename}`,
-                                    subtitle: `Variant ${String(asset.variant ?? 0).padStart(2, "0")}`,
-                                    description:
-                                      asset.prompt ?? `${stage.toUpperCase()} stage adayi.`,
-                                    downloadPath: toAbsoluteProjectPath(projectFolderPath, asset.file_path),
-                                    downloadName: asset.filename,
-                                  })
-                                }
-                                style={{ padding: 0, border: "none", borderRadius: 12, overflow: "hidden", background: "var(--bg-overlay)", cursor: "pointer", aspectRatio: "16 / 10" }}
-                              >
-                                {isVideo ? <video src={assetUrl} muted playsInline preload="none" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} /> : <img src={assetUrl} alt={asset.filename} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                  {/* ── Karakter Baglama (Card Pattern) ── */}
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Karakter</h3>
+                    </div>
+                    <div style={{ padding: "16px 20px" }}>
+                      {loadingCharacters ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "20px 0", justifyContent: "center" }}><LoaderCircle className="spin-slow" size={16} style={{ color: "var(--text-muted)" }} /><span style={{ fontSize: 12, color: "var(--text-muted)" }}>Yukleniyor...</span></div>
+                      ) : characters.length === 0 ? (
+                        <div style={{ textAlign: "center", padding: "24px 16px" }}>
+                          <div style={{ width: 40, height: 40, borderRadius: 12, background: "var(--surface-hover)", display: "grid", placeItems: "center", margin: "0 auto 10px" }}><Sparkles size={18} style={{ color: "var(--text-muted)" }} /></div>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>Karakter bulunamadi</div>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>Karakterler ekranindan profil olusturun.</div>
+                        </div>
+                      ) : selectedLook && !characterPickerOpen ? (
+                        /* Bound character card */
+                        <div style={{ display: "grid", gap: 12 }}>
+                          <div style={{ display: "flex", gap: 14, alignItems: "center", padding: "14px 16px", borderRadius: 14, background: "var(--surface-hover)", border: "1px solid var(--surface-hover)" }}>
+                            {selectedCharacterPreview ? (
+                              <button onClick={() => setLightboxItem({ kind: "image", src: selectedCharacterPreview, title: `${selectedCharacter?.name ?? "Karakter"} / ${selectedLook.name}`, subtitle: "Continuity onizleme", description: selectedLook.promptHint ?? selectedCharacter?.promptHint ?? "Hint hazir degil.", downloadPath: selectedLook.primaryImage || selectedLook.refImages[0] ? toAbsoluteProjectPath(projectFolderPath, selectedLook.primaryImage ?? selectedLook.refImages[0]) : null, downloadName: (selectedLook.primaryImage ?? selectedLook.refImages[0])?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
+                                <img alt={selectedLook.name} src={selectedCharacterPreview} style={{ width: 52, height: 52, borderRadius: 12, objectFit: "cover", border: "1px solid var(--surface-active)" }} />
                               </button>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>V{String(asset.variant ?? 0).padStart(2, "0")}</span>
-                                {asset.isSelected ? <span style={{ fontSize: 9, color: "var(--accent)", letterSpacing: "0.08em", textTransform: "uppercase" }}>Selected</span> : null}
+                            ) : (
+                              <div style={{ width: 52, height: 52, borderRadius: 12, background: "var(--surface-active)", display: "grid", placeItems: "center", flexShrink: 0 }}><Sparkles size={18} style={{ color: "var(--text-muted)" }} /></div>
+                            )}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{selectedCharacter?.name}</div>
+                              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 1 }}>{selectedLook.name}</div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                                <span style={{ fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 5, background: includeCharacterPrompt ? "rgba(34,197,94,0.08)" : "var(--surface-hover)", color: includeCharacterPrompt ? "var(--status-success)" : "var(--text-muted)" }}>
+                                  Prompt hint {includeCharacterPrompt ? "aktif" : "kapali"}
+                                </span>
                               </div>
-                              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6 }}>
-                                <button className="btn-secondary" onClick={() => setActiveMediaView(stage)} type="button" style={{ padding: "6px 8px", fontSize: 11 }}>{isVideo ? <PlayCircle size={13} /> : <ImageIcon size={13} />}Panele al</button>
-                                <button className="btn-primary" disabled={selectingAssetId === asset.id} onClick={() => void handleSelect(asset.id, stage)} type="button" style={{ padding: "6px 10px", fontSize: 11 }}>{selectingAssetId === asset.id ? "..." : asset.isSelected ? "Picked" : "Pick"}</button>
-                              </div>
-                              <button
-                                className="btn-secondary"
-                                onClick={() =>
-                                  void handleDownloadMedia(
-                                    asset.file_path,
-                                    asset.filename,
-                                    `${shot.shotNumber} ${stage.toUpperCase()}`,
-                                  )
-                                }
-                                style={{ padding: "6px 8px", fontSize: 11 }}
-                                type="button"
-                              >
-                                <Download size={13} />
-                                Indir
-                              </button>
-                              {!isVideo ? (
-                                <button
-                                  className="btn-secondary"
-                                  onClick={() =>
-                                    openImageGeneratorWithReference(
-                                      toAbsoluteProjectPath(projectFolderPath, asset.file_path),
-                                    )
-                                  }
-                                  style={{ padding: "6px 8px", fontSize: 11 }}
-                                  type="button"
-                                >
-                                  <ImageIcon size={13} />
-                                  Still Lab'e referans yap
-                                </button>
-                              ) : null}
                             </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+                              <button className="btn-secondary" onClick={() => setCharacterPickerOpen(true)} type="button" style={{ padding: "6px 10px", fontSize: 11, fontWeight: 500, borderRadius: 7 }}>Degistir</button>
+                              <button className="btn-secondary" disabled={bindingCharacter} onClick={() => void handleClearCharacterBinding()} type="button" style={{ padding: "6px 10px", fontSize: 11, fontWeight: 500, borderRadius: 7, borderColor: "rgba(239,68,68,0.15)", color: "var(--status-error)" }}>Kaldir</button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Character picker */
+                        <div style={{ display: "grid", gap: 12 }}>
+                          {selectedLook && characterPickerOpen ? (
+                            <button type="button" onClick={() => setCharacterPickerOpen(false)} className="btn-secondary" style={{ justifySelf: "end", padding: "5px 10px", fontSize: 11, borderRadius: 7 }}><X size={12} />Kapat</button>
+                          ) : null}
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            <div style={{ display: "grid", gap: 4 }}>
+                              <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}>Karakter</label>
+                              <select onChange={(e) => { const nid = e.target.value; setSelectedCharacterId(nid); const nc = characters.find((c) => c.id === nid); setSelectedLookId(nc?.defaultLookId ?? nc?.looks[0]?.id ?? ""); }} style={{ ...panelInputStyle, padding: "9px 12px", borderRadius: 10, fontSize: 12, fontWeight: 500 }} value={selectedCharacterId}>
+                                <option value="">Sec...</option>
+                                {characters.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                              </select>
+                            </div>
+                            <div style={{ display: "grid", gap: 4 }}>
+                              <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}>Gorunum</label>
+                              <select disabled={!selectedCharacter} onChange={(e) => setSelectedLookId(e.target.value)} style={{ ...panelInputStyle, padding: "9px 12px", borderRadius: 10, fontSize: 12, fontWeight: 500 }} value={selectedLookId}>
+                                <option value="">Sec...</option>
+                                {selectedCharacter?.looks.map((l) => (<option key={l.id} value={l.id}>{l.name}</option>))}
+                              </select>
+                            </div>
+                          </div>
+                          <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: "var(--surface-hover)", cursor: "pointer" }}>
+                            <input checked={includeCharacterPrompt} onChange={(e) => setIncludeCharacterPrompt(e.target.checked)} type="checkbox" style={{ width: 16, height: 16, accentColor: "var(--accent)" }} />
+                            <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 500 }}>Prompt hint ekle</span>
+                          </label>
+                          <button className="btn-primary" disabled={!selectedCharacterId || !selectedLookId || bindingCharacter} onClick={() => { void handleApplyCharacterBinding(); setCharacterPickerOpen(false); }} type="button" style={{ padding: "9px 16px", fontSize: 12, fontWeight: 600, borderRadius: 10 }}>
+                            <Link2 size={13} />{bindingCharacter ? "Kaydediliyor..." : "Bagla"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ━━━━ URETIM TAB ━━━━ */}
+              {rightPanelTab === "uretim" && (
+                <div style={{ display: "grid", gap: 20 }}>
+
+                  {/* ── Unified Production Panel ── */}
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>Uretim merkezi</h3>
+                      <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)" }}>Hedef sec, mod belirle, tek tikla uret</p>
+                    </div>
+
+                    {/* Hedef secimi */}
+                    <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--surface-hover)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 10 }}>Ne uretilsin?</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                        {(["start", "end", "video"] as DetailView[]).map((target) => {
+                          const active = prodTargets[target];
+                          const hasPrompt = target === "start" ? Boolean(promptDrafts.start.trim()) : target === "end" ? Boolean(promptDrafts.end.trim()) : Boolean(promptDrafts.video.trim());
+                          const blocked = target === "start" ? startReferenceMissing : target === "end" ? endReferenceMissing : false;
+                          return (
+                            <button
+                              key={target}
+                              type="button"
+                              onClick={() => setProdTargets((c) => ({ ...c, [target]: !c[target] }))}
+                              style={{
+                                display: "grid", gap: 4, padding: "12px 10px", borderRadius: 12, textAlign: "center", cursor: "pointer",
+                                border: active ? "2px solid var(--accent)" : "1.5px solid var(--glass-border)",
+                                background: active ? "var(--surface-hover)" : "transparent",
+                                transition: "all 120ms ease",
+                                opacity: !hasPrompt || blocked ? 0.45 : 1,
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "center" }}>
+                                {target === "video" ? <Video size={18} style={{ color: active ? "var(--accent)" : "var(--text-muted)" }} /> : <ImageIcon size={18} style={{ color: active ? "var(--accent)" : "var(--text-muted)" }} />}
+                              </div>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: active ? "var(--accent)" : "var(--text-secondary)" }}>{target.toUpperCase()}</span>
+                              <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                                {blocked ? "Ref gerekli" : !hasPrompt ? "Prompt yok" : "Hazir"}
+                              </span>
+                            </button>
                           );
                         })}
                       </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
+                    </div>
 
-            <section
-              style={{
-                borderRadius: 22,
-                border: "1px solid var(--border-subtle)",
-                background: "var(--bg-elevated)",
-                display: "grid",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}><Sparkles size={13} />Prompt viewport</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {(["start", "end", "video"] as DetailView[]).map((tab) => (
-                    <button key={tab} type="button" onClick={() => setActivePromptTab(tab)} style={{ padding: "7px 10px", borderRadius: 999, border: `1px solid ${activePromptTab === tab ? "rgba(0,0,0,0.12)" : "var(--border-subtle)"}`, background: activePromptTab === tab ? "rgba(0,0,0,0.06)" : "rgba(0,0,0,0.02)", color: activePromptTab === tab ? "var(--accent)" : "var(--text-secondary)", cursor: "pointer", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{tab}</button>
-                  ))}
+                    {/* Mod secimi */}
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ display: "flex", borderRadius: 10, border: "1px solid var(--glass-border)", overflow: "hidden" }}>
+                        {([{ key: "single" as const, label: "Tekli" }, { key: "multi" as const, label: "Coklu" }]).map((m) => (
+                          <button key={m.key} type="button" onClick={() => setProdMode(m.key)} style={{ padding: "8px 18px", border: "none", fontSize: 12, fontWeight: prodMode === m.key ? 600 : 500, background: prodMode === m.key ? "var(--accent)" : "transparent", color: prodMode === m.key ? "var(--on-accent)" : "var(--text-secondary)", cursor: "pointer", transition: "all 120ms ease" }}>
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                      {prodMode === "multi" ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Adet:</span>
+                          <div style={{ display: "flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden" }}>
+                            {[2, 3, 4, 6].map((n) => (
+                              <button key={n} type="button" onClick={() => setProdVariantCount(n)} style={{ padding: "6px 12px", border: "none", fontSize: 12, fontWeight: prodVariantCount === n ? 600 : 400, background: prodVariantCount === n ? "var(--accent)" : "transparent", color: prodVariantCount === n ? "var(--on-accent)" : "var(--text-secondary)", cursor: "pointer", transition: "all 100ms ease", minWidth: 36 }}>
+                              {n}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {/* Ana aksiyon */}
+                    <div style={{ padding: "16px 20px" }}>
+                      <button
+                        className="btn-primary"
+                        disabled={!prodTargets.start && !prodTargets.end && !prodTargets.video || producing !== null || burstProducing !== null}
+                        onClick={() => void handleUnifiedProduce()}
+                        type="button"
+                        style={{ width: "100%", padding: "11px 20px", fontSize: 14, fontWeight: 600, borderRadius: 12, justifyContent: "center", letterSpacing: "-0.01em" }}
+                      >
+                        {producing !== null || burstProducing !== null ? (
+                          <><LoaderCircle className="spin-slow" size={16} />Kuyruga ekleniyor...</>
+                        ) : (
+                          <><Sparkles size={16} />
+                            {prodMode === "multi"
+                              ? `${prodVariantCount} varyant uret`
+                              : `${[prodTargets.start && "Start", prodTargets.end && "End", prodTargets.video && "Video"].filter(Boolean).join(" + ") || "Hedef sec"} uret`}
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Video Ayarlari + 4K (collapsible) ── */}
+                  <details style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <summary style={{ padding: "14px 20px", cursor: "pointer", background: "var(--gradient-header)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      Video ayarlari
+                      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}>{resolvedVideoDuration}s · Ses {videoGenerateAudio ? "acik" : "kapali"}</span>
+                    </summary>
+                    <div style={{ padding: "16px 20px", borderTop: "1px solid var(--surface-hover)", display: "grid", gap: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div><div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Sure</div><div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Shot: {shot.durationS ?? "--"}s</div></div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ display: "flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden" }}>
+                            {KLING_V3_DURATION_VALUES.map((v) => (
+                              <button key={v} type="button" onClick={() => setVideoDuration(v)} style={{ padding: "6px 10px", border: "none", fontSize: 11, fontWeight: resolvedVideoDuration === v ? 600 : 400, background: resolvedVideoDuration === v ? "var(--accent)" : "transparent", color: resolvedVideoDuration === v ? "var(--on-accent)" : "var(--text-secondary)", cursor: "pointer", minWidth: 34 }}>{v}s</button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ height: 1, background: "var(--surface-hover)" }} />
+                      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, cursor: "pointer" }}>
+                        <div><div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Yerel ses</div><div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>generate_audio=true</div></div>
+                        <div style={{ position: "relative", width: 40, height: 22, borderRadius: 11, background: videoGenerateAudio ? "var(--accent)" : "var(--border-default)", transition: "background 200ms ease" }}>
+                          <div style={{ position: "absolute", top: 2, left: videoGenerateAudio ? 20 : 2, width: 18, height: 18, borderRadius: 9, background: "var(--toggle-knob)", boxShadow: "0 1px 3px rgba(0,0,0,0.15)", transition: "left 200ms cubic-bezier(0.4,0,0.2,1)" }} />
+                          <input checked={videoGenerateAudio} onChange={(e) => setVideoGenerateAudio(e.target.checked)} type="checkbox" style={{ position: "absolute", opacity: 0, width: "100%", height: "100%", cursor: "pointer", margin: 0 }} />
+                        </div>
+                      </label>
+                      {videoPromptAnalysis.detectedMultiShot ? (<><div style={{ height: 1, background: "var(--surface-hover)" }} /><div><div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", marginBottom: 8 }}>Coklu sahne ({videoPromptAnalysis.shotCount} bolum)</div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>{(["customize", "intelligent"] as KlingShotType[]).map((v) => (<button key={v} className={videoShotType === v ? "btn-primary" : "btn-secondary"} onClick={() => setVideoShotType(v)} style={{ padding: "9px 14px", fontSize: 12, fontWeight: 600, borderRadius: 10, justifyContent: "center" }} type="button">{v === "customize" ? "Ozel" : "Akilli"}</button>))}</div></div></>) : null}
+                      <div style={{ height: 1, background: "var(--surface-hover)" }} />
+                      <button className="btn-secondary" disabled={!shot.videoPath || upscaling || producing !== null} onClick={() => void queueUpscale()} type="button" style={{ padding: "9px 14px", fontSize: 12, fontWeight: 500, borderRadius: 10, justifyContent: "center" }}>
+                        <ArrowUpToLine size={14} />{upscaling ? "4K kuyrukta..." : "4K yukseltme uygula"}
+                      </button>
+                    </div>
+                  </details>
+
+                  {/* ── Varlik Slotlari ── */}
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Varlik slotlari</h3>
+                    </div>
+                    <div style={{ display: "grid", gap: 0 }}>
+                      {([
+                        { key: "start" as const, label: "START", path: effectiveStartPath, icon: ImageIcon },
+                        { key: "end" as const, label: "END", path: effectiveEndPath, icon: ImageIcon },
+                        { key: "video" as const, label: "VIDEO", path: effectiveVideoPath, icon: Video },
+                        { key: "reference" as const, label: "REFERANS", path: shot.externalReferencePath, icon: Link2 },
+                      ]).map((slot, i) => (
+                        <div key={slot.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", borderBottom: i < 3 ? "1px solid var(--surface-hover)" : "none" }}>
+                          <slot.icon size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", width: 60, flexShrink: 0 }}>{slot.label}</span>
+                          <span style={{ flex: 1, fontSize: 11, color: slot.path ? "var(--text-primary)" : "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: slot.path ? "monospace" : "inherit", fontWeight: slot.path ? 500 : 400 }}>
+                            {slot.path ? slot.path.split("/").pop() : "Bos"}
+                          </span>
+                          <button className="btn-secondary" type="button" onClick={() => openAssetLibrary(slot.key, slot.key === "reference" ? shot.externalReferencePath : slot.key === "video" ? (shot.video4kPath ?? shot.videoPath) : slot.key === "start" ? shot.imageStartPath : shot.imageEndPath)} style={{ padding: "5px 10px", fontSize: 10, fontWeight: 500, borderRadius: 7, flexShrink: 0 }}>
+                            {slot.path ? "Degistir" : "Sec"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── Otonom Adaylar ── */}
+                  <details style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }} open>
+                    <summary style={{ padding: "14px 20px", cursor: "pointer", background: "var(--gradient-header)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      Otonom adaylar
+                      {loadingGroups ? <LoaderCircle className="spin-slow" size={14} style={{ color: "var(--text-muted)" }} /> : <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}>{groups.start.length + groups.end.length + groups.video.length} toplam</span>}
+                    </summary>
+                    <div style={{ padding: "12px 16px", display: "grid", gap: 12, borderTop: "1px solid var(--surface-hover)" }}>
+                      {(["start", "end", "video"] as AutonomousStage[]).map((stage) => (
+                        <div key={stage} style={{ borderRadius: 12, border: "1px solid var(--surface-hover)", overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "var(--surface-hover)" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", color: "var(--text-primary)" }}>{stage}</span>
+                              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{groups[stage].length > 0 ? `${groups[stage].length} aday` : "Bos"}</span>
+                            </div>
+                            <button className="btn-secondary" onClick={() => void handleRegenerate(stage)} disabled={stageAction !== null} type="button" style={{ padding: "6px 12px", fontSize: 11, fontWeight: 500, borderRadius: 8 }}>
+                              <RefreshCw size={12} />{stageAction === stage ? "Kuyrukta..." : "Uret x4"}
+                            </button>
+                          </div>
+                          {groups[stage].length === 0 ? (
+                            <div style={{ padding: "16px 14px", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>{loadingGroups ? "Yukleniyor..." : "Henuz aday yok."}</div>
+                          ) : (
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 8, padding: "10px 12px" }}>
+                              {groups[stage].map((asset) => {
+                                const au = convertFileSrc(toAbsoluteProjectPath(projectFolderPath, asset.file_path));
+                                const iv = asset.type === "video";
+                                return (
+                                  <div key={asset.id} style={{ borderRadius: 12, border: `1.5px solid ${asset.isSelected ? "var(--accent)" : "var(--surface-active)"}`, overflow: "hidden", background: asset.isSelected ? "var(--surface-hover)" : "var(--surface-card)", transition: "border-color 120ms ease" }}>
+                                    <button type="button" onClick={() => setLightboxItem({ kind: iv ? "video" : "image", src: au, title: `${shot.shotNumber} / ${stage.toUpperCase()}`, subtitle: `V${String(asset.variant ?? 0).padStart(2, "0")}`, description: asset.prompt ?? `${stage.toUpperCase()} adayi.`, downloadPath: toAbsoluteProjectPath(projectFolderPath, asset.file_path), downloadName: asset.filename })} style={{ padding: 0, border: "none", width: "100%", background: "var(--canvas-bg)", cursor: "pointer", aspectRatio: "16 / 10", display: "block" }}>
+                                      {iv ? <video src={au} muted playsInline preload="none" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} /> : <img src={au} alt={asset.filename} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                                    </button>
+                                    <div style={{ padding: "8px 8px 10px", display: "grid", gap: 6 }}>
+                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>V{String(asset.variant ?? 0).padStart(2, "0")}</span>
+                                        {asset.isSelected ? <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase" }}>Aktif</span> : null}
+                                      </div>
+                                      <button className={asset.isSelected ? "btn-secondary" : "btn-primary"} disabled={selectingAssetId === asset.id} onClick={() => void handleSelect(asset.id, stage)} type="button" style={{ padding: "6px 8px", fontSize: 10, fontWeight: 600, borderRadius: 7, justifyContent: "center" }}>{selectingAssetId === asset.id ? "..." : asset.isSelected ? "Secili" : "Bu varyanti sec"}</button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
-                <select
-                  value={selectedTemplateId}
-                  onChange={(event) => setSelectedTemplateId(event.target.value)}
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid var(--border-default)", background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: 12 }}
-                >
-                  <option value="">Prompt template sec</option>
-                  {templates.map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {template.name}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn-secondary" type="button" onClick={openPromptLibrary} style={{ padding: "8px 12px", fontSize: 11 }}>
-                  Library
-                </button>
-                <button className="btn-primary" type="button" disabled={!selectedTemplateId || applyingTemplate} onClick={() => void handleApplyTemplate()} style={{ padding: "8px 12px", fontSize: 11 }}>
-                  {applyingTemplate ? "Applying..." : `Use ${activePromptTab.toUpperCase()}`}
-                </button>
-              </div>
-              <div style={{ padding: "16px 16px 18px", display: "grid", gap: 12 }}>
-                <textarea
-                  value={promptContent}
-                  onChange={(event) =>
-                    setPromptDrafts((current) => ({
-                      ...current,
-                      [activePromptTab]: event.target.value,
-                    }))
-                  }
-                  placeholder={`${activePromptTab.toUpperCase()} promptunu burada duzenle veya template uygula.`}
-                  style={{
-                    width: "100%",
-                    minHeight: 220,
-                    resize: "vertical",
-                    padding: "14px 16px",
-                    borderRadius: 16,
-                    border: "1px solid var(--border-default)",
-                    background: "var(--bg-surface)",
-                    color: "var(--text-secondary)",
-                    fontSize: 12,
-                    lineHeight: 1.75,
-                    fontFamily: '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-                    outline: "none",
-                  }}
-                />
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 11, color: activePromptChanged ? "var(--accent)" : "var(--text-muted)" }}>
-                    {activePromptChanged ? "Kaydedilmemis degisiklik var." : "Prompt shot kaydiyla senkron."}
-                  </span>
-                  {activePromptTab === "video" && videoPromptAnalysis.detectedMultiShot ? (
-                    <span style={{ fontSize: 11, color: "var(--accent)" }}>
-                      {videoPromptAnalysis.shotCount} bolumlu multi-shot prompt
-                    </span>
-                  ) : null}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      className="btn-secondary"
-                      type="button"
-                      onClick={() =>
-                        setPromptDrafts({
-                          start: shot.promptStart ?? "",
-                          end: shot.promptEnd ?? "",
-                          video: shot.promptVideo ?? "",
-                        })
-                      }
-                      disabled={!activePromptChanged}
-                    >
-                      <RefreshCw size={14} />
-                      Revert
-                    </button>
-                    <button
-                      className="btn-primary"
-                      type="button"
-                      disabled={savingPrompt || !activePromptChanged}
-                      onClick={() => void handleSavePrompt()}
-                    >
-                      {savingPrompt ? "Saving..." : `Save ${activePromptTab.toUpperCase()}`}
-                    </button>
+              )}
+
+              {/* ━━━━ PROMPT TAB ━━━━ */}
+              {rightPanelTab === "prompt" && (
+                <div style={{ display: "grid", gap: 0, borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 16px", background: "var(--gradient-header)", borderBottom: "1px solid var(--surface-hover)" }}>
+                    <div style={{ display: "flex", gap: 2 }}>
+                      {(["start", "end", "video"] as DetailView[]).map((tab) => (
+                        <button key={tab} type="button" onClick={() => setActivePromptTab(tab)} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: activePromptTab === tab ? "var(--surface-active)" : "transparent", color: activePromptTab === tab ? "var(--text-primary)" : "var(--text-muted)", cursor: "pointer", fontSize: 12, fontWeight: activePromptTab === tab ? 600 : 500, transition: "all 100ms ease" }}>{tab.toUpperCase()}</button>
+                      ))}
+                    </div>
+                    {activePromptTab === "video" && videoPromptAnalysis.detectedMultiShot ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 6, background: "var(--surface-hover)", fontSize: 11, fontWeight: 600, color: "var(--accent)" }}><Sparkles size={11} />{videoPromptAnalysis.shotCount} bolum</span>
+                    ) : null}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--surface-hover)", background: "var(--surface-hover)" }}>
+                    <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} style={{ ...panelInputStyle, padding: "8px 12px", borderRadius: 8, fontSize: 12, fontWeight: 500 }}>
+                      <option value="">Sablon sec...</option>
+                      {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                    </select>
+                    <button className="btn-secondary" type="button" onClick={openPromptLibrary} style={{ padding: "8px 12px", fontSize: 11, fontWeight: 500, borderRadius: 8 }}>Kutuphane</button>
+                    <button className="btn-primary" type="button" disabled={!selectedTemplateId || applyingTemplate} onClick={() => void handleApplyTemplate()} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8 }}>{applyingTemplate ? "..." : "Uygula"}</button>
+                  </div>
+                  <div style={{ padding: "16px 16px 12px" }}>
+                    <textarea value={promptContent} onChange={(e) => setPromptDrafts((c) => ({ ...c, [activePromptTab]: e.target.value }))} placeholder={`${activePromptTab.toUpperCase()} promptunu burada duzenle...`} style={{ width: "100%", minHeight: 300, resize: "vertical", padding: "14px 16px", borderRadius: 12, border: "1px solid var(--glass-border)", background: "var(--bg-base)", color: "var(--text-primary)", fontSize: 13, lineHeight: 1.8, fontFamily: '"IBM Plex Mono", "SF Mono", "Menlo", monospace', outline: "none" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px 14px", borderTop: "1px solid var(--surface-hover)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: 999, background: activePromptChanged ? "var(--status-warning)" : "var(--status-success)" }} />
+                      <span style={{ fontSize: 12, fontWeight: 500, color: activePromptChanged ? "var(--status-warning)" : "var(--text-muted)" }}>{activePromptChanged ? "Degisiklik var" : "Senkron"}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="btn-secondary" type="button" onClick={() => setPromptDrafts({ start: shot.promptStart ?? "", end: shot.promptEnd ?? "", video: shot.promptVideo ?? "" })} disabled={!activePromptChanged} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><RefreshCw size={13} />Geri al</button>
+                      <button className="btn-primary" type="button" disabled={savingPrompt || !activePromptChanged} onClick={() => void handleSavePrompt()} style={{ padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8 }}>{savingPrompt ? "Kaydediliyor..." : `${activePromptTab.toUpperCase()} kaydet`}</button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </section>
+              )}
+
+              {/* ━━━━ SES TAB ━━━━ */}
+              {rightPanelTab === "ses" && (
+                <div style={{ display: "grid", gap: 20 }}>
+                  <div style={{ borderRadius: 16, border: "1px solid rgba(59,130,246,0.12)", background: "linear-gradient(135deg, rgba(59,130,246,0.03) 0%, rgba(59,130,246,0.01) 100%)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "start", gap: 14, padding: "18px 20px" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(59,130,246,0.1)", display: "grid", placeItems: "center", flexShrink: 0 }}><AudioLines size={17} style={{ color: "var(--status-info)" }} /></div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Diyalog seslendirme</span>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: activeDialogueShot.audioStatus === "done" ? "rgba(34,197,94,0.1)" : activeDialogueShot.audioStatus === "generating" ? "rgba(245,158,11,0.1)" : "var(--surface-hover)", fontSize: 10, fontWeight: 600, color: statusColor(activeDialogueShot.audioStatus) }}>
+                            <span style={{ width: 5, height: 5, borderRadius: 999, background: "currentColor" }} />{activeDialogueShot.audioStatus}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>{dialogueAudioDetail?.audioDirection?.dialoguePreview ?? shot.audioDialoguePreview ?? "Diyalog transcript bulunmuyor."}</div>
+                      </div>
+                    </div>
+                    {loadingDialogueAudioDetail ? <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 20px 14px", justifyContent: "center" }}><LoaderCircle className="spin-slow" size={14} style={{ color: "var(--text-muted)" }} /><span style={{ fontSize: 12, color: "var(--text-muted)" }}>Yukleniyor...</span></div> : null}
+                    {dialogueAudioDetail?.resolvedLines.length ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 20px 16px" }}>
+                        {dialogueAudioDetail.resolvedLines.map((line, idx) => (
+                          <span key={`${line.speakerKey}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 8, background: "var(--surface-card)", border: "1px solid rgba(59,130,246,0.1)", fontSize: 11 }}>
+                            <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>{line.speaker}</strong>
+                            <span style={{ width: 1, height: 12, background: "var(--glass-border)" }} />
+                            <span style={{ color: line.voiceName ? "var(--status-info)" : "var(--status-error)", fontSize: 10, fontWeight: 500 }}>{line.voiceName ?? "ses yok"}</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {dialogueAudioDetail?.blockerReason ? <div style={{ margin: "0 20px 16px", padding: "10px 14px", borderRadius: 10, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.1)", fontSize: 12, color: "var(--status-error)", lineHeight: 1.5 }}>{dialogueAudioDetail.blockerReason}</div> : null}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 20px 18px" }}>
+                      <button className="btn-primary" disabled={queueingDialogueAudio || loadingDialogueAudioDetail} onClick={() => void handleQueueDialogueAudio()} type="button" style={{ padding: "9px 18px", fontSize: 13, fontWeight: 600, borderRadius: 10 }}>
+                        <PlayCircle size={15} />{queueingDialogueAudio ? "Kuyrukta..." : activeDialogueTake ? "Yeniden seslendir" : "Seslendir"}
+                      </button>
+                      {dialogueAudioDetail?.characterCount ? <span style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(59,130,246,0.06)", fontSize: 11, fontWeight: 500, color: "var(--status-info)" }}>{dialogueAudioDetail.characterCount} karakter</span> : null}
+                    </div>
+                  </div>
+
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Seslendirme metni</h3><p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)" }}>Replikleri duzenle, speaker etiketleri sabit kalir</p></div>
+                    <div style={{ padding: "16px 20px" }}>
+                      <DialogueTextEditor busy={queueingDialogueAudio || loadingDialogueAudioDetail} description="" hasOverride={Boolean(dialogueAudioDetail?.hasDialogueOverride)} lines={dialogueAudioDetail?.audioDirection?.dialogueLines ?? []} onClear={handleClearDialogueOverride} onSave={handleSaveDialogueOverride} title="" />
+                    </div>
+                  </div>
+
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Duygu tonu ve optimizer</h3><p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)" }}>Pacing preset, yonetmen notu, OpenRouter ayari</p></div>
+                    <div style={{ padding: "16px 20px" }}>
+                      <DialoguePerformanceEditor busy={queueingDialogueAudio || loadingDialogueAudioDetail} description="" hasOverride={Boolean(dialogueAudioDetail?.hasGenerationProfileOverride)} onClear={handleClearDialogueGenerationProfile} onSave={handleSaveDialogueGenerationProfile} profile={dialogueAudioDetail?.generationProfile ?? { useOptimizer: true, performancePreset: "auto", performanceNote: null }} title="" />
+                    </div>
+                  </div>
+
+                  {dialogueAudioUrl ? (
+                    <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                      <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Master ses</h3></div>
+                      <div style={{ padding: "16px 20px", display: "grid", gap: 12 }}>
+                        <audio controls src={dialogueAudioUrl} style={{ width: "100%", borderRadius: 8 }} />
+                        {activeDialogueTake ? (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {[`Master ${formatAudioTakeLabel(activeDialogueTake)}`, formatAudioTakeCreatedAt(activeDialogueTake.createdAt), activeDialogueTake.outputFormat].filter(Boolean).map((t, i) => (
+                              <span key={i} style={{ padding: "5px 10px", borderRadius: 7, background: "var(--surface-hover)", fontSize: 11, fontWeight: 500, color: "var(--text-secondary)" }}>{t}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {historicalDialogueTakes.length > 0 ? (
+                          <details style={{ borderRadius: 12, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                            <summary style={{ cursor: "pointer", padding: "10px 14px", fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--surface-hover)" }}>Onceki take&apos;ler ({historicalDialogueTakes.length})</summary>
+                            <div style={{ display: "grid", gap: 0 }}>
+                              {historicalDialogueTakes.map((take) => {
+                                const tUrl = convertFileSrc(toAbsoluteProjectPath(projectFolderPath, take.relativePath));
+                                return (
+                                  <div key={take.id} style={{ padding: "12px 14px", borderTop: "1px solid var(--surface-hover)", display: "grid", gap: 8 }}>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                      {[formatAudioTakeLabel(take), formatAudioTakeCreatedAt(take.createdAt), take.outputFormat].filter(Boolean).map((tx, i) => (<span key={i} style={{ padding: "3px 8px", borderRadius: 6, background: "var(--surface-hover)", fontSize: 10, fontWeight: 500, color: "var(--text-muted)" }}>{tx}</span>))}
+                                    </div>
+                                    <audio controls src={tUrl} style={{ width: "100%" }} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "32px 20px", textAlign: "center" }}>
+                      <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--surface-hover)", display: "grid", placeItems: "center" }}><AudioLines size={20} style={{ color: "var(--text-muted)" }} /></div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{activeDialogueShot.audioStatus === "done" ? "Master dosyasi bekleniyor." : "Henuz uretilmis ses yok."}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            </div>
           </section>
         </div>
       </div>
       </div>
-      {imageEditDraft ? (
-        <div
-          onClick={closeImageEditModal}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 210,
-            display: "grid",
-            placeItems: "center",
-            padding: 24,
-            background: "rgba(0,0,0,0.4)",
-            backdropFilter: "blur(8px)",
-          }}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            style={{
-              width: "min(1120px, calc(100vw - 48px))",
-              maxHeight: "min(860px, calc(100vh - 48px))",
-              borderRadius: 28,
-              border: "1px solid var(--border-default)",
-              background: "#ffffff",
-              boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
-              overflow: "hidden",
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1.28fr) 360px",
-            }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateRows: "auto auto minmax(0, 1fr) auto",
-                borderRight: "1px solid var(--border-subtle)",
-                minWidth: 0,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "18px 20px 14px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                }}
-              >
-                <div style={{ display: "grid", gap: 4 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--accent)",
-                    }}
-                  >
-                    Nano Banana 2 Edit
-                  </div>
-                  <strong style={{ fontSize: 18, letterSpacing: "-0.03em" }}>
-                    Isaretleyerek duzenle
-                  </strong>
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                    Referans: {imageEditDraft.variantLabel}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeImageEditModal}
-                  className="icon-button"
-                  style={{ width: 38, height: 38, borderRadius: 999 }}
-                  aria-label="Duzenleme modalini kapat"
-                >
-                  <X size={15} />
-                </button>
-              </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "auto auto 1fr auto auto",
-                  gap: 12,
-                  alignItems: "center",
-                  padding: "14px 20px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  background: "rgba(0,0,0,0.01)",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  Markup
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {IMAGE_EDIT_COLORS.map((color) => {
-                    const active = color === imageEditBrushColor;
-                    return (
-                      <button
-                        key={color}
-                        type="button"
-                        onClick={() => setImageEditBrushColor(color)}
-                        aria-label={`Renk sec ${color}`}
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 999,
-                          border: active
-                            ? "2px solid rgba(0,0,0,0.7)"
-                            : "1px solid rgba(0,0,0,0.18)",
-                          boxShadow: active ? "0 0 0 2px rgba(0,0,0,0.24)" : "none",
-                          background: color,
-                          cursor: "pointer",
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-                <div style={{ display: "grid", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                    Firca boyutu: {imageEditBrushSize}px
-                  </div>
-                  <input
-                    type="range"
-                    min={8}
-                    max={38}
-                    step={1}
-                    value={imageEditBrushSize}
-                    onChange={(event) => setImageEditBrushSize(Number(event.target.value))}
-                  />
-                </div>
-                <button
-                  className="btn-secondary"
-                  type="button"
-                  onClick={undoImageEditStroke}
-                  disabled={imageEditStrokes.length === 0 || submittingImageEdit}
-                  style={{ padding: "8px 12px", fontSize: 11 }}
-                >
-                  <RefreshCw size={13} />
-                  Geri al
-                </button>
-                <button
-                  className="btn-secondary"
-                  type="button"
-                  onClick={clearImageEditStrokes}
-                  disabled={imageEditStrokes.length === 0 || submittingImageEdit}
-                  style={{ padding: "8px 12px", fontSize: 11 }}
-                >
-                  <Trash2 size={13} />
-                  Isaretleri temizle
-                </button>
-              </div>
+      <ImageEditModal
+        draft={imageEditDraft}
+        projectFolderPath={projectFolderPath}
+        dialogTitle={shot.shotNumber}
+        submitting={submittingImageEdit}
+        guideFilePrefix={`guide_${activeMediaView === "end" ? "end" : "start"}`}
+        onClose={closeImageEditModal}
+        onSubmit={handleImageEditSubmit}
+      />
 
-              <div style={{ minHeight: 0, padding: 20, display: "grid" }}>
-                <div
-                  style={{
-                    position: "relative",
-                    width: "100%",
-                    height: "100%",
-                    minHeight: 380,
-                    borderRadius: 24,
-                    overflow: "hidden",
-                    border: "1px solid rgba(0,0,0,0.08)",
-                    background: "#eeeeee",
-                    cursor: "default",
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      display: "grid",
-                      placeItems: "center",
-                      padding: 18,
-                    }}
-                  >
-                    <div
-                      ref={imageEditStageRef}
-                      onPointerDown={handleImageEditPointerDown}
-                      onPointerMove={handleImageEditPointerMove}
-                      onPointerUp={handleImageEditPointerUp}
-                      onPointerCancel={handleImageEditPointerUp}
-                      style={{
-                        position: "relative",
-                        maxWidth: "100%",
-                        maxHeight: "100%",
-                        width: "fit-content",
-                        height: "fit-content",
-                        display: "grid",
-                        placeItems: "center",
-                        overflow: "hidden",
-                        borderRadius: 18,
-                        cursor: submittingImageEdit ? "progress" : "crosshair",
-                        touchAction: "none",
-                      }}
-                    >
-                      <img
-                        src={imageEditDraft.previewUrl}
-                        alt={imageEditDraft.variantLabel}
-                        onLoad={handleImageEditPreviewLoad}
-                        style={{
-                          display: "block",
-                          width: "auto",
-                          height: "auto",
-                          maxWidth: "100%",
-                          maxHeight: "100%",
-                          userSelect: "none",
-                          pointerEvents: "none",
-                        }}
-                      />
-                      <svg
-                        viewBox="0 0 1 1"
-                        preserveAspectRatio="none"
-                        style={{
-                          position: "absolute",
-                          inset: 0,
-                          width: "100%",
-                          height: "100%",
-                          overflow: "visible",
-                          pointerEvents: "none",
-                        }}
-                      >
-                        {imageEditStrokes.map((stroke) =>
-                          stroke.points.length === 1 ? (
-                            <circle
-                              key={stroke.id}
-                              cx={stroke.points[0].x}
-                              cy={stroke.points[0].y}
-                              r={stroke.size * 0.5}
-                              fill={stroke.color}
-                            />
-                          ) : (
-                            <polyline
-                              key={stroke.id}
-                              points={strokePointsToSvgPoints(stroke.points)}
-                              fill="none"
-                              stroke={stroke.color}
-                              strokeWidth={stroke.size}
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          ),
-                        )}
-                      </svg>
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: 16,
-                      top: 16,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      background: "rgba(255,255,255,0.88)",
-                      border: "1px solid rgba(0,0,0,0.1)",
-                      color: "#1a1c1c",
-                      fontSize: 11,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {imageEditStrokes.length} markup
-                  </div>
-
-                  <div
-                    style={{
-                      position: "absolute",
-                      right: 16,
-                      bottom: 16,
-                      padding: "10px 12px",
-                      borderRadius: 14,
-                      background: "rgba(255,255,255,0.92)",
-                      border: "1px solid rgba(0,0,0,0.1)",
-                      color: "#6b7280",
-                      fontSize: 11,
-                      lineHeight: 1.55,
-                      maxWidth: 280,
-                    }}
-                  >
-                    Foto ustune serbestce ciz. Isaretler ikinci referans olarak gonderilir; model
-                    sadece bu bolgelerde lokal degisiklik yapmaya zorlanir.
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "14px 20px 18px",
-                  borderTop: "1px solid var(--border-subtle)",
-                  background: "rgba(0,0,0,0.01)",
-                }}
-              >
-                <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                  Yeni sonuc varyant olarak eklenir; aktif secime donusturmek istersen sonra slider'dan alirsin.
-                </span>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--text-muted)" }}>
-                  <span>Mod</span>
-                  <strong style={{ color: "var(--accent)" }}>Preserve edit</strong>
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateRows: "auto minmax(0, 1fr) auto",
-                minWidth: 0,
-                background: "rgba(0,0,0,0.015)",
-              }}
-            >
-              <div
-                style={{
-                  padding: "18px 20px 14px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  display: "grid",
-                  gap: 6,
-                }}
-              >
-                <strong style={{ fontSize: 16, letterSpacing: "-0.02em" }}>Degisiklik talimati</strong>
-                <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                  Prompt alanı bilerek bos gelir. Sadece kucuk degisiklik notunu yazabilir veya
-                  hic yazmadan yalnizca markup ile devam edebilirsin.
-                </span>
-              </div>
-
-              <div style={{ padding: 20, display: "grid", gap: 16, minHeight: 0, alignContent: "start" }}>
-                <div style={{ display: "grid", gap: 8 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    Edit prompt
-                  </div>
-                  <textarea
-                    value={imageEditPrompt}
-                    onChange={(event) => setImageEditPrompt(event.target.value)}
-                    placeholder="Ornek: Sag eldeki bayragi buyut. Sol arka plandaki tabelayi kaldir. Yuzu koru."
-                    style={{
-                      width: "100%",
-                      minHeight: 220,
-                      resize: "vertical",
-                      padding: "14px 16px",
-                      borderRadius: 16,
-                      border: "1px solid var(--border-default)",
-                      background: "var(--bg-surface)",
-                      color: "var(--text-secondary)",
-                      fontSize: 12,
-                      lineHeight: 1.75,
-                      fontFamily: '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-                      outline: "none",
-                    }}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                    Bos birakirsan sistem arka planda otomatik olarak "yalnizca isaretli bolgeleri degistir, diger her seyi koru"
-                    talimati kurar.
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gap: 10 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    Aspect ratio
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {IMAGE_ASPECT_RATIOS.map((ratio) => {
-                      const active = ratio === imageEditAspectRatio;
-                      return (
-                        <button
-                          key={ratio}
-                          type="button"
-                          className={active ? "btn-primary" : "btn-secondary"}
-                          onClick={() => setImageEditAspectRatio(ratio)}
-                          style={{ minWidth: 62, padding: "8px 12px", fontSize: 11 }}
-                        >
-                          {ratio}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 10,
-                    padding: "14px 14px 16px",
-                    borderRadius: 18,
-                    border: "1px solid var(--border-subtle)",
-                    background: "rgba(0,0,0,0.02)",
-                  }}
-                >
-                  <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                    Edit behavior
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                    Kaynak kare ana referans olarak kalir. Markup varsa ayni kareye cizilmis ikinci
-                    bir guide da gonderilir. Bu sayede model kompozisyonu yeniden kurmak yerine
-                    lokal degisiklige odaklanir.
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "16px 20px 20px",
-                  borderTop: "1px solid var(--border-subtle)",
-                }}
-              >
-                <span style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                  {imageEditStrokes.length > 0
-                    ? `${imageEditStrokes.length} isaret cizildi.`
-                    : "Henuz isaret yok."}
-                </span>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="btn-secondary"
-                    type="button"
-                    onClick={closeImageEditModal}
-                    disabled={submittingImageEdit}
-                  >
-                    Vazgec
-                  </button>
-                  <button
-                    className="btn-primary"
-                    type="button"
-                    onClick={() => void submitImageEdit()}
-                    disabled={!canSubmitImageEdit || submittingImageEdit}
-                  >
-                    {submittingImageEdit ? <LoaderCircle className="spin-slow" size={14} /> : <Pencil size={14} />}
-                    {submittingImageEdit ? "Queueing..." : "Duzenleme uret"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
       <MediaLightbox item={lightboxItem} onClose={() => setLightboxItem(null)} zIndex={220} />
     </>
   );
 }
 
-function MetaChip({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 4,
-        padding: "10px 12px",
-        borderRadius: 14,
-        border: "1px solid var(--border-subtle)",
-        background: "rgba(0,0,0,0.02)",
-      }}
-    >
-      <span style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-        {label}
-      </span>
-      <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{value}</span>
-    </div>
-  );
-}
 
 const panelInputStyle = {
   width: "100%",

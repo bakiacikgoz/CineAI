@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
 import { message, open } from "@tauri-apps/plugin-dialog";
@@ -18,6 +18,7 @@ import {
   Sparkles,
   Video,
 } from "lucide-react";
+import { ProEmptyState } from "@/components/ui";
 import {
   MediaLightbox,
   type MediaLightboxItem,
@@ -92,6 +93,7 @@ export function AssetLibrary() {
   const [assignmentTarget, setAssignmentTarget] = useState<AssignmentTarget>("start");
   const [upscaling, setUpscaling] = useState(false);
   const [importing, setImporting] = useState(false);
+  const hasAnimatedRef = useRef(false);
   const activeProjectId = activeProject?.id ?? null;
   const refreshMarker = queueJobs
     .filter((job) => job.projectId === activeProjectId)
@@ -402,9 +404,10 @@ export function AssetLibrary() {
   if (!activeProject) {
     return (
       <section className="screen-shell">
-        <EmptyPanel
-          copy="Asset arsivi proje baglaminda calisir. Devam etmek icin once bir proje ac."
-          title="Asset Library hazir"
+        <ProEmptyState
+          icon={ImageIcon}
+          title="Varlik Kutuphanesi hazir"
+          description="Asset arsivi proje baglaminda calisir. Devam etmek icin once bir proje ac."
         />
       </section>
     );
@@ -437,9 +440,9 @@ export function AssetLibrary() {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <Link2 size={15} style={{ color: "var(--accent)", flexShrink: 0 }} />
                 <span>
-                  <strong>Assignment Mode</strong> -- Secilen asset{" "}
+                  <strong>Atama Modu</strong> -- Secilen asset{" "}
                   <strong style={{ color: "var(--accent)" }}>
-                    {shots.find((shot) => shot.id === shotTargetId)?.shotNumber ?? "selected shot"}
+                    {shots.find((shot) => shot.id === shotTargetId)?.shotNumber ?? "secili shot"}
                   </strong>{" "}
                   icindeki{" "}
                   <strong style={{ color: "var(--accent)" }}>
@@ -469,10 +472,10 @@ export function AssetLibrary() {
             <div style={{ display: "grid", gap: 8 }}>
               <span style={eyebrowStyle}>
                 <Sparkles size={13} />
-                Asset Vault
+                Varlik Kasasi
               </span>
               <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
-                Asset Library
+                Varlik Kutuphanesi
               </div>
               <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.7, maxWidth: 560 }}>
                 Uretilen ve ice aktarilan medya dosyalarini tek yerde ara, onizle,
@@ -505,7 +508,7 @@ export function AssetLibrary() {
                   value={typeFilter}
                 >
                   <option value="all">Tum tipler</option>
-                  <option value="image">Image</option>
+                  <option value="image">Gorsel</option>
                   <option value="video">Video</option>
                 </select>
               </label>
@@ -556,18 +559,24 @@ export function AssetLibrary() {
           {/* Grid area */}
           <section style={gridContainerStyle}>
             {loading ? (
-              <EmptyPanel copy="Asset kayitlari yukleniyor..." title="Yukleniyor" loading />
+              <ProEmptyState
+                icon={LoaderCircle}
+                title="Yukleniyor"
+                description="Asset kayitlari yukleniyor..."
+              />
             ) : filteredAssets.length === 0 ? (
-              <EmptyPanel
-                copy="Su anki filtrelere uyan asset bulunamadi. Generator ekranlari, storyboard import veya 'Dosya ice aktar' aksiyonu ile kutuphaneyi doldur."
+              <ProEmptyState
+                icon={ImageIcon}
                 title="Asset bulunamadi"
+                description="Su anki filtrelere uyan asset bulunamadi. Generator ekranlari, storyboard import veya 'Dosya ice aktar' aksiyonu ile kutuphaneyi doldur."
               />
             ) : (
               <motion.div
                 style={gridStyle}
-                variants={gridContainerVariants}
-                initial="hidden"
+                variants={hasAnimatedRef.current ? undefined : gridContainerVariants}
+                initial={hasAnimatedRef.current ? "visible" : "hidden"}
                 animate="visible"
+                onAnimationComplete={() => { hasAnimatedRef.current = true; }}
                 key={`${typeFilter}-${modelFilter}-${search}`}
               >
                 {filteredAssets.map((asset) => {
@@ -575,7 +584,7 @@ export function AssetLibrary() {
                   return (
                     <motion.div
                       key={asset.id}
-                      variants={gridItemVariants}
+                      variants={hasAnimatedRef.current ? undefined : gridItemVariants}
                       whileHover={{ y: -3, scale: 1.01 }}
                       whileTap={{ scale: 0.98 }}
                       transition={{ duration: 0.15 }}
@@ -592,11 +601,11 @@ export function AssetLibrary() {
                       style={{
                         ...cardStyle,
                         border: isSelected
-                          ? "1.5px solid #000000"
-                          : "1px solid #e8e8e8",
+                          ? "1.5px solid var(--accent)"
+                          : "1px solid var(--border-default)",
                         boxShadow: isSelected
-                          ? "0 0 0 2px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0,0,0,0.08)"
-                          : "0 1px 3px rgba(0,0,0,0.04)",
+                          ? "var(--shadow-lg)"
+                          : "0 1px 3px var(--surface-hover)",
                       }}
                     >
                       {/* Media with gradient overlay */}
@@ -641,9 +650,9 @@ export function AssetLibrary() {
                             right: 8,
                             padding: "6px 10px",
                             borderRadius: 999,
-                            background: "rgba(255, 255, 255, 0.88)",
-                            borderColor: "rgba(0, 0, 0, 0.12)",
-                            color: "#1a1c1c",
+                            background: "var(--glass-bg)",
+                            borderColor: "var(--border-default)",
+                            color: "var(--text-primary)",
                             backdropFilter: "blur(10px)",
                           }}
                           type="button"
@@ -670,7 +679,7 @@ export function AssetLibrary() {
                           {asset.filename}
                         </div>
                         <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                          {asset.model_used ?? "unknown model"}
+                          {asset.model_used ?? "bilinmeyen model"}
                         </div>
                       </div>
                     </motion.div>
@@ -737,9 +746,9 @@ export function AssetLibrary() {
                       right: 10,
                       padding: "7px 10px",
                       borderRadius: 999,
-                      background: "rgba(255, 255, 255, 0.88)",
-                      borderColor: "rgba(0, 0, 0, 0.12)",
-                      color: "#1a1c1c",
+                      background: "var(--glass-bg)",
+                      borderColor: "var(--border-default)",
+                      color: "var(--text-primary)",
                       backdropFilter: "blur(10px)",
                     }}
                     type="button"
@@ -771,7 +780,7 @@ export function AssetLibrary() {
                 </SidebarSection>
 
                 {/* Collapsible: Shot Assignment */}
-                <SidebarSection title="Shot Assignment" defaultOpen>
+                <SidebarSection title="Shot Atama" defaultOpen>
                   <label style={sidebarFieldLabelStyle}>
                     <span style={sidebarFieldLabelTextStyle}>Shot</span>
                     <select
@@ -801,12 +810,12 @@ export function AssetLibrary() {
                     >
                       {selectedAsset.type === "image" ? (
                         <>
-                          <option value="start">Start frame</option>
-                          <option value="end">End frame</option>
-                          <option value="reference">External reference</option>
+                          <option value="start">Baslangic karesi</option>
+                          <option value="end">Bitis karesi</option>
+                          <option value="reference">Harici referans</option>
                         </>
                       ) : (
-                        <option value="video">Video slot</option>
+                        <option value="video">Video slotu</option>
                       )}
                     </select>
                   </label>
@@ -846,7 +855,7 @@ export function AssetLibrary() {
                 </SidebarSection>
 
                 {/* Collapsible: Quick Actions */}
-                <SidebarSection title="Quick Actions" defaultOpen>
+                <SidebarSection title="Hizli Islemler" defaultOpen>
                   {selectedAsset.type === "image" ? (
                     <>
                       <button
@@ -959,9 +968,10 @@ export function AssetLibrary() {
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2 }}
               >
-                <EmptyPanel
-                  copy="Onizleme ve shot assignment aksiyonlari icin soldan bir asset sec."
+                <ProEmptyState
+                  icon={ImageIcon}
                   title="Asset sec"
+                  description="Onizleme ve shot atama aksiyonlari icin soldan bir asset sec."
                 />
               </motion.div>
             )}
@@ -1025,44 +1035,6 @@ function SidebarSection({
 }
 
 /* ------------------------------------------------------------------ */
-/*  EmptyPanel                                                         */
-/* ------------------------------------------------------------------ */
-
-function EmptyPanel({
-  title,
-  copy,
-  loading = false,
-}: {
-  title: string;
-  copy: string;
-  loading?: boolean;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.97 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.3 }}
-      style={emptyPanelStyle}
-    >
-      <div style={emptyPanelInnerStyle}>
-        {loading ? (
-          <LoaderCircle className="spin-slow" size={28} style={{ color: "var(--accent)" }} />
-        ) : (
-          <motion.div
-            animate={{ y: [0, -4, 0] }}
-            transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
-          >
-            <Sparkles size={28} style={{ color: "var(--accent)" }} />
-          </motion.div>
-        )}
-        <div style={{ fontSize: 18, fontWeight: 600 }}>{title}</div>
-        <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-          {copy}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  DetailRow                                                          */
@@ -1098,8 +1070,8 @@ const handoffBannerStyle = {
   gap: 14,
   padding: "12px 18px",
   borderRadius: 16,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "linear-gradient(135deg, rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.02))",
+  border: "1px solid var(--border-default)",
+  background: "linear-gradient(135deg, var(--surface-hover), rgba(0, 0, 0, 0.02))",
   color: "var(--text-secondary)",
   fontSize: 13,
   lineHeight: 1.5,
@@ -1129,8 +1101,8 @@ const eyebrowStyle = {
   gap: 8,
   padding: "6px 10px",
   borderRadius: 999,
-  background: "rgba(0, 0, 0, 0.04)",
-  border: "1px solid rgba(0, 0, 0, 0.1)",
+  background: "var(--surface-hover)",
+  border: "1px solid var(--border-default)",
   color: "var(--accent)",
   fontSize: 11,
   letterSpacing: "0.08em",
@@ -1328,24 +1300,6 @@ const sidebarFieldLabelTextStyle = {
   paddingLeft: 2,
 } satisfies React.CSSProperties;
 
-const emptyPanelStyle = {
-  display: "grid",
-  placeItems: "center",
-  minHeight: 320,
-  borderRadius: 24,
-  border: "1px dashed var(--border-default)",
-  background:
-    "radial-gradient(ellipse at center, rgba(0, 0, 0, 0.02), transparent 70%), var(--bg-elevated)",
-  textAlign: "center",
-  padding: 24,
-} satisfies React.CSSProperties;
-
-const emptyPanelInnerStyle = {
-  display: "grid",
-  gap: 12,
-  justifyItems: "center",
-  maxWidth: 340,
-} satisfies React.CSSProperties;
 
 const detailRowStyle = {
   display: "flex",
@@ -1358,7 +1312,7 @@ const tagChipStyle = {
   display: "inline-flex",
   padding: "3px 8px",
   borderRadius: 999,
-  background: "rgba(0, 0, 0, 0.06)",
+  background: "var(--surface-active)",
   color: "var(--text-primary)",
   fontSize: 10,
   fontWeight: 600,
@@ -1387,8 +1341,8 @@ const mutedBadgeStyle = {
   alignItems: "center",
   padding: "3px 8px",
   borderRadius: 999,
-  background: "rgba(0, 0, 0, 0.06)",
-  color: "rgba(0, 0, 0, 0.6)",
+  background: "var(--surface-active)",
+  color: "var(--text-secondary)",
   fontSize: 10,
   fontWeight: 700,
   backdropFilter: "blur(8px)",

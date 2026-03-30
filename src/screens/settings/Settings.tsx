@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import {
   Check,
-  ChevronDown,
+  Copy,
   Eye,
   EyeOff,
   KeyRound,
@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { message } from "@tauri-apps/plugin-dialog";
+import { CollapsibleSection } from "@/components/ui";
 import {
   IMAGE_MODELS,
   VIDEO_MODELS,
@@ -46,26 +47,31 @@ const API_KEYS: Array<{
   key: ApiKeyName;
   title: string;
   description: string;
+  accentColor: string;
 }> = [
   {
     key: "FAL_API_KEY",
     title: "fal.ai",
     description: "Image Generator gercek istekleri bu anahtar ile gonderir.",
+    accentColor: "#3b82f6",
   },
   {
     key: "TENSORPIX_API_KEY",
     title: "TensorPix",
     description: "Upscale ve enhancement isleri icin saklanir.",
+    accentColor: "#8b5cf6",
   },
   {
     key: "OPENROUTER_API_KEY",
     title: "OpenRouter",
     description: "LLM tabanli prompt zinciri, agent akislar ve dialogue speech optimizer burada calisir.",
+    accentColor: "#22c55e",
   },
   {
     key: "ELEVENLABS_API_KEY",
     title: "ElevenLabs",
     description: "Profesyonel dialogue TTS ve timestamp uretileri burada calisir.",
+    accentColor: "#f59e0b",
   },
 ];
 
@@ -80,56 +86,6 @@ const INITIAL_CONNECTION_STATE: Record<ApiKeyName, ConnectionState> = {
   OPENROUTER_API_KEY: { status: "idle" },
   ELEVENLABS_API_KEY: { status: "idle" },
 };
-
-/* ═══════════════════════════════════════════════════════════════
-   Collapsible Section Component
-   ═══════════════════════════════════════════════════════════════ */
-
-function SettingsSection({
-  title,
-  children,
-  defaultOpen = true,
-}: {
-  title: string;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-
-  return (
-    <section style={sectionWrapStyle}>
-      <button
-        onClick={() => setOpen((prev) => !prev)}
-        style={sectionHeaderBtnStyle}
-        type="button"
-      >
-        <span style={sectionTitleStyle}>{title}</span>
-        <motion.span
-          animate={{ rotate: open ? 0 : -90 }}
-          transition={{ duration: 0.2 }}
-          style={{ display: "inline-flex", color: "var(--text-muted)" }}
-        >
-          <ChevronDown size={14} />
-        </motion.span>
-      </button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-            style={{ overflow: "hidden" }}
-          >
-            <div style={{ display: "grid", gap: 14, paddingTop: 16 }}>
-              {children}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </section>
-  );
-}
 
 /* ═══════════════════════════════════════════════════════════════
    Main Component
@@ -324,7 +280,7 @@ export function Settings() {
       setShowSavedCheck(true);
       setTimeout(() => setShowSavedCheck(false), 2400);
       await message("Ayarlar kaydedildi.", {
-        title: "Settings",
+        title: "Ayarlar",
         kind: "info",
       });
     } catch (error) {
@@ -332,7 +288,7 @@ export function Settings() {
       await message(
         error instanceof Error ? error.message : "Ayarlar kaydedilemedi.",
         {
-          title: "Settings",
+          title: "Ayarlar",
           kind: "error",
         },
       );
@@ -353,9 +309,9 @@ export function Settings() {
         <header style={headerStyle}>
           <span style={badgeStyle}>
             <ShieldCheck size={13} />
-            Local Secret Storage
+            Yerel Guvenli Depolama
           </span>
-          <div style={headerTitleStyle}>Settings</div>
+          <div style={headerTitleStyle}>Ayarlar</div>
           <p style={headerDescStyle}>
             API anahtarlari Tauri Store uzerinden yerel olarak saklanir. fal.ai
             kaydi guncellendiginde istemci yeniden konfigure edilir.
@@ -363,8 +319,8 @@ export function Settings() {
         </header>
 
         {/* ── API Keys Section ──────────────────────────── */}
-        <SettingsSection title="API Keys" defaultOpen>
-          {API_KEYS.map(({ key, title, description }) => {
+        <CollapsibleSection title="API Anahtarlari" defaultOpen>
+          {API_KEYS.map(({ key, title, description, accentColor }) => {
             const isVisible = visibleKeys[key];
             const hasValue = values[key].trim().length > 0;
             const providerState = connectionState[key];
@@ -372,7 +328,7 @@ export function Settings() {
             return (
               <label
                 key={key}
-                style={apiKeyCardStyle}
+                style={{ ...apiKeyCardStyle, borderLeft: `3px solid ${accentColor}` }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={keyIconWrapStyle}>
@@ -405,6 +361,19 @@ export function Settings() {
                     type={isVisible ? "text" : "password"}
                     value={values[key]}
                   />
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (values[key].trim()) {
+                        void navigator.clipboard.writeText(values[key].trim());
+                      }
+                    }}
+                    style={copyBtnStyle}
+                    title="Panoya kopyala"
+                    type="button"
+                  >
+                    <Copy size={14} />
+                  </button>
                   <button
                     onClick={(e) => {
                       e.preventDefault();
@@ -470,7 +439,7 @@ export function Settings() {
                     style={savedCheckStyle}
                   >
                     <Check size={14} />
-                    Saved
+                    Kaydedildi
                   </motion.span>
                 )}
               </AnimatePresence>
@@ -497,10 +466,10 @@ export function Settings() {
               </button>
             </div>
           </div>
-        </SettingsSection>
+        </CollapsibleSection>
 
         {/* ── Runtime Defaults Section ──────────────────── */}
-        <SettingsSection title="Runtime Defaults" defaultOpen>
+        <CollapsibleSection title="Varsayilan Ayarlar" defaultOpen>
           <div style={sectionIntroStyle}>
             Generator ve queue ekranlarinin varsayilan davranisini belirler.
           </div>
@@ -562,7 +531,7 @@ export function Settings() {
               style={selectStyle}
               value={defaultTensorPixFilter}
             >
-              <option value="">Automatic selection</option>
+              <option value="">Otomatik secim</option>
               {tensorPixModels.map((model) => (
                 <option key={model.id} value={String(model.id)}>
                   {model.name} ({model.upscaleFactor}x)
@@ -610,7 +579,7 @@ export function Settings() {
               alani dashboard tahmini icindir; faturalama kaynagi degildir.
             </span>
           </div>
-        </SettingsSection>
+        </CollapsibleSection>
       </motion.section>
     </section>
   );
@@ -665,35 +634,6 @@ const headerDescStyle = {
   lineHeight: 1.7,
 } satisfies CSSProperties;
 
-/* ── Collapsible Section ────────────────────────────────── */
-
-const sectionWrapStyle = {
-  padding: "20px 22px",
-  borderRadius: 24,
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
-} satisfies CSSProperties;
-
-const sectionHeaderBtnStyle = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  width: "100%",
-  padding: 0,
-  background: "none",
-  border: "none",
-  cursor: "pointer",
-  color: "var(--text-secondary)",
-} satisfies CSSProperties;
-
-const sectionTitleStyle = {
-  fontSize: 13,
-  fontWeight: 700,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: "var(--text-muted)",
-} satisfies CSSProperties;
-
 const sectionIntroStyle = {
   fontSize: 12,
   color: "var(--text-secondary)",
@@ -718,8 +658,8 @@ const keyIconWrapStyle = {
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 12,
-  border: "1px solid rgba(0, 0, 0, 0.1)",
-  background: "rgba(0, 0, 0, 0.04)",
+  border: "1px solid var(--border-default)",
+  background: "var(--surface-hover)",
   color: "var(--text-primary)",
   flexShrink: 0,
 } satisfies CSSProperties;
@@ -763,7 +703,7 @@ const connectionRowStyle = {
 
 const apiKeyInputStyle = {
   width: "100%",
-  padding: "12px 44px 12px 14px",
+  padding: "12px 76px 12px 14px",
   borderRadius: 14,
   border: "1px solid var(--border-default)",
   background: "var(--bg-base)",
@@ -776,6 +716,22 @@ const apiKeyInputStyle = {
 const visibilityToggleBtnStyle = {
   position: "absolute",
   right: 8,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  borderRadius: 10,
+  border: "none",
+  background: "transparent",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+  transition: "color 150ms ease, background 150ms ease",
+} satisfies CSSProperties;
+
+const copyBtnStyle = {
+  position: "absolute",
+  right: 38,
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",

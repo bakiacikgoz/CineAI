@@ -82,6 +82,7 @@ export interface ShotRow {
   audioGenerationProfileJson: string | null;
   audioDialogueOverrideJson: string | null;
   audioTakeHistoryJson: string | null;
+  audioVoiceoverText: string | null;
   sourceFile: string | null;
   createdAt: number;
   updatedAt: number;
@@ -181,6 +182,7 @@ const SHOT_SELECT_SQL = `SELECT
   audio_generation_profile_json AS audioGenerationProfileJson,
   audio_dialogue_override_json AS audioDialogueOverrideJson,
   audio_take_history_json AS audioTakeHistoryJson,
+  audio_voiceover_text AS audioVoiceoverText,
   source_file AS sourceFile,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -801,6 +803,7 @@ export async function updateShotAudioFields(
     audioGenerationProfileJson: string | null;
     audioDialogueOverrideJson: string | null;
     audioTakeHistoryJson: string | null;
+    audioVoiceoverText: string | null;
   }>,
 ): Promise<void> {
   const db = await getProjectDb();
@@ -913,6 +916,12 @@ export async function updateShotAudioFields(
   if (updates.audioTakeHistoryJson !== undefined) {
     setClauses.push(`audio_take_history_json = $${parameterIndex}`);
     values.push(updates.audioTakeHistoryJson);
+    parameterIndex += 1;
+  }
+
+  if (updates.audioVoiceoverText !== undefined) {
+    setClauses.push(`audio_voiceover_text = $${parameterIndex}`);
+    values.push(updates.audioVoiceoverText);
     parameterIndex += 1;
   }
 

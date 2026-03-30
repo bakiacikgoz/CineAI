@@ -1,4 +1,4 @@
-import { FolderKanban, PanelLeft, Sparkles, X } from "lucide-react";
+import { FolderKanban, Moon, PanelLeft, Search, Sun, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { clearProjectSession } from "@/services/project-session.service";
 import { useProjectStore } from "@/store/project.store";
@@ -12,6 +12,8 @@ export function TopBar() {
     (state) => state.jobs.filter((job) => job.status === "active").length,
   );
   const toggleSidebar = useUIStore((state) => state.toggleSidebar);
+  const theme = useUIStore((state) => state.theme);
+  const toggleTheme = useUIStore((state) => state.toggleTheme);
 
   return (
     <header className="topbar">
@@ -27,7 +29,7 @@ export function TopBar() {
 
         <div className="brand-lockup">
           <span className="brand-mark">CINEAI</span>
-          <span className="brand-tagline">Cinematic AI studio workstation</span>
+          <span className="brand-tagline">Sinematik AI produksiyon araclari</span>
         </div>
 
         <span className="topbar-divider" />
@@ -38,7 +40,7 @@ export function TopBar() {
             {activeProject?.name ?? "Proje secilmedi"}
           </span>
           <span className="project-chip-subtle">
-            {activeProject ? "aktif proje" : "yerel workspace"}
+            {activeProject ? "aktif proje" : "yerel calisma alani"}
           </span>
           {activeProject ? (
             <button
@@ -65,9 +67,18 @@ export function TopBar() {
           <span>{activeJobsCount} aktif is</span>
         </div>
 
-        <div aria-hidden="true" className="icon-button">
-          <Sparkles size={16} />
-        </div>
+        <button
+          aria-label="Tema degistir"
+          className="icon-button"
+          onClick={toggleTheme}
+          type="button"
+        >
+          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+        </button>
+
+        <button aria-label="Ara" className="icon-button" type="button">
+          <Search size={16} />
+        </button>
       </div>
     </header>
   );

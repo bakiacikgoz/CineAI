@@ -121,6 +121,8 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
     }
 
     const coverageShotNumber = coverageShotMatch[1].toUpperCase();
+    const coverageDurationS = extractShotDuration(block);
+    const coverageTensionLevel = extractShotTension(block);
 
     const fallbackCodeBlocks = extractCodeBlocks(block);
     const coveragePromptStart =
@@ -136,8 +138,8 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
       scene,
       shotType: inferShotType(block, "wide"),
       cameraAngle: extractSingleLineValue(block, /Camera(?:\s+Angle)?\s*:\s*([^\n]+)/i),
-      durationS: null,
-      tensionLevel: null,
+      durationS: coverageDurationS,
+      tensionLevel: coverageTensionLevel,
       chainStatus: "break",
       prevShotRef: null,
       model,
@@ -148,7 +150,7 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
       promptEnd: extractPromptAfterHeading(block, END_PROMPT_HEADINGS),
       promptVideo: coveragePromptVideo,
       audioDirection: coveragePromptVideo ? parseAudioDirection(coveragePromptVideo) : null,
-      summaryTr: null,
+      summaryTr: extractSummary(block),
       requiresExternalReference: coverageReferenceRequirement.requiresExternalReference,
       externalReferenceName: coverageReferenceRequirement.externalReferenceName,
       externalReferenceNotes: coverageReferenceRequirement.externalReferenceNotes,
@@ -160,10 +162,20 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
 }
 
 function extractCoverageSection(markdown: string): string | null {
-  const match = markdown.match(
-    /^##\s+Coverage\s+Shots\b[^\n]*$(?:\n+)([\s\S]*?)(?=^##\s+|\Z)/im,
-  );
-  return match?.[1]?.trim() ?? null;
+  const headingMatch = markdown.match(/^##\s+Coverage\s+Shots\b[^\n]*$/im);
+
+  if (!headingMatch || headingMatch.index === undefined) {
+    return null;
+  }
+
+  const contentStart = headingMatch.index + headingMatch[0].length;
+  const remainder = markdown.slice(contentStart).replace(/^\s+/, "");
+  const nextSectionMatch = remainder.match(/^##\s+/m);
+  const section = nextSectionMatch?.index !== undefined
+    ? remainder.slice(0, nextSectionMatch.index)
+    : remainder;
+
+  return section.trim() || null;
 }
 
 function getParentShotNumber(shotNumber: string): string | null {
@@ -191,6 +203,22 @@ function extractSingleLineValue(
 function extractNumericValue(markdown: string, pattern: RegExp): number | null {
   const match = markdown.match(pattern);
   return match ? Number.parseFloat(match[1]) : null;
+}
+
+function extractShotDuration(markdown: string): number | null {
+  const headerMatch = markdown.match(/^\s*#{1,4}\s+SHOT[A-Z0-9]+(?:[^\n|]*\|\s*(\d+)\s*(?:s|sn))/im);
+  return headerMatch?.[1] ? Number.parseInt(headerMatch[1], 10) : null;
+}
+
+function extractShotTension(markdown: string): number | null {
+  const inlineMatch = markdown.match(/\bTension\s*:\s*(\d+)/i);
+
+  if (inlineMatch?.[1]) {
+    return Number.parseInt(inlineMatch[1], 10);
+  }
+
+  const frontmatterMatch = markdown.match(/^\s*tension\s*:\s*(\d+)\s*$/im);
+  return frontmatterMatch?.[1] ? Number.parseInt(frontmatterMatch[1], 10) : null;
 }
 
 function extractPrevShotRef(
@@ -269,21 +297,40 @@ function extractSummary(markdown: string): string | null {
     /^#{1,4}\s*(?:🇹🇷\s*)?(?:Turkce|Türkçe)\s+Ozet\s*$(?:\n+)([\s\S]*?)(?=^#{1,4}\s+|\Z)/im,
   );
 
-  if (!headingMatch) {
-    return null;
+  if (headingMatch) {
+    const firstLine = headingMatch[1]
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+
+    if (firstLine) {
+      return firstLine;
+    }
   }
 
-  const firstLine = headingMatch[1]
+  const blockQuoteLine = markdown
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
+    .find((line) => line.startsWith(">"));
 
-  return firstLine ?? null;
+  return blockQuoteLine ? blockQuoteLine.replace(/^>\s*/, "").trim() || null : null;
 }
 
 function inferShotType(block: string, fallback: ParsedShotType): ParsedShotType {
   if (/reaction/i.test(block)) {
     return "reaction";
+  }
+
+  if (/\bECU\b|extreme close[- ]up/i.test(block)) {
+    return "close";
+  }
+
+  if (/insert/i.test(block)) {
+    return "detail";
+  }
+
+  if (/cutaway/i.test(block)) {
+    return "wide";
   }
 
   if (/detail/i.test(block)) {

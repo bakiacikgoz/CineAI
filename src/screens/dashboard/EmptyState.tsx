@@ -35,39 +35,9 @@ export function EmptyState({ onNew, onOpen }: EmptyStateProps) {
       animate="visible"
       style={{
         position: "relative",
-        overflow: "hidden",
         alignContent: "center",
       }}
     >
-      {/* Atmospheric gradient orbs */}
-      <div
-        style={{
-          position: "absolute",
-          top: "10%",
-          left: "50%",
-          transform: "translateX(-50%)",
-          width: 320,
-          height: 320,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(0,0,0,0.03), transparent 65%)",
-          filter: "blur(50px)",
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          bottom: "15%",
-          left: "30%",
-          width: 200,
-          height: 200,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(59,130,246,0.06), transparent 60%)",
-          filter: "blur(40px)",
-          pointerEvents: "none",
-        }}
-      />
-
       {/* Floating animated icon */}
       <motion.div
         variants={itemVariants}
@@ -94,9 +64,9 @@ export function EmptyState({ onNew, onOpen }: EmptyStateProps) {
             width: 88,
             height: 88,
             borderRadius: 24,
-            border: "1px solid rgba(0,0,0,0.08)",
+            border: "1px solid var(--glass-border)",
             background:
-              "linear-gradient(135deg, rgba(0,0,0,0.03), rgba(0,0,0,0.01))",
+              "linear-gradient(135deg, var(--surface-hover), var(--surface-hover))",
             boxShadow: "0 20px 60px rgba(0,0,0,0.04)",
           }}
         >

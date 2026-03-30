@@ -81,7 +81,12 @@ export function MediaLightbox({
             initial={{ opacity: 0 }}
             onClick={onClose}
             role="presentation"
-            style={{ zIndex }}
+            style={{
+              zIndex,
+              background: "var(--backdrop-bg)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+            }}
           >
             <motion.div
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -97,8 +102,9 @@ export function MediaLightbox({
                 padding: 18,
                 gap: 16,
                 overflow: "hidden",
-                background: "#ffffff",
-                boxShadow: "0 24px 64px rgba(0,0,0,0.12)",
+                borderRadius: 20,
+                background: "var(--bg-base)",
+                boxShadow: "var(--shadow-modal)",
               }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
@@ -119,8 +125,8 @@ export function MediaLightbox({
                       gap: 8,
                       padding: "6px 10px",
                       borderRadius: 999,
-                      border: "1px solid #e8e8e8",
-                      background: "rgba(0,0,0,0.04)",
+                      border: "1px solid var(--border-default)",
+                      background: "var(--surface-hover)",
                       color: "var(--text-primary)",
                       fontSize: 11,
                       letterSpacing: "0.08em",
@@ -128,7 +134,7 @@ export function MediaLightbox({
                     }}
                   >
                     {item.kind === "image" ? <ImageIcon size={13} /> : <VideoIcon size={13} />}
-                    Inspect Mode
+                    Inceleme Modu
                   </span>
                   <div
                     style={{
@@ -159,7 +165,7 @@ export function MediaLightbox({
                         gap: 8,
                         borderRadius: 999,
                         border: "1px solid var(--border-subtle)",
-                        background: "rgba(0,0,0,0.04)",
+                        background: "var(--surface-hover)",
                         padding: "8px 12px",
                         fontSize: 12,
                         color: "var(--text-secondary)",
@@ -179,7 +185,7 @@ export function MediaLightbox({
                       gap: 8,
                       borderRadius: 999,
                       border: "1px solid var(--border-subtle)",
-                      background: "rgba(0,0,0,0.04)",
+                      background: "var(--surface-hover)",
                       padding: "8px 12px",
                       fontSize: 12,
                       color: "var(--text-secondary)",
@@ -198,7 +204,7 @@ export function MediaLightbox({
                       justifyContent: "center",
                       borderRadius: 999,
                       border: "1px solid var(--border-subtle)",
-                      background: "rgba(0,0,0,0.04)",
+                      background: "var(--surface-hover)",
                       color: "var(--text-muted)",
                       cursor: "pointer",
                     }}
@@ -222,8 +228,8 @@ export function MediaLightbox({
                     placeItems: "center",
                     minHeight: "min(72vh, 760px)",
                     borderRadius: 24,
-                    border: "1px solid #e8e8e8",
-                    background: "#f3f3f4",
+                    border: "1px solid var(--border-default)",
+                    background: "var(--canvas-bg)",
                     overflow: "hidden",
                   }}
                 >

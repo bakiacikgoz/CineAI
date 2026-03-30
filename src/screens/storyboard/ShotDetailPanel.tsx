@@ -44,6 +44,7 @@ import {
 import { getAppSetting } from "@/lib/store";
 import { downloadMediaFile } from "@/lib/media-download";
 import {
+  deleteAssetsBatch,
   deleteAssetPath,
   deleteAssetRecord,
   getShotAssets,
@@ -62,9 +63,12 @@ import {
 import {
   enqueueAudioDialogueJob,
   cancelJob,
+  enqueueLipSyncJob,
   enqueueUpscaleJobs,
   enqueueStoryboardFrameJob,
+  ensureShotEndFrameFromVideo,
   enqueueVideoJobs,
+  resolveStoryboardVideoFrameFallbackPermission,
 } from "@/services/jobqueue.service";
 import {
   clearDialogueTextOverride,
@@ -92,7 +96,21 @@ import {
   listCharacters,
   type CharacterRecord,
 } from "@/services/character.service";
-import { clearShotExternalReference, updateShotPromptFields, saveShotExternalReference, setShotArchived, updateShotPaths, type ShotRow } from "@/services/import.service";
+import {
+  clearShotLipSyncMaster,
+  getLipSyncDetailByShotId,
+  type LipSyncShotDetail,
+} from "@/services/lipsync.service";
+import {
+  clearShotExternalReference,
+  getEffectiveShotExternalReferencePath,
+  getShotById,
+  saveShotExternalReference,
+  setShotArchived,
+  updateShotPaths,
+  updateShotPromptFields,
+  type ShotRow,
+} from "@/services/import.service";
 import {
   listPromptTemplates,
   type PromptTemplateRecord,
@@ -102,7 +120,7 @@ import { useQueueStore, type Job } from "@/store/queue.store";
 
 type DetailView = "start" | "end" | "video";
 type MediaView = DetailView | "audio";
-type RightPanelTab = "genel" | "uretim" | "prompt" | "ses";
+type RightPanelTab = "genel" | "uretim" | "prompt" | "ses" | "lipsync";
 type CandidateGroups = Record<AutonomousStage, AutonomousCandidateAsset[]>;
 type VariantBurstView = DetailView;
 
@@ -157,6 +175,8 @@ function statusColor(status: string) {
   if (status === "done") return "var(--status-success)";
   if (status === "review") return "var(--text-primary)";
   if (status === "generating") return "var(--status-warning)";
+  if (status === "stale") return "var(--status-warning)";
+  if (status === "blocked") return "var(--status-error)";
   if (status === "error") return "var(--status-error)";
   return "var(--text-muted)";
 }
@@ -210,7 +230,8 @@ function inferStoryboardVariantStage(
   if (
     normalizedPath &&
     (normalizedPath === normalizeStoredPath(shot.video4kPath) ||
-      normalizedPath === normalizeStoredPath(shot.videoPath))
+      normalizedPath === normalizeStoredPath(shot.videoPath) ||
+      normalizedPath === normalizeStoredPath(shot.lipsyncVideoPath))
   ) {
     return "video";
   }
@@ -258,11 +279,46 @@ function describeShotQueueJob(job: Job): string {
       return "4K upscale";
     case "audio_dialogue":
       return "Dialogue audio";
+    case "lipsync":
+      return "Lipsync master";
     case "character_image":
       return "Character candidate";
     default:
       return "Queue job";
   }
+}
+
+function resolveQueueJobProgress(job: Job): number {
+  return job.status === "queued"
+    ? 12
+    : Math.max(8, Math.min(100, Math.round(job.progress || 0)));
+}
+
+function formatQueueJobProgress(job: Job | null): string | null {
+  if (!job) {
+    return null;
+  }
+
+  return job.status === "queued" ? "Sirada" : `%${resolveQueueJobProgress(job)}`;
+}
+
+function selectDominantShotJob(jobs: Job[]): Job | null {
+  if (jobs.length === 0) {
+    return null;
+  }
+
+  return jobs
+    .slice()
+    .sort((left, right) => {
+      const leftPriority = left.status === "active" ? 0 : 1;
+      const rightPriority = right.status === "active" ? 0 : 1;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return (right.startedAt ?? right.queuedAt) - (left.startedAt ?? left.queuedAt);
+    })[0] ?? null;
 }
 
 export function ShotDetailPanel({
@@ -302,6 +358,7 @@ export function ShotDetailPanel({
   >({});
   const [assigningVariantId, setAssigningVariantId] = useState<string | null>(null);
   const [deletingVariantId, setDeletingVariantId] = useState<string | null>(null);
+  const [deletingVariantBatchView, setDeletingVariantBatchView] = useState<DetailView | null>(null);
   const [clearingMediaView, setClearingMediaView] = useState<DetailView | null>(null);
   const [stageAction, setStageAction] = useState<AutonomousStage | null>(null);
   const [selectingAssetId, setSelectingAssetId] = useState<string | null>(null);
@@ -326,6 +383,15 @@ export function ShotDetailPanel({
   const [dialogueAudioDetail, setDialogueAudioDetail] = useState<DialogueAudioShot | null>(null);
   const [loadingDialogueAudioDetail, setLoadingDialogueAudioDetail] = useState(false);
   const [queueingDialogueAudio, setQueueingDialogueAudio] = useState(false);
+  const [lipsyncDetail, setLipSyncDetail] = useState<LipSyncShotDetail | null>(null);
+  const [loadingLipSyncDetail, setLoadingLipSyncDetail] = useState(false);
+  const [queueingLipSync, setQueueingLipSync] = useState(false);
+  const [clearingLipSync, setClearingLipSync] = useState(false);
+  const [effectiveExternalReferencePath, setEffectiveExternalReferencePath] = useState<string | null>(
+    shot.externalReferencePath ?? null,
+  );
+  const [loadingEffectiveExternalReference, setLoadingEffectiveExternalReference] = useState(false);
+  const [transferringChainStart, setTransferringChainStart] = useState(false);
   const queueJobs = useQueueStore((state) => state.jobs);
   const [promptDrafts, setPromptDrafts] = useState<Record<DetailView, string>>({
     start: shot.promptStart ?? "",
@@ -389,6 +455,90 @@ export function ShotDetailPanel({
   }, [shot.id, shot.audioDirectionJson, shot.audioMasterPath, shot.audioStatus, shot.updatedAt]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadLipSyncDetail() {
+      setLoadingLipSyncDetail(true);
+
+      try {
+        const detail = await getLipSyncDetailByShotId(shot.id);
+        if (!cancelled) {
+          setLipSyncDetail(detail);
+        }
+      } catch (error) {
+        console.error("Failed to load lipsync detail", error);
+        if (!cancelled) {
+          setLipSyncDetail(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingLipSyncDetail(false);
+        }
+      }
+    }
+
+    void loadLipSyncDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    shot.id,
+    shot.audioMasterPath,
+    shot.video4kPath,
+    shot.videoPath,
+    shot.lipsyncVideoPath,
+    shot.lipsyncStatus,
+    shot.lipsyncSourceAudioPath,
+    shot.lipsyncSourceVideoPath,
+    shot.updatedAt,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadEffectiveExternalReference() {
+      if (!shot.requiresExternalReference) {
+        setEffectiveExternalReferencePath(shot.externalReferencePath ?? null);
+        setLoadingEffectiveExternalReference(false);
+        return;
+      }
+
+      setLoadingEffectiveExternalReference(true);
+
+      try {
+        const nextPath = await getEffectiveShotExternalReferencePath(shot);
+        if (!cancelled) {
+          setEffectiveExternalReferencePath(nextPath);
+        }
+      } catch (error) {
+        console.error("Failed to resolve effective external reference", error);
+        if (!cancelled) {
+          setEffectiveExternalReferencePath(shot.externalReferencePath ?? null);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingEffectiveExternalReference(false);
+        }
+      }
+    }
+
+    void loadEffectiveExternalReference();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    shot.id,
+    shot.externalReferenceName,
+    shot.externalReferencePath,
+    shot.parentShotId,
+    shot.prevShotId,
+    shot.requiresExternalReference,
+    shot.updatedAt,
+  ]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") {
         return;
@@ -402,14 +552,16 @@ export function ShotDetailPanel({
 
   async function refreshAll() {
     await onRefresh();
-    const [nextGroups, nextAssets, nextDialogueAudioDetail] = await Promise.all([
+    const [nextGroups, nextAssets, nextDialogueAudioDetail, nextLipSyncDetail] = await Promise.all([
       getAutonomousCandidateGroups(shot.id),
       activeProject ? getShotAssets(activeProject.id, shot.id) : Promise.resolve<AssetWithTags[]>([]),
       getDialogueAudioShotById(shot.id),
+      getLipSyncDetailByShotId(shot.id),
     ]);
     setGroups(nextGroups);
     setShotAssets(nextAssets);
     setDialogueAudioDetail(nextDialogueAudioDetail);
+    setLipSyncDetail(nextLipSyncDetail);
   }
 
   async function handleQueueDialogueAudio() {
@@ -489,6 +641,42 @@ export function ShotDetailPanel({
       );
     } finally {
       setQueueingDialogueAudio(false);
+    }
+  }
+
+  async function handleQueueLipSync() {
+    setQueueingLipSync(true);
+
+    try {
+      await enqueueLipSyncJob({ shotId: shot.id });
+      await refreshAll();
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Lipsync master kuyruga eklenemedi.",
+        { title: shot.shotNumber, kind: "error" },
+      );
+    } finally {
+      setQueueingLipSync(false);
+    }
+  }
+
+  async function handleClearLipSync() {
+    setClearingLipSync(true);
+
+    try {
+      await clearShotLipSyncMaster(shot.id);
+      setMediaPathOverrides((current) => ({
+        ...current,
+        video: shot.video4kPath ?? shot.videoPath ?? null,
+      }));
+      await refreshAll();
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Lipsync master temizlenemedi.",
+        { title: shot.shotNumber, kind: "error" },
+      );
+    } finally {
+      setClearingLipSync(false);
     }
   }
 
@@ -599,7 +787,7 @@ export function ShotDetailPanel({
 
   useEffect(() => {
     setMediaPathOverrides({});
-  }, [shot.id, shot.imageEndPath, shot.imageStartPath, shot.video4kPath, shot.videoPath]);
+  }, [shot.id, shot.imageEndPath, shot.imageStartPath, shot.lipsyncVideoPath, shot.video4kPath, shot.videoPath]);
 
   const effectiveStartPath =
     mediaPathOverrides.start !== undefined
@@ -610,7 +798,7 @@ export function ShotDetailPanel({
   const effectiveVideoPath =
     mediaPathOverrides.video !== undefined
       ? mediaPathOverrides.video
-      : shot.video4kPath ?? shot.videoPath;
+      : shot.lipsyncVideoPath ?? shot.video4kPath ?? shot.videoPath;
   const startImageUrl = effectiveStartPath
     ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveStartPath))
     : null;
@@ -633,15 +821,31 @@ export function ShotDetailPanel({
   const dialogueAudioUrl = dialogueAudioRelativePath
     ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, dialogueAudioRelativePath))
     : null;
-  const externalReferenceUrl = shot.externalReferencePath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, shot.externalReferencePath))
+  const externalReferenceUrl = effectiveExternalReferencePath
+    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveExternalReferencePath))
     : null;
   const missingExternalReference =
-    shot.requiresExternalReference && !shot.externalReferencePath;
+    shot.requiresExternalReference &&
+    !loadingEffectiveExternalReference &&
+    !effectiveExternalReferencePath;
+  const inheritedExternalReference =
+    Boolean(effectiveExternalReferencePath) &&
+    effectiveExternalReferencePath !== shot.externalReferencePath;
   const mediaByView = {
     start: { url: startImageUrl, label: "START", kind: "image" as const, status: shot.imageStatus, path: effectiveStartPath },
     end: { url: endImageUrl, label: "END", kind: "image" as const, status: shot.imageStatus, path: effectiveEndPath },
-    video: { url: videoUrl, label: effectiveVideoPath && effectiveVideoPath === shot.video4kPath ? "VIDEO 4K" : "VIDEO", kind: "video" as const, status: shot.videoStatus, path: effectiveVideoPath },
+    video: {
+      url: videoUrl,
+      label:
+        effectiveVideoPath && effectiveVideoPath === shot.lipsyncVideoPath
+          ? "LIPSYNC MASTER"
+          : effectiveVideoPath && effectiveVideoPath === shot.video4kPath
+            ? "VIDEO 4K"
+            : "VIDEO",
+      kind: "video" as const,
+      status: shot.lipsyncVideoPath ? shot.lipsyncStatus : shot.videoStatus,
+      path: effectiveVideoPath,
+    },
   };
   const audioMedia = {
     url: dialogueAudioUrl,
@@ -830,12 +1034,30 @@ export function ShotDetailPanel({
           (job.type === "image_start" ||
             job.type === "image_end" ||
             job.type === "video" ||
+            job.type === "lipsync" ||
             job.type === "coverage_image" ||
             job.type === "coverage_video" ||
             job.type === "audio_dialogue" ||
             job.type === "upscale"),
       ),
     [queueJobs, shot.id],
+  );
+  const mediaJobByView = useMemo<Record<MediaView, Job | null>>(
+    () => ({
+      start: selectDominantShotJob(
+        shotQueueJobs.filter((job) => job.type === "image_start"),
+      ),
+      end: selectDominantShotJob(
+        shotQueueJobs.filter((job) => job.type === "image_end"),
+      ),
+      video: selectDominantShotJob(
+        shotQueueJobs.filter((job) => job.type === "video" || job.type === "lipsync" || job.type === "upscale"),
+      ),
+      audio: selectDominantShotJob(
+        shotQueueJobs.filter((job) => job.type === "audio_dialogue"),
+      ),
+    }),
+    [shotQueueJobs],
   );
   const productionNotice =
     producing === "start"
@@ -853,12 +1075,18 @@ export function ShotDetailPanel({
           : upscaling
             ? "4K upscale kuyruga aliniyor."
             : null;
-  const shouldShowProductionState =
-    Boolean(productionNotice) ||
-    shotQueueJobs.length > 0 ||
+  const hasGeneratingShotStatus =
     shot.imageStatus === "generating" ||
     shot.videoStatus === "generating" ||
+    shot.lipsyncStatus === "generating" ||
     shot.audioStatus === "generating";
+  const hasOrphanedGeneratingState =
+    !productionNotice &&
+    shotQueueJobs.length === 0 &&
+    hasGeneratingShotStatus;
+  const shouldShowProductionState =
+    Boolean(productionNotice) ||
+    shotQueueJobs.length > 0;
   const activePromptChanged =
     (activePromptTab === "start" && promptDrafts.start !== (shot.promptStart ?? "")) ||
     (activePromptTab === "end" && promptDrafts.end !== (shot.promptEnd ?? "")) ||
@@ -982,12 +1210,120 @@ export function ShotDetailPanel({
     if (!promptDrafts.start.trim()) return;
     setProducing("start");
     try {
-      await enqueueStoryboardFrameJob({ shotId: shot.id, prompt: promptDrafts.start.trim(), mode: "start", model: imageModel, cfg: shot.cfg ?? 7, steps: 28 });
+      const allowVideoFrameFallback = await resolveStoryboardVideoFrameFallbackPermission({
+        shot,
+        mode: "start",
+      });
+      await enqueueStoryboardFrameJob({
+        shotId: shot.id,
+        prompt: promptDrafts.start.trim(),
+        mode: "start",
+        model: imageModel,
+        cfg: shot.cfg ?? 7,
+        steps: 28,
+        allowVideoFrameFallback,
+      });
       await refreshAll();
     } catch (error) {
       await message(error instanceof Error ? error.message : "START frame kuyruga eklenemedi.", { title: shot.shotNumber, kind: "error" });
     } finally {
       setProducing(null);
+    }
+  }
+
+  async function handleAdoptPreviousShotStartReference() {
+    if (!shot.prevShotId) {
+      await message("Bu shot icin onceki bagli sahne bulunamadi.", {
+        title: shot.shotNumber,
+        kind: "error",
+      });
+      return;
+    }
+
+    setTransferringChainStart(true);
+
+    try {
+      const previousShot = await getShotById(shot.prevShotId);
+
+      if (!previousShot) {
+        throw new Error("Onceki shot bulunamadi.");
+      }
+
+      const hasEndImage = Boolean(previousShot.imageEndPath);
+      const hasVideo = Boolean(previousShot.video4kPath ?? previousShot.videoPath);
+
+      if (!hasEndImage && !hasVideo) {
+        throw new Error(
+          `${previousShot.shotNumber} icin ne END gorseli ne de video mevcut.`,
+        );
+      }
+
+      let startPath: string | null = null;
+      let sourceLabel = "END gorseli";
+
+      if (hasEndImage && hasVideo) {
+        const useVideoFrame = await confirm(
+          `${shot.shotNumber} START slotu icin ${previousShot.shotNumber} END gorselini kullanabiliriz. Istersen videonun son karesini cikarip onu da baglayabilirim.`,
+          {
+            title: "START kaynagini sec",
+            kind: "info",
+            okLabel: "Videodan al",
+            cancelLabel: "END gorselini kullan",
+          },
+        );
+
+        if (useVideoFrame) {
+          startPath = await ensureShotEndFrameFromVideo(previousShot, {
+            forceExtract: true,
+          });
+          sourceLabel = "video son karesi";
+        } else {
+          startPath = previousShot.imageEndPath;
+        }
+      } else if (hasEndImage) {
+        startPath = previousShot.imageEndPath;
+      } else {
+        startPath = await ensureShotEndFrameFromVideo(previousShot);
+        sourceLabel = "video son karesi";
+      }
+
+      if (!startPath) {
+        throw new Error("START referansi hazirlanamadi.");
+      }
+
+      await updateShotPaths(shot.id, {
+        imageStartPath: startPath,
+        imageStatus: effectiveEndPath ? "done" : "review",
+      });
+      setMediaPathOverrides((current) => ({
+        ...current,
+        start: startPath,
+      }));
+      setActiveMediaView("start");
+      setVariantIndexByView((current) => ({
+        ...current,
+        start: 0,
+      }));
+      await refreshAll();
+      await message(
+        `${previousShot.shotNumber} ${sourceLabel} ${shot.shotNumber} START slotuna baglandi.`,
+        {
+          title: shot.shotNumber,
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      await message(
+        error instanceof Error
+          ? error.message
+          : "Onceki shot referansi START slotuna tasinamadi.",
+        {
+          title: shot.shotNumber,
+          kind: "error",
+        },
+      );
+    } finally {
+      setTransferringChainStart(false);
     }
   }
 
@@ -1007,6 +1343,13 @@ export function ShotDetailPanel({
     try {
       const quantity = variantBurstCount[mode];
       const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const allowVideoFrameFallback =
+        mode === "start"
+          ? await resolveStoryboardVideoFrameFallbackPermission({
+              shot,
+              mode: "start",
+            })
+          : undefined;
 
       for (let index = 0; index < quantity; index += 1) {
         await enqueueStoryboardFrameJob({
@@ -1024,6 +1367,7 @@ export function ShotDetailPanel({
               : (shot.imageEndPath ? "done" : "review"),
           outputSuffix: buildManualVariantOutputSuffix(mode, batchKey, index),
           assetTags: [`stage:${mode}`],
+          allowVideoFrameFallback,
         });
       }
 
@@ -1245,6 +1589,12 @@ export function ShotDetailPanel({
           ...current,
           end: null,
         }));
+      } else if (activeVariant?.path === normalizeStoredPath(shot.lipsyncVideoPath)) {
+        await clearShotLipSyncMaster(shot.id);
+        setMediaPathOverrides((current) => ({
+          ...current,
+          video: shot.video4kPath ?? shot.videoPath ?? null,
+        }));
       } else if (activeVariant?.resolution === "4K" || activeVariant?.path === normalizeStoredPath(shot.video4kPath)) {
         await updateShotPaths(shot.id, {
           video4kPath: null,
@@ -1369,6 +1719,91 @@ export function ShotDetailPanel({
       );
     } finally {
       setDeletingVariantId(null);
+    }
+  }
+
+  async function handleDeleteAllVariants(view: DetailView) {
+    const variantsToDelete = storyboardVariants[view].filter((variant) => Boolean(variant.path));
+
+    if (variantsToDelete.length === 0) {
+      return;
+    }
+
+    const confirmed = await confirm(
+      `${shot.shotNumber} icin ${view.toUpperCase()} alanindaki ${variantsToDelete.length} varyant kalici olarak silinecek. Secili slot varsa temizlenecek. Devam edilsin mi?`,
+      {
+        title: "Tum varyantlari sil",
+        kind: "warning",
+        okLabel: "Sil",
+        cancelLabel: "Vazgec",
+      },
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingVariantBatchView(view);
+
+    try {
+      const variantPaths = new Set(
+        variantsToDelete
+          .map((variant) => normalizeStoredPath(variant.path))
+          .filter((value): value is string => Boolean(value)),
+      );
+
+      if (variantPaths.size > 0) {
+        setShotAssets((current) =>
+          current.filter((asset) => {
+            const assetPath = normalizeStoredPath(asset.file_path);
+            return !assetPath || !variantPaths.has(assetPath);
+          }),
+        );
+      }
+
+      setMediaPathOverrides((current) => ({
+        ...current,
+        [view]: null,
+      }));
+      setLightboxItem(null);
+      await new Promise((resolve) => setTimeout(resolve, view === "video" ? 180 : 40));
+
+      const impact = await deleteAssetsBatch(
+        variantsToDelete.map((variant) => ({
+          assetId: variant.assetId ?? null,
+          assetPath: variant.assetId ? null : variant.path,
+        })),
+      );
+
+      setVariantIndexByView((current) => ({
+        ...current,
+        [view]: 0,
+      }));
+      await refreshAll();
+
+      const impactSummary =
+        impact.slotCount > 0 ? ` ${impact.slotCount} slot baglantisi kaldirildi.` : "";
+      const cleanupSummary = impact.fileDeletePending
+        ? " Kaynak dosyalardan bazilari kilitli; disk temizligi daha sonra tekrar denenecek."
+        : "";
+
+      await message(
+        `${impact.deletedCount} ${view.toUpperCase()} varyanti silindi.${impactSummary}${cleanupSummary}`,
+        {
+          title: shot.shotNumber,
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : `${view.toUpperCase()} varyantlari silinemedi.`,
+        {
+          title: shot.shotNumber,
+          kind: "error",
+        },
+      );
+    } finally {
+      setDeletingVariantBatchView(null);
     }
   }
 
@@ -1648,7 +2083,7 @@ export function ShotDetailPanel({
   }
 
   function openAssetLibrary(
-    target: "start" | "end" | "video" | "reference" = "start",
+    target: "start" | "end" | "video" | "lipsync" | "reference" = "start",
     selectedFilePath?: string | null,
   ) {
     navigate("/asset-library", {
@@ -1657,7 +2092,7 @@ export function ShotDetailPanel({
         assignmentTarget: target,
         selectedFilePath: selectedFilePath ?? undefined,
         search: target === "reference" ? shot.externalReferenceName ?? shot.shotNumber : shot.shotNumber,
-        typeFilter: target === "video" ? "video" : "image",
+        typeFilter: target === "video" || target === "lipsync" ? "video" : "image",
       },
     });
     onClose();
@@ -1716,10 +2151,10 @@ export function ShotDetailPanel({
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--surface-tint)" }}>
               <div style={{ display: "flex", gap: 4 }}>
                 {([
-                  { key: "start" as MediaView, label: "START", status: mediaByView.start.status },
-                  { key: "end" as MediaView, label: "END", status: mediaByView.end.status },
-                  { key: "video" as MediaView, label: "VIDEO", status: mediaByView.video.status },
-                  { key: "audio" as MediaView, label: "SES", status: shot.audioStatus },
+                  { key: "start" as MediaView, label: "START", status: mediaByView.start.status, job: mediaJobByView.start },
+                  { key: "end" as MediaView, label: "END", status: mediaByView.end.status, job: mediaJobByView.end },
+                  { key: "video" as MediaView, label: "VIDEO", status: mediaByView.video.status, job: mediaJobByView.video },
+                  { key: "audio" as MediaView, label: "SES", status: activeDialogueShot.audioStatus, job: mediaJobByView.audio },
                 ]).map((view) => (
                   <button
                     key={view.key}
@@ -1736,11 +2171,18 @@ export function ShotDetailPanel({
                     }}
                   >
                     {view.label}
-                    <span style={{
-                      width: 7, height: 7, borderRadius: 999,
-                      background: statusColor(view.status),
-                      opacity: view.status === "none" || view.status === "pending" ? 0.35 : 1,
-                    }} />
+                    {view.job ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 999, background: activeMediaView === view.key ? "rgba(255,255,255,0.14)" : "var(--surface-hover)", color: view.job.status === "queued" ? "var(--text-muted)" : "var(--status-warning)", fontSize: 9, fontWeight: 700, letterSpacing: 0 }}>
+                        <LoaderCircle className="spin-slow" size={9} />
+                        {formatQueueJobProgress(view.job)}
+                      </span>
+                    ) : (
+                      <span style={{
+                        width: 7, height: 7, borderRadius: 999,
+                        background: statusColor(view.status),
+                        opacity: view.status === "none" || view.status === "pending" ? 0.35 : 1,
+                      }} />
+                    )}
                   </button>
                 ))}
               </div>
@@ -1852,6 +2294,18 @@ export function ShotDetailPanel({
                         <Trash2 size={10} />
                       </button>
                     ) : null}
+                    {activeVariants.length > 0 ? (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => void handleDeleteAllVariants(activeMediaView as DetailView)}
+                        disabled={deletingVariantBatchView === activeMediaView}
+                        style={{ padding: "4px 10px", fontSize: 10, borderRadius: 7, borderColor: "rgba(239,68,68,0.2)", color: "var(--status-error)" }}
+                      >
+                        <Trash2 size={10} />
+                        {deletingVariantBatchView === activeMediaView ? "Siliniyor..." : "Tumunu sil"}
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -1921,6 +2375,7 @@ export function ShotDetailPanel({
                 { key: "uretim" as RightPanelTab, label: "\u00DCretim", icon: Sparkles },
                 { key: "prompt" as RightPanelTab, label: "Prompt", icon: Pencil },
                 { key: "ses" as RightPanelTab, label: "Ses", icon: AudioLines },
+                { key: "lipsync" as RightPanelTab, label: "Lipsync", icon: Link2 },
               ]).map((tab) => (
                 <button
                   key={tab.key}
@@ -1943,6 +2398,34 @@ export function ShotDetailPanel({
 
             {/* ── Tab Icerik (Scrollable) ── */}
             <div style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "20px 20px 28px" }}>
+
+              {shouldShowProductionState && rightPanelTab !== "genel" ? (
+                <div style={{ marginBottom: 16, borderRadius: 14, border: "1px solid rgba(245,158,11,0.16)", background: "linear-gradient(135deg, rgba(245,158,11,0.05) 0%, rgba(245,158,11,0.02) 100%)", padding: "12px 14px", display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <LoaderCircle className="spin-slow" size={14} style={{ color: "var(--status-warning)", flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>Uretim aktif</div>
+                      {productionNotice ? (
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                          {productionNotice}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  {shotQueueJobs.length > 0 ? (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {shotQueueJobs.slice(0, 4).map((job) => (
+                        <span key={job.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 999, background: "rgba(255,255,255,0.65)", border: "1px solid rgba(245,158,11,0.12)", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>
+                          <span style={{ color: "var(--text-primary)" }}>{describeShotQueueJob(job)}</span>
+                          <span style={{ color: job.status === "queued" ? "var(--text-muted)" : "var(--status-warning)" }}>
+                            {formatQueueJobProgress(job)}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               {/* ━━━━ GENEL TAB ━━━━ */}
               {rightPanelTab === "genel" && (
@@ -1982,7 +2465,23 @@ export function ShotDetailPanel({
                   </div>
 
                   {/* ── Uretim Durumu ── */}
-                  {shouldShowProductionState ? (
+                  {hasOrphanedGeneratingState ? (
+                    <div style={{ borderRadius: 16, border: "1px solid rgba(245,158,11,0.18)", background: "linear-gradient(135deg, rgba(245,158,11,0.04) 0%, rgba(245,158,11,0.02) 100%)", overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(245,158,11,0.12)", display: "grid", placeItems: "center" }}><AlertTriangle size={14} style={{ color: "var(--status-warning)" }} /></div>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Onceki uretim oturumu kesildi</div>
+                            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 1 }}>Kuyrukta aktif is bulunmuyor. Durumu yenileyebilir veya uretime yeniden baslayabilirsin.</div>
+                          </div>
+                        </div>
+                        <button className="btn-secondary" type="button" onClick={() => void refreshAll()} style={{ padding: "6px 12px", fontSize: 11, fontWeight: 500, borderRadius: 8 }}>
+                          <RefreshCw size={12} />
+                          Yenile
+                        </button>
+                      </div>
+                    </div>
+                  ) : shouldShowProductionState ? (
                     <div style={{ borderRadius: 16, border: "1px solid rgba(245,158,11,0.18)", background: "linear-gradient(135deg, rgba(245,158,11,0.04) 0%, rgba(245,158,11,0.02) 100%)", overflow: "hidden" }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid rgba(245,158,11,0.1)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1997,7 +2496,7 @@ export function ShotDetailPanel({
                       {shotQueueJobs.length > 0 ? (
                         <div style={{ padding: "12px 20px 16px", display: "grid", gap: 8 }}>
                           {shotQueueJobs.slice(0, 4).map((job) => {
-                            const pv = job.status === "queued" ? 12 : Math.max(8, Math.min(100, Math.round(job.progress || 0)));
+                            const pv = resolveQueueJobProgress(job);
                             return (
                               <div key={job.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
                                 <div style={{ flex: 1, display: "grid", gap: 4 }}>
@@ -2013,8 +2512,6 @@ export function ShotDetailPanel({
                           })}
                           {shotQueueJobs.length > 4 ? <div style={{ fontSize: 11, color: "var(--text-muted)", paddingTop: 4 }}>+{shotQueueJobs.length - 4} ek is kuyrukta</div> : null}
                         </div>
-                      ) : (shot.imageStatus === "generating" || shot.videoStatus === "generating" || shot.audioStatus === "generating") ? (
-                        <div style={{ padding: "12px 20px 16px", fontSize: 12, color: "var(--text-secondary)" }}>Uretim aktif, durum guncelleniyor...</div>
                       ) : null}
                     </div>
                   ) : null}
@@ -2023,10 +2520,22 @@ export function ShotDetailPanel({
                   {shot.chainStatus === "continue" ? (
                     <div style={{ display: "flex", alignItems: "start", gap: 12, padding: "14px 18px", borderRadius: 12, background: "var(--surface-hover)", border: "1px solid var(--surface-hover)" }}>
                       <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--surface-hover)", display: "grid", placeItems: "center", flexShrink: 0 }}><Link2 size={15} style={{ color: "var(--text-secondary)" }} /></div>
-                      <div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>Zincir devam</div>
                         <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>START referansi onceki shot&apos;in END karesinden otomatik alinir.</div>
                       </div>
+                      {shot.prevShotId ? (
+                        <button
+                          className="btn-secondary"
+                          disabled={transferringChainStart}
+                          onClick={() => void handleAdoptPreviousShotStartReference()}
+                          style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8, flexShrink: 0 }}
+                          type="button"
+                        >
+                          <Link2 size={13} />
+                          {transferringChainStart ? "Tasiniyor..." : "START'a tasi"}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -2036,18 +2545,21 @@ export function ShotDetailPanel({
                       <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px 20px" }}>
                         <div style={{ width: 36, height: 36, borderRadius: 10, background: missingExternalReference ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", display: "grid", placeItems: "center", flexShrink: 0 }}><AlertTriangle size={16} style={{ color: missingExternalReference ? "var(--status-error)" : "var(--status-success)" }} /></div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>Harici referans {missingExternalReference ? "gerekli" : "hazir"}</div>
-                          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{shot.externalReferenceName ? `Beklenen: ${shot.externalReferenceName}` : "Bu shot harici referans gorseli bekliyor."}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>Harici referans {loadingEffectiveExternalReference ? "kontrol ediliyor" : missingExternalReference ? "gerekli" : "hazir"}</div>
+                          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                            {shot.externalReferenceName ? `Beklenen: ${shot.externalReferenceName}` : "Bu shot harici referans gorseli bekliyor."}
+                            {inheritedExternalReference ? " Referans zincirden devraliniyor." : ""}
+                          </div>
                         </div>
                         {externalReferenceUrl ? (
-                          <button onClick={() => setLightboxItem({ kind: "image", src: externalReferenceUrl, title: `${shot.shotNumber} / Harici referans`, subtitle: shot.externalReferenceName ?? "Referans", description: shot.externalReferenceNotes ?? "Yuklu referans gorseli.", downloadPath: shot.externalReferencePath ? toAbsoluteProjectPath(projectFolderPath, shot.externalReferencePath) : null, downloadName: shot.externalReferenceName ?? shot.externalReferencePath?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
+                          <button onClick={() => setLightboxItem({ kind: "image", src: externalReferenceUrl, title: `${shot.shotNumber} / Harici referans`, subtitle: shot.externalReferenceName ?? "Referans", description: shot.externalReferenceNotes ?? "Yuklu referans gorseli.", downloadPath: effectiveExternalReferencePath ? toAbsoluteProjectPath(projectFolderPath, effectiveExternalReferencePath) : null, downloadName: shot.externalReferenceName ?? effectiveExternalReferencePath?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
                             <img src={externalReferenceUrl} alt="ref" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover", border: "1px solid var(--glass-border)" }} />
                           </button>
                         ) : null}
                       </div>
                       <div style={{ display: "flex", gap: 6, padding: "0 20px 16px" }}>
-                        <button className="btn-secondary" type="button" disabled={updatingReference} onClick={() => void handleUploadReference()} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Upload size={13} />{shot.externalReferencePath ? "Degistir" : "Yukle"}</button>
-                        <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("reference", shot.externalReferencePath)} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Link2 size={13} />Kutuphane</button>
+                        <button className="btn-secondary" type="button" disabled={updatingReference} onClick={() => void handleUploadReference()} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Upload size={13} />{effectiveExternalReferencePath ? "Degistir" : "Yukle"}</button>
+                        <button className="btn-secondary" type="button" onClick={() => openAssetLibrary("reference", effectiveExternalReferencePath)} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8 }}><Link2 size={13} />Kutuphane</button>
                         {shot.externalReferencePath ? <button className="btn-secondary" type="button" disabled={updatingReference} onClick={() => void handleClearReference()} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 8, borderColor: "rgba(239,68,68,0.18)", color: "var(--status-error)" }}><Trash2 size={13} />Kaldir</button> : null}
                       </div>
                     </div>
@@ -2261,16 +2773,17 @@ export function ShotDetailPanel({
                       {([
                         { key: "start" as const, label: "START", path: effectiveStartPath, icon: ImageIcon },
                         { key: "end" as const, label: "END", path: effectiveEndPath, icon: ImageIcon },
-                        { key: "video" as const, label: "VIDEO", path: effectiveVideoPath, icon: Video },
-                        { key: "reference" as const, label: "REFERANS", path: shot.externalReferencePath, icon: Link2 },
-                      ]).map((slot, i) => (
-                        <div key={slot.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", borderBottom: i < 3 ? "1px solid var(--surface-hover)" : "none" }}>
+                        { key: "video" as const, label: "VIDEO", path: shot.video4kPath ?? shot.videoPath, icon: Video },
+                        { key: "lipsync" as const, label: "LIPSYNC", path: shot.lipsyncVideoPath, icon: Clapperboard },
+                        { key: "reference" as const, label: "REFERANS", path: effectiveExternalReferencePath, icon: Link2 },
+                      ]).map((slot, i, list) => (
+                        <div key={slot.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", borderBottom: i < list.length - 1 ? "1px solid var(--surface-hover)" : "none" }}>
                           <slot.icon size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
                           <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", width: 60, flexShrink: 0 }}>{slot.label}</span>
                           <span style={{ flex: 1, fontSize: 11, color: slot.path ? "var(--text-primary)" : "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: slot.path ? "monospace" : "inherit", fontWeight: slot.path ? 500 : 400 }}>
                             {slot.path ? slot.path.split("/").pop() : "Bos"}
                           </span>
-                          <button className="btn-secondary" type="button" onClick={() => openAssetLibrary(slot.key, slot.key === "reference" ? shot.externalReferencePath : slot.key === "video" ? (shot.video4kPath ?? shot.videoPath) : slot.key === "start" ? shot.imageStartPath : shot.imageEndPath)} style={{ padding: "5px 10px", fontSize: 10, fontWeight: 500, borderRadius: 7, flexShrink: 0 }}>
+                          <button className="btn-secondary" type="button" onClick={() => openAssetLibrary(slot.key, slot.key === "reference" ? effectiveExternalReferencePath : slot.key === "lipsync" ? shot.lipsyncVideoPath : slot.key === "video" ? (shot.video4kPath ?? shot.videoPath) : slot.key === "start" ? shot.imageStartPath : shot.imageEndPath)} style={{ padding: "5px 10px", fontSize: 10, fontWeight: 500, borderRadius: 7, flexShrink: 0 }}>
                             {slot.path ? "Degistir" : "Sec"}
                           </button>
                         </div>
@@ -2411,7 +2924,7 @@ export function ShotDetailPanel({
                   <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
                     <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Duygu tonu ve optimizer</h3><p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)" }}>Pacing preset, yonetmen notu, OpenRouter ayari</p></div>
                     <div style={{ padding: "16px 20px" }}>
-                      <DialoguePerformanceEditor busy={queueingDialogueAudio || loadingDialogueAudioDetail} description="" hasOverride={Boolean(dialogueAudioDetail?.hasGenerationProfileOverride)} onClear={handleClearDialogueGenerationProfile} onSave={handleSaveDialogueGenerationProfile} profile={dialogueAudioDetail?.generationProfile ?? { useOptimizer: true, performancePreset: "auto", performanceNote: null }} title="" />
+                      <DialoguePerformanceEditor busy={queueingDialogueAudio || loadingDialogueAudioDetail} description="" hasOverride={Boolean(dialogueAudioDetail?.hasGenerationProfileOverride)} onClear={handleClearDialogueGenerationProfile} onSave={handleSaveDialogueGenerationProfile} profile={dialogueAudioDetail?.generationProfile ?? { useOptimizer: true, performancePreset: "auto", performanceNote: null, lockVoiceStyle: true }} title="" />
                     </div>
                   </div>
 
@@ -2453,6 +2966,106 @@ export function ShotDetailPanel({
                       <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{activeDialogueShot.audioStatus === "done" ? "Master dosyasi bekleniyor." : "Henuz uretilmis ses yok."}</div>
                     </div>
                   )}
+
+                  <div style={{ borderRadius: 16, border: "1px solid rgba(16,185,129,0.14)", background: "linear-gradient(135deg, rgba(16,185,129,0.04) 0%, rgba(16,185,129,0.01) 100%)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "start", gap: 14, padding: "18px 20px" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(16,185,129,0.1)", display: "grid", placeItems: "center", flexShrink: 0 }}><Link2 size={17} style={{ color: "var(--status-success)" }} /></div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Lipsync takibi</span>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: lipsyncDetail?.status === "done" ? "rgba(34,197,94,0.1)" : lipsyncDetail?.status === "stale" || lipsyncDetail?.status === "generating" ? "rgba(245,158,11,0.1)" : lipsyncDetail?.status === "blocked" || lipsyncDetail?.status === "error" ? "rgba(239,68,68,0.1)" : "var(--surface-hover)", fontSize: 10, fontWeight: 600, color: statusColor(lipsyncDetail?.status ?? shot.lipsyncStatus) }}>
+                            <span style={{ width: 5, height: 5, borderRadius: 999, background: "currentColor" }} />{lipsyncDetail?.status ?? shot.lipsyncStatus}
+                          </span>
+                          {lipsyncDetail?.modelLabel ? <span style={{ padding: "4px 8px", borderRadius: 7, background: "var(--surface-card)", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>{lipsyncDetail.modelLabel}</span> : null}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                          Model secimi, stale durumu, onizleme ve yeniden uretim akisini ayri Lipsync sekmesinden takip edebilirsin.
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 20px 18px", flexWrap: "wrap" }}>
+                      <button className="btn-secondary" onClick={() => setRightPanelTab("lipsync")} type="button" style={{ padding: "9px 18px", fontSize: 13, fontWeight: 600, borderRadius: 10 }}>
+                        <Link2 size={15} />
+                        Lipsync sekmesini ac
+                      </button>
+                      {lipsyncDetail?.estimatedCostUsd ? <span style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(16,185,129,0.06)", fontSize: 11, fontWeight: 500, color: "var(--status-success)" }}>Tahmini ${lipsyncDetail.estimatedCostUsd.toFixed(3)}</span> : null}
+                      {lipsyncDetail?.isStale ? <span style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(245,158,11,0.08)", fontSize: 11, fontWeight: 500, color: "var(--status-warning)" }}>Kaynaklar degisti</span> : null}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ━━━━ LIPSYNC TAB ━━━━ */}
+              {rightPanelTab === "lipsync" && (
+                <div style={{ display: "grid", gap: 20 }}>
+                  <div style={{ borderRadius: 16, border: "1px solid rgba(16,185,129,0.14)", background: "linear-gradient(135deg, rgba(16,185,129,0.04) 0%, rgba(16,185,129,0.01) 100%)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "start", gap: 14, padding: "18px 20px" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(16,185,129,0.1)", display: "grid", placeItems: "center", flexShrink: 0 }}><Clapperboard size={17} style={{ color: "var(--status-success)" }} /></div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Lipsync master</span>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: lipsyncDetail?.status === "done" ? "rgba(34,197,94,0.1)" : lipsyncDetail?.status === "stale" || lipsyncDetail?.status === "generating" ? "rgba(245,158,11,0.1)" : lipsyncDetail?.status === "blocked" || lipsyncDetail?.status === "error" ? "rgba(239,68,68,0.1)" : "var(--surface-hover)", fontSize: 10, fontWeight: 600, color: statusColor(lipsyncDetail?.status ?? shot.lipsyncStatus) }}>
+                            <span style={{ width: 5, height: 5, borderRadius: 999, background: "currentColor" }} />{lipsyncDetail?.status ?? shot.lipsyncStatus}
+                          </span>
+                          {lipsyncDetail?.modelLabel ? <span style={{ padding: "4px 8px", borderRadius: 7, background: "var(--surface-card)", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>{lipsyncDetail.modelLabel}</span> : null}
+                          {lipsyncDetail?.estimatedCostUsd ? <span style={{ padding: "4px 8px", borderRadius: 7, background: "var(--surface-card)", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>${lipsyncDetail.estimatedCostUsd.toFixed(3)}</span> : null}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                          {lipsyncDetail?.resolvedPlan?.reason ?? "Shot videosu ile master sesi dudak senkronlu master videoda birlestirir."}
+                        </div>
+                      </div>
+                    </div>
+                    {loadingLipSyncDetail ? <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 20px 14px", justifyContent: "center" }}><LoaderCircle className="spin-slow" size={14} style={{ color: "var(--text-muted)" }} /><span style={{ fontSize: 12, color: "var(--text-muted)" }}>Yukleniyor...</span></div> : null}
+                    {lipsyncDetail?.staleReasons.length ? <div style={{ margin: "0 20px 12px", padding: "10px 14px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.16)", fontSize: 12, color: "var(--status-warning)", lineHeight: 1.5 }}>{lipsyncDetail.staleReasons.join(" ")}</div> : null}
+                    {lipsyncDetail?.blockerReasons.length ? <div style={{ margin: "0 20px 12px", padding: "10px 14px", borderRadius: 10, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.1)", fontSize: 12, color: "var(--status-error)", lineHeight: 1.5 }}>{lipsyncDetail.blockerReasons.join(" ")}</div> : null}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 20px 18px", flexWrap: "wrap" }}>
+                      <button className="btn-primary" disabled={queueingLipSync || loadingLipSyncDetail || Boolean(lipsyncDetail?.blockerReasons.length)} onClick={() => void handleQueueLipSync()} type="button" style={{ padding: "9px 18px", fontSize: 13, fontWeight: 600, borderRadius: 10 }}>
+                        <PlayCircle size={15} />{queueingLipSync ? "Kuyrukta..." : lipsyncDetail?.isStale || lipsyncDetail?.masterVideoPath ? "Yeniden uret" : "Lipsync uret"}
+                      </button>
+                      {lipsyncDetail?.masterVideoPath ? <button className="btn-secondary" disabled={clearingLipSync} onClick={() => void handleClearLipSync()} type="button" style={{ padding: "9px 18px", fontSize: 13, fontWeight: 600, borderRadius: 10, borderColor: "rgba(239,68,68,0.18)", color: "var(--status-error)" }}><X size={15} />{clearingLipSync ? "Temizleniyor..." : "Master'i kaldir"}</button> : null}
+                      {lipsyncDetail?.masterVideoPath ? (
+                        <button
+                          className="btn-secondary"
+                          onClick={() => {
+                            const masterVideoPath = lipsyncDetail.masterVideoPath;
+                            if (!masterVideoPath) {
+                              return;
+                            }
+
+                            void handleDownloadMedia(
+                              masterVideoPath,
+                              masterVideoPath.split(/[\\/]/).pop() ?? `${shot.shotNumber}_lipsync.mp4`,
+                              `${shot.shotNumber} LIPSYNC`,
+                            );
+                          }}
+                          type="button"
+                          style={{ padding: "9px 18px", fontSize: 13, fontWeight: 600, borderRadius: 10 }}
+                        >
+                          <Download size={15} />
+                          Indir
+                        </button>
+                      ) : null}
+                    </div>
+                    {lipsyncDetail?.masterVideoUrl ? (
+                      <div style={{ padding: "0 20px 20px", display: "grid", gap: 12 }}>
+                        <video controls poster={videoPosterUrl} src={lipsyncDetail.masterVideoUrl} style={{ width: "100%", borderRadius: 12, background: "var(--surface-hover)" }} />
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {[
+                            lipsyncDetail.sourceVideoPath ? `Kaynak video: ${lipsyncDetail.sourceVideoPath.split("/").pop()}` : null,
+                            lipsyncDetail.sourceAudioPath ? `Kaynak ses: ${lipsyncDetail.sourceAudioPath.split("/").pop()}` : null,
+                            lipsyncDetail.resolvedPlan?.syncMode ? `Sync: ${lipsyncDetail.resolvedPlan.syncMode}` : null,
+                          ].filter(Boolean).map((text, index) => (
+                            <span key={index} style={{ padding: "5px 10px", borderRadius: 7, background: "var(--surface-hover)", fontSize: 11, fontWeight: 500, color: "var(--text-secondary)" }}>{text}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "0 20px 24px", textAlign: "center" }}>
+                        <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--surface-hover)", display: "grid", placeItems: "center" }}><Clapperboard size={20} style={{ color: "var(--text-muted)" }} /></div>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{lipsyncDetail?.status === "stale" ? "Kaynaklar degistigi icin lipsync master tekrar uretilmeli." : "Henuz uretilmis lipsync master yok."}</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

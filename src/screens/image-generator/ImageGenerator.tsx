@@ -7,7 +7,11 @@ import { resolveImageGeneratorDefaults } from "@/lib/generator-defaults";
 import { IMAGE_MODELS, calcImageCost, type ImageModelId } from "@/services/fal.service";
 import { getAppSettings } from "@/lib/store";
 import { getShots, type ShotRow } from "@/services/import.service";
-import { enqueueImageJobs, enqueueStoryboardFrameJob } from "@/services/jobqueue.service";
+import {
+  enqueueImageJobs,
+  enqueueStoryboardFrameJob,
+  resolveStoryboardVideoFrameFallbackPermission,
+} from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
 import {
   ImageEditModal,
@@ -603,6 +607,15 @@ export function ImageGenerator() {
           return;
         }
 
+        const allowVideoFrameFallback =
+          shotStage === "start"
+            ? await resolveStoryboardVideoFrameFallbackPermission({
+                shot: selectedShot,
+                mode: "start",
+                explicitReferenceImagePaths: refImage ? [refImage] : undefined,
+              })
+            : undefined;
+
         if (quantity === 1) {
           await enqueueStoryboardFrameJob({
             shotId: selectedShot.id,
@@ -613,6 +626,7 @@ export function ImageGenerator() {
             cfg,
             steps,
             referenceImagePaths: refImage ? [refImage] : undefined,
+            allowVideoFrameFallback,
           });
         } else {
           const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -634,6 +648,7 @@ export function ImageGenerator() {
                 ? (selectedShot.imageStartPath ? "done" : "review")
                 : (selectedShot.imageEndPath ? "done" : "review"),
               referenceImagePaths: refImage ? [refImage] : undefined,
+              allowVideoFrameFallback,
             });
           }
         }

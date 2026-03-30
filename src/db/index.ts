@@ -174,6 +174,38 @@ async function ensureShotColumns(db: Database): Promise<void> {
       name: "audio_voiceover_text",
       sql: "ALTER TABLE shots ADD COLUMN audio_voiceover_text TEXT",
     },
+    {
+      name: "lipsync_video_path",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_video_path TEXT",
+    },
+    {
+      name: "lipsync_status",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_status TEXT DEFAULT 'none'",
+    },
+    {
+      name: "lipsync_model_used",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_model_used TEXT",
+    },
+    {
+      name: "lipsync_cost_usd",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_cost_usd REAL",
+    },
+    {
+      name: "lipsync_error",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_error TEXT",
+    },
+    {
+      name: "lipsync_source_video_path",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_source_video_path TEXT",
+    },
+    {
+      name: "lipsync_source_audio_path",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_source_audio_path TEXT",
+    },
+    {
+      name: "lipsync_metadata_json",
+      sql: "ALTER TABLE shots ADD COLUMN lipsync_metadata_json TEXT",
+    },
   ];
 
   for (const column of missingColumns) {

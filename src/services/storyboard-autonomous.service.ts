@@ -128,7 +128,7 @@ async function queueStartCandidates(
     return 0;
   }
 
-  const missingReference = getShotMissingExternalReferenceMessage(shot, "start");
+  const missingReference = await getShotMissingExternalReferenceMessage(shot, "start");
   if (missingReference) {
     throw new Error(missingReference);
   }
@@ -154,6 +154,7 @@ async function queueStartCandidates(
         getStageTag("start"),
         getVariantTag(variant),
       ],
+      allowVideoFrameFallback: true,
     });
   }
 
@@ -168,7 +169,7 @@ async function queueEndCandidates(
     return 0;
   }
 
-  const missingReference = getShotMissingExternalReferenceMessage(shot, "end");
+  const missingReference = await getShotMissingExternalReferenceMessage(shot, "end");
   if (missingReference) {
     throw new Error(missingReference);
   }
@@ -243,7 +244,12 @@ async function canQueueStartCandidates(shot: ShotRow): Promise<boolean> {
   }
 
   const previousShot = await getShotById(shot.prevShotId);
-  return Boolean(previousShot?.imageEndPath || previousShot?.imageStartPath);
+  return Boolean(
+    previousShot?.imageEndPath ||
+      previousShot?.imageStartPath ||
+      previousShot?.video4kPath ||
+      previousShot?.videoPath,
+  );
 }
 
 async function maybeQueueVideoCandidates(
@@ -322,7 +328,7 @@ export async function bootstrapAutonomousShot(
   const missingReferences: string[] = [];
 
   if (existingCandidates.end.length === 0 && shot.promptEnd) {
-    const missingReference = getShotMissingExternalReferenceMessage(shot, "end");
+    const missingReference = await getShotMissingExternalReferenceMessage(shot, "end");
     if (missingReference) {
       missingReferences.push(`${shot.shotNumber} END`);
     }
@@ -333,7 +339,7 @@ export async function bootstrapAutonomousShot(
     shot.promptStart &&
     (await canQueueStartCandidates(shot))
   ) {
-    const missingReference = getShotMissingExternalReferenceMessage(shot, "start");
+    const missingReference = await getShotMissingExternalReferenceMessage(shot, "start");
     if (missingReference) {
       missingReferences.push(`${shot.shotNumber} START`);
     }
@@ -375,7 +381,7 @@ export async function bootstrapAutonomousBulk(
 
     const existingCandidates = await getAutonomousCandidateGroups(shot.id);
     if (existingCandidates.end.length === 0 && shot.promptEnd) {
-      const missingReference = getShotMissingExternalReferenceMessage(shot, "end");
+      const missingReference = await getShotMissingExternalReferenceMessage(shot, "end");
       if (missingReference) {
         missingReferences.push(`${shot.shotNumber} END`);
       }
@@ -386,7 +392,7 @@ export async function bootstrapAutonomousBulk(
       shot.promptStart &&
       (await canQueueStartCandidates(shot))
     ) {
-      const missingReference = getShotMissingExternalReferenceMessage(shot, "start");
+      const missingReference = await getShotMissingExternalReferenceMessage(shot, "start");
       if (missingReference) {
         missingReferences.push(`${shot.shotNumber} START`);
       }
@@ -422,7 +428,7 @@ export async function regenerateAutonomousStage(
 
   const referenceMode = stage === "video" ? null : stage;
   if (referenceMode) {
-    const missingReference = getShotMissingExternalReferenceMessage(shot, referenceMode);
+    const missingReference = await getShotMissingExternalReferenceMessage(shot, referenceMode);
     if (missingReference) {
       throw new Error(missingReference);
     }

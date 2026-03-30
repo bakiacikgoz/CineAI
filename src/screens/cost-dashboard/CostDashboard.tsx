@@ -4,6 +4,7 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   AudioLines,
   BarChart3,
+  Clapperboard,
   Download,
   DollarSign,
   Film,
@@ -100,6 +101,12 @@ export function CostDashboard() {
               value: formatUsd(overview.videoUsd),
               detail: `${overview.byType.find((row) => row.type === "video")?.count ?? 0} is`,
               icon: <Film size={16} />,
+            },
+            {
+              label: "Lipsync",
+              value: formatUsd(overview.lipsyncUsd),
+              detail: `${overview.byType.find((row) => row.type === "lipsync")?.count ?? 0} is`,
+              icon: <Clapperboard size={16} />,
             },
             {
               label: "Upscale",

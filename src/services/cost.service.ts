@@ -5,7 +5,7 @@ export interface CostInput {
   projectId?: string;
   jobId?: string;
   model: string;
-  type: "image" | "video" | "upscale" | "llm" | "tts";
+  type: "image" | "video" | "lipsync" | "upscale" | "llm" | "tts";
   amountUsd: number;
   units?: number;
 }

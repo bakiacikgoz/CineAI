@@ -135,6 +135,24 @@ steadily, "Bas ustune. Gorev anlasilmistir."
     ).toBe("softly shaken");
   });
 
+  it("locks delivery to the shared scene baseline when style consistency is enabled", () => {
+    const baselineCue = stabilizeDialogueDeliveryCue({
+      delivery: null,
+      sourceText: "Bas ustune. Gorev anlasilmistir.",
+      promptVideo: 'harsh static phone voice, "Bas ustune. Gorev anlasilmistir."',
+      lockVoiceStyle: true,
+    });
+
+    const lockedCue = stabilizeDialogueDeliveryCue({
+      delivery: "breathes out slowly, almost whispered, reflective and soft",
+      sourceText: "Bas ustune. Gorev anlasilmistir.",
+      promptVideo: 'harsh static phone voice, "Bas ustune. Gorev anlasilmistir."',
+      lockVoiceStyle: true,
+    });
+
+    expect(lockedCue).toBe(baselineCue);
+  });
+
   it("adds minimal speech polish without changing meaning", () => {
     expect(
       polishTurkishDialogueFluency("bas ustune komutanim gorev anlasilmistir"),

@@ -62,6 +62,13 @@ export interface AssetDeletionImpact {
   fileDeletePending?: boolean;
 }
 
+export interface BatchAssetDeletionImpact {
+  deletedCount: number;
+  slotCount: number;
+  slotLabels: string[];
+  fileDeletePending: boolean;
+}
+
 export interface ImportedProjectAsset {
   assetId: string;
   type: "image" | "video";
@@ -401,7 +408,7 @@ export async function setAssetShotId(assetId: string, shotId: string | null): Pr
 export async function assignAssetToShot(
   assetId: string,
   shotId: string,
-  target: "start" | "end" | "video" | "reference",
+  target: "start" | "end" | "video" | "lipsync" | "reference",
 ): Promise<void> {
   const asset = await getAssetById(assetId);
   if (!asset) {
@@ -434,6 +441,20 @@ export async function assignAssetToShot(
     await updateShotPaths(shotId, {
       imageEndPath: asset.file_path,
       imageStatus: "done",
+    });
+    return;
+  }
+
+  if (target === "lipsync") {
+    await updateShotPaths(shotId, {
+      lipsyncVideoPath: asset.file_path,
+      lipsyncStatus: "done",
+      lipsyncModelUsed: asset.model_used ?? "manual-assign",
+      lipsyncCostUsd: asset.cost_usd ?? null,
+      lipsyncError: null,
+      lipsyncSourceVideoPath: null,
+      lipsyncSourceAudioPath: null,
+      lipsyncMetadataJson: asset.metadata_json,
     });
     return;
   }
@@ -559,6 +580,51 @@ export async function deleteAssetPath(assetPath: string): Promise<AssetDeletionI
     slotLabels: detachUpdates.flatMap((update) =>
       update.slots.map((slot) => `${update.shotNumber} ${slot.toUpperCase()}`),
     ),
+    fileDeletePending,
+  };
+}
+
+export async function deleteAssetsBatch(
+  targets: Array<{
+    assetId?: string | null;
+    assetPath?: string | null;
+  }>,
+): Promise<BatchAssetDeletionImpact> {
+  const processedAssetIds = new Set<string>();
+  const processedPaths = new Set<string>();
+  const slotLabels = new Set<string>();
+  let deletedCount = 0;
+  let fileDeletePending = false;
+
+  for (const target of targets) {
+    let impact: AssetDeletionImpact | null = null;
+
+    if (target.assetId && !processedAssetIds.has(target.assetId)) {
+      processedAssetIds.add(target.assetId);
+      impact = await deleteAssetRecord(target.assetId);
+    } else if (target.assetPath) {
+      const normalizedPath = normalizeAssetPath(target.assetPath);
+      if (!processedPaths.has(normalizedPath)) {
+        processedPaths.add(normalizedPath);
+        impact = await deleteAssetPath(normalizedPath);
+      }
+    }
+
+    if (!impact) {
+      continue;
+    }
+
+    deletedCount += 1;
+    fileDeletePending ||= Boolean(impact.fileDeletePending);
+    for (const slotLabel of impact.slotLabels) {
+      slotLabels.add(slotLabel);
+    }
+  }
+
+  return {
+    deletedCount,
+    slotCount: slotLabels.size,
+    slotLabels: Array.from(slotLabels),
     fileDeletePending,
   };
 }

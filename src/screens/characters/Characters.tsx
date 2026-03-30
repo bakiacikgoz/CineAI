@@ -19,10 +19,25 @@ import {
   EMPTY_CHARACTER_LOOK_ATTRIBUTES,
   EMPTY_CHARACTER_PROFILE,
   buildCharacterGenerationPrompt,
+  normalizeCharacterLookAttributes,
+  normalizeCharacterProfile,
   summarizeCharacterProfile,
   type CharacterLookAttributes,
   type CharacterProfile,
 } from "@/lib/character-studio";
+import {
+  CHARACTER_OUTFIT_PRESETS,
+  applyCharacterOutfitPreset,
+  getCharacterOutfitPreset,
+} from "@/lib/character-outfit-presets";
+import {
+  EMPTY_CHARACTER_VOICE_STATE,
+  buildCharacterVoiceState,
+  hasCharacterVoiceSelection,
+  resolveCharacterVoiceState,
+  sortVoicesForCharacterSelection,
+  type CharacterVoiceState,
+} from "@/lib/character-voice";
 import {
   CharacterStudioModal,
   toProjectAssetUrl,
@@ -50,6 +65,20 @@ import {
   type CharacterRecord,
   type CharacterStudioInput,
 } from "@/services/character.service";
+import {
+  clearCharacterVoiceBinding,
+  importSharedElevenLabsVoice,
+  listCharacterVoiceBindings,
+  listElevenLabsVoices,
+  listRecommendedTurkishVoicesPage,
+  setCharacterVoiceBinding,
+  type CharacterVoiceBindingRecord,
+} from "@/services/audio-pipeline.service";
+import {
+  ELEVENLABS_DIALOGUE_MODEL_ID,
+  type ElevenLabsSharedVoice,
+  type ElevenLabsVoice,
+} from "@/services/elevenlabs.service";
 import { getShots, type ShotRow } from "@/services/import.service";
 import { deleteAssetRecord } from "@/services/asset.service";
 import { Portal } from "@/components/Portal";
@@ -73,9 +102,61 @@ function createEmptyLook(name = "Default Look"): StudioLookDraft {
   };
 }
 
+function normalizeStudioLookDraft(
+  input?: Partial<StudioLookDraft> | null,
+  fallbackName = "Default Look",
+): StudioLookDraft {
+  return {
+    id: input?.id?.trim() || crypto.randomUUID(),
+    name: input?.name?.trim() || fallbackName,
+    attributes: normalizeCharacterLookAttributes(input?.attributes),
+    generationPrompt: input?.generationPrompt?.trim() ?? "",
+    promptLocked: Boolean(input?.promptLocked),
+    refImages: Array.from(
+      new Set(
+        (input?.refImages ?? []).filter(
+          (relativePath): relativePath is string =>
+            typeof relativePath === "string" && relativePath.trim().length > 0,
+        ),
+      ),
+    ),
+    primaryImage:
+      typeof input?.primaryImage === "string" && input.primaryImage.trim().length > 0
+        ? input.primaryImage.trim()
+        : null,
+  };
+}
+
+function normalizeStudioDraft(
+  input?: Partial<CharacterStudioDraft> | null,
+): CharacterStudioDraft {
+  const looks =
+    input?.looks?.length && Array.isArray(input.looks)
+      ? input.looks.map((look, index) =>
+          normalizeStudioLookDraft(
+            look,
+            index === 0 ? "Default Look" : `Look ${index + 1}`,
+          ),
+        )
+      : [createEmptyLook()];
+  const defaultLookId =
+    looks.find((look) => look.id === input?.defaultLookId)?.id ?? looks[0]?.id ?? null;
+
+  return {
+    id: input?.id ?? null,
+    name: input?.name ?? "",
+    description: input?.description ?? "",
+    klingElementId: input?.klingElementId ?? "",
+    profile: normalizeCharacterProfile(input?.profile),
+    looks,
+    defaultLookId,
+    voice: resolveCharacterVoiceState(input?.voice),
+  };
+}
+
 function createEmptyDraft(): CharacterStudioDraft {
   const firstLook = createEmptyLook();
-  return {
+  return normalizeStudioDraft({
     id: null,
     name: "",
     description: "",
@@ -83,11 +164,15 @@ function createEmptyDraft(): CharacterStudioDraft {
     profile: { ...EMPTY_CHARACTER_PROFILE },
     looks: [firstLook],
     defaultLookId: firstLook.id,
-  };
+    voice: EMPTY_CHARACTER_VOICE_STATE,
+  });
 }
 
-function toStudioDraft(character: CharacterRecord): CharacterStudioDraft {
-  return {
+function toStudioDraft(
+  character: CharacterRecord,
+  voiceBinding?: CharacterVoiceBindingRecord | null,
+): CharacterStudioDraft {
+  return normalizeStudioDraft({
     id: character.id,
     name: character.name,
     description: character.description ?? "",
@@ -103,7 +188,8 @@ function toStudioDraft(character: CharacterRecord): CharacterStudioDraft {
       primaryImage: look.primaryImage,
     })),
     defaultLookId: character.defaultLookId ?? character.looks[0]?.id ?? null,
-  };
+    voice: buildCharacterVoiceState(voiceBinding),
+  });
 }
 
 function toCharacterStudioInput(draft: CharacterStudioDraft): CharacterStudioInput {
@@ -168,7 +254,7 @@ function buildImportedCharacterDraft(
   firstLook.refImages = importedPaths;
   firstLook.primaryImage = importedPaths[0] ?? null;
 
-  return {
+  return normalizeStudioDraft({
     id: null,
     name,
     description: "",
@@ -176,7 +262,8 @@ function buildImportedCharacterDraft(
     profile: { ...EMPTY_CHARACTER_PROFILE },
     looks: [firstLook],
     defaultLookId: firstLook.id,
-  };
+    voice: EMPTY_CHARACTER_VOICE_STATE,
+  });
 }
 
 function hasFilledRecordValues<T extends object>(record: T): boolean {
@@ -204,6 +291,7 @@ function hasMeaningfulCharacterDraft(draft: CharacterStudioDraft): boolean {
     draft.name.trim().length > 0 ||
     draft.description.trim().length > 0 ||
     draft.klingElementId.trim().length > 0 ||
+    hasCharacterVoiceSelection(draft.voice) ||
     hasFilledRecordValues(draft.profile) ||
     draft.looks.length !== 1 ||
     draft.looks.some((look, index) => hasMeaningfulLookDraft(look, index))
@@ -239,6 +327,21 @@ const ATTRIBUTE_LABELS: Record<keyof CharacterLookAttributes, string> = {
   continuityNotes: "Sureklilik",
 };
 
+function buildOutfitCandidateAssetMetadata(params: {
+  characterId: string;
+  lookId: string;
+  baseLookId: string;
+  outfitPresetLabel: string;
+}): Record<string, unknown> {
+  return {
+    source: "character-outfit",
+    characterId: params.characterId,
+    lookId: params.lookId,
+    baseLookId: params.baseLookId,
+    outfitPresetLabel: params.outfitPresetLabel,
+  };
+}
+
 
 export function Characters() {
   const activeProject = useProjectStore((state) => state.activeProject);
@@ -246,6 +349,7 @@ export function Characters() {
   const activeProjectId = activeProject?.id ?? null;
   const setCharactersState = useScreenStateStore((state) => state.setCharactersState);
   const [characters, setCharacters] = useState<CharacterRecord[]>([]);
+  const [voiceBindings, setVoiceBindings] = useState<CharacterVoiceBindingRecord[]>([]);
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -267,9 +371,38 @@ export function Characters() {
   const [generatingCandidates, setGeneratingCandidates] = useState(false);
   const [studioTab, setStudioTab] =
     useState<CharactersScreenState["studioTab"]>("profile");
+  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
+  const [turkishVoiceCatalog, setTurkishVoiceCatalog] = useState<ElevenLabsSharedVoice[]>([]);
+  const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
+  const [voiceLibraryLoading, setVoiceLibraryLoading] = useState(false);
+  const [voiceBusyKey, setVoiceBusyKey] = useState<string | null>(null);
+  const [creatingOutfit, setCreatingOutfit] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
   const hasResumableStudioDraft = !showStudio && hasMeaningfulCharacterDraft(draft);
 
+  const voiceBindingsByCharacterId = useMemo(
+    () => new Map(voiceBindings.map((binding) => [binding.characterId, binding] as const)),
+    [voiceBindings],
+  );
+  const voiceStateByCharacterId = useMemo(
+    () =>
+      new Map(
+        characters.map((character) => [
+          character.id,
+          buildCharacterVoiceState(voiceBindingsByCharacterId.get(character.id) ?? null),
+        ] as const),
+      ),
+    [characters, voiceBindingsByCharacterId],
+  );
+  const sortedVoices = useMemo(() => sortVoicesForCharacterSelection(voices), [voices]);
+  const ownedVoiceIds = useMemo(
+    () => new Set(voices.map((voice) => voice.voiceId)),
+    [voices],
+  );
+  const draftSelectedVoice = useMemo(
+    () => sortedVoices.find((voice) => voice.voiceId === draft.voice.voiceId) ?? null,
+    [draft.voice.voiceId, sortedVoices],
+  );
   const activeLook = useMemo(
     () => draft.looks.find((look) => look.id === activeLookId) ?? draft.looks[0] ?? null,
     [activeLookId, draft.looks],
@@ -304,6 +437,8 @@ export function Characters() {
     const needle = search.trim().toLowerCase();
 
     return characters.filter((character) => {
+      const voiceState = voiceStateByCharacterId.get(character.id) ?? EMPTY_CHARACTER_VOICE_STATE;
+
       if (needle.length === 0) {
         return true;
       }
@@ -312,6 +447,7 @@ export function Characters() {
         character.name.toLowerCase().includes(needle) ||
         (character.description ?? "").toLowerCase().includes(needle) ||
         (character.promptHint ?? "").toLowerCase().includes(needle) ||
+        (voiceState.voiceName ?? "").toLowerCase().includes(needle) ||
         character.looks.some(
           (look) =>
             look.name.toLowerCase().includes(needle) ||
@@ -319,7 +455,7 @@ export function Characters() {
         )
       );
     });
-  }, [characters, search]);
+  }, [characters, search, voiceStateByCharacterId]);
 
   /** Resolved look being viewed in the detail panel */
   const viewedLook = useMemo(() => {
@@ -342,6 +478,12 @@ export function Characters() {
       viewedLook.attributes,
     );
   }, [viewedLook, selectedCharacter]);
+  const selectedCharacterVoiceState = selectedCharacter
+    ? voiceStateByCharacterId.get(selectedCharacter.id) ?? EMPTY_CHARACTER_VOICE_STATE
+    : EMPTY_CHARACTER_VOICE_STATE;
+  const draftVoiceId = draft.voice.voiceId ?? "";
+  const draftVoiceUnavailable =
+    Boolean(draftVoiceId) && !ownedVoiceIds.has(draftVoiceId);
 
   // ----- Screen state hydration on project switch -----
   useEffect(() => {
@@ -367,7 +509,7 @@ export function Characters() {
 
     const nextState =
       useScreenStateStore.getState().charactersByProject[activeProjectId] ?? null;
-    const nextDraft = nextState?.draft ?? createEmptyDraft();
+    const nextDraft = normalizeStudioDraft(nextState?.draft ?? createEmptyDraft());
 
     setSearch(nextState?.search ?? DEFAULT_CHARACTERS_SCREEN_STATE.search);
     setShowStudio(nextState?.showStudio ?? DEFAULT_CHARACTERS_SCREEN_STATE.showStudio);
@@ -395,7 +537,11 @@ export function Characters() {
   useEffect(() => {
     if (!activeProject) {
       setCharacters([]);
+      setVoiceBindings([]);
       setShots([]);
+      setVoices([]);
+      setTurkishVoiceCatalog([]);
+      setVoiceWarning(null);
       setLoading(false);
       return;
     }
@@ -407,13 +553,15 @@ export function Characters() {
       setLoading(true);
 
       try {
-        const [nextCharacters, nextShots] = await Promise.all([
+        const [nextCharacters, nextShots, nextVoiceBindings] = await Promise.all([
           listCharacters(),
           getShots(project.id, { includeArchived: true }),
+          listCharacterVoiceBindings(),
         ]);
 
         if (!cancelled) {
           setCharacters(nextCharacters);
+          setVoiceBindings(nextVoiceBindings);
           setShots(nextShots.filter((shot) => !shot.parentShotId));
         }
       } catch (error) {
@@ -437,6 +585,57 @@ export function Characters() {
       cancelled = true;
     };
   }, [activeProject]);
+
+  useEffect(() => {
+    if (!activeProject || !showStudio || studioTab !== "voice") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadVoiceLibrary() {
+      setVoiceLibraryLoading(true);
+      let nextVoices: ElevenLabsVoice[] = [];
+      let nextCatalog: ElevenLabsSharedVoice[] = [];
+      let nextWarning: string | null = null;
+
+      try {
+        nextVoices = await listElevenLabsVoices();
+      } catch (error) {
+        nextWarning =
+          error instanceof Error
+            ? error.message
+            : "ElevenLabs voice listesi yuklenemedi.";
+      }
+
+      try {
+        const page = await listRecommendedTurkishVoicesPage({ page: 1, pageSize: 8 });
+        nextCatalog = page.voices;
+      } catch (error) {
+        if (!nextWarning) {
+          nextWarning =
+            error instanceof Error
+              ? error.message
+              : "Turkce voice katalogu yuklenemedi.";
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      setVoices(nextVoices);
+      setTurkishVoiceCatalog(nextCatalog);
+      setVoiceWarning(nextWarning);
+      setVoiceLibraryLoading(false);
+    }
+
+    void loadVoiceLibrary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject, showStudio, studioTab]);
 
   // ----- Candidate assets loading -----
   useEffect(() => {
@@ -571,10 +770,167 @@ export function Characters() {
     viewedLookId,
   ]);
 
-  async function refreshCharacters() {
-    const nextCharacters = await listCharacters();
+  async function refreshCharactersAndVoiceBindings() {
+    const [nextCharacters, nextVoiceBindings] = await Promise.all([
+      listCharacters(),
+      listCharacterVoiceBindings(),
+    ]);
     setCharacters(nextCharacters);
-    return nextCharacters;
+    setVoiceBindings(nextVoiceBindings);
+    return { nextCharacters, nextVoiceBindings };
+  }
+
+  async function refreshVoiceLibrary() {
+    if (!activeProject) {
+      setVoices([]);
+      setTurkishVoiceCatalog([]);
+      setVoiceWarning(null);
+      return {
+        nextVoices: [] as ElevenLabsVoice[],
+        nextCatalog: [] as ElevenLabsSharedVoice[],
+        nextWarning: null as string | null,
+      };
+    }
+
+    setVoiceLibraryLoading(true);
+    let nextVoices: ElevenLabsVoice[] = [];
+    let nextCatalog: ElevenLabsSharedVoice[] = [];
+    let nextWarning: string | null = null;
+
+    try {
+      nextVoices = await listElevenLabsVoices();
+    } catch (error) {
+      nextWarning =
+        error instanceof Error
+          ? error.message
+          : "ElevenLabs voice listesi yuklenemedi.";
+    }
+
+    try {
+      const page = await listRecommendedTurkishVoicesPage({ page: 1, pageSize: 8 });
+      nextCatalog = page.voices;
+    } catch (error) {
+      if (!nextWarning) {
+        nextWarning =
+          error instanceof Error
+            ? error.message
+            : "Turkce voice katalogu yuklenemedi.";
+      }
+    }
+
+    setVoices(nextVoices);
+    setTurkishVoiceCatalog(nextCatalog);
+    setVoiceWarning(nextWarning);
+    setVoiceLibraryLoading(false);
+
+    return { nextVoices, nextCatalog, nextWarning };
+  }
+
+  async function syncCharacterVoiceSelection(
+    characterId: string,
+    nextVoice: CharacterVoiceState,
+  ) {
+    const currentBinding = voiceBindingsByCharacterId.get(characterId) ?? null;
+
+    if (!nextVoice.voiceId) {
+      if (currentBinding) {
+        await clearCharacterVoiceBinding(characterId);
+      }
+      return;
+    }
+
+    const normalizedVoiceName = nextVoice.voiceName?.trim() || nextVoice.voiceId;
+    const hasChanged =
+      currentBinding?.voiceId !== nextVoice.voiceId ||
+      (currentBinding?.voiceName ?? null) !== normalizedVoiceName ||
+      (currentBinding?.voiceProvider ?? null) !== (nextVoice.voiceProvider ?? "elevenlabs") ||
+      (currentBinding?.modelId ?? null) !== (nextVoice.modelId ?? ELEVENLABS_DIALOGUE_MODEL_ID);
+
+    if (!hasChanged) {
+      return;
+    }
+
+    await setCharacterVoiceBinding(characterId, nextVoice.voiceId, normalizedVoiceName);
+  }
+
+  async function persistCharacterDraft(
+    sourceDraft: CharacterStudioDraft,
+    options?: {
+      closeStudio?: boolean;
+      preferredActiveLookId?: string | null;
+      preferredViewedLookId?: string | null;
+    },
+  ): Promise<CharacterStudioDraft | null> {
+    const normalizedDraft = normalizeStudioDraft(sourceDraft);
+
+    if (!normalizedDraft.name.trim()) {
+      await message("Karakter adi zorunludur.", {
+        title: "Characters",
+        kind: "warning",
+      });
+      return null;
+    }
+
+    setSaving(true);
+
+    try {
+      let characterId = normalizedDraft.id;
+
+      if (characterId) {
+        await updateCharacter(characterId, toCharacterStudioInput(normalizedDraft));
+      } else {
+        const created = await createCharacter(toCharacterStudioInput(normalizedDraft));
+        characterId = created.id;
+      }
+
+      if (!characterId) {
+        throw new Error("Karakter kaydi olusturulamadi.");
+      }
+
+      await syncCharacterVoiceSelection(characterId, normalizedDraft.voice);
+
+      const { nextCharacters, nextVoiceBindings } = await refreshCharactersAndVoiceBindings();
+      const refreshedCharacter =
+        nextCharacters.find((character) => character.id === characterId) ?? null;
+
+      if (!refreshedCharacter) {
+        throw new Error("Kaydedilen karakter yeniden yuklenemedi.");
+      }
+
+      const nextVoiceBinding =
+        nextVoiceBindings.find((binding) => binding.characterId === characterId) ?? null;
+      const nextDraft = toStudioDraft(refreshedCharacter, nextVoiceBinding);
+      const preferredActiveLookId =
+        options?.preferredActiveLookId &&
+        nextDraft.looks.some((look) => look.id === options.preferredActiveLookId)
+          ? options.preferredActiveLookId
+          : nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null;
+      const preferredViewedLookId =
+        options?.preferredViewedLookId &&
+        refreshedCharacter.looks.some((look) => look.id === options.preferredViewedLookId)
+          ? options.preferredViewedLookId
+          : refreshedCharacter.defaultLookId ?? refreshedCharacter.looks[0]?.id ?? null;
+
+      setDraft(nextDraft);
+      setActiveLookId(preferredActiveLookId);
+      setSelectedCharacter(refreshedCharacter);
+      setViewedLookId(preferredViewedLookId);
+
+      if (options?.closeStudio) {
+        setShowStudio(false);
+      }
+
+      return nextDraft;
+    } catch (error) {
+      console.error("Failed to save character", error);
+      await message(error instanceof Error ? error.message : "Karakter kaydedilemedi.", {
+        title: "Characters",
+        kind: "error",
+      });
+      return null;
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleImportCharacterFromFiles() {
@@ -684,7 +1040,10 @@ export function Characters() {
       }
     }
 
-    const nextDraft = toStudioDraft(character);
+    const nextDraft = toStudioDraft(
+      character,
+      voiceBindingsByCharacterId.get(character.id) ?? null,
+    );
     setDraft(nextDraft);
     setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
     setStudioTab("profile");
@@ -728,12 +1087,14 @@ export function Characters() {
       );
 
       await updateCharacter(character.id, buildCharacterUpdateInput(character, nextLooks));
-      const nextCharacters = await refreshCharacters();
+      const { nextCharacters, nextVoiceBindings } = await refreshCharactersAndVoiceBindings();
       const updatedCharacter =
         nextCharacters.find((entry) => entry.id === character.id) ?? null;
+      const updatedBinding =
+        nextVoiceBindings.find((binding) => binding.characterId === character.id) ?? null;
 
       if (updatedCharacter && draft.id === updatedCharacter.id) {
-        const nextDraft = toStudioDraft(updatedCharacter);
+        const nextDraft = toStudioDraft(updatedCharacter, updatedBinding);
         setDraft(nextDraft);
         setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
       }
@@ -763,7 +1124,7 @@ export function Characters() {
   }
 
   function updateDraft(patch: Partial<CharacterStudioDraft>) {
-    setDraft((current) => ({ ...current, ...patch }));
+    setDraft((current) => normalizeStudioDraft({ ...current, ...patch }));
   }
 
   function updateActiveLook(
@@ -803,33 +1164,10 @@ export function Characters() {
   }
 
   async function ensureSavedDraft(): Promise<CharacterStudioDraft | null> {
-    if (!draft.name.trim()) {
-      await message("Karakter adi zorunludur.", {
-        title: "Characters",
-        kind: "warning",
-      });
-      return null;
-    }
-
-    if (draft.id) {
-      return draft;
-    }
-
-    try {
-      const created = await createCharacter(toCharacterStudioInput(draft));
-      const nextDraft = toStudioDraft(created);
-      setDraft(nextDraft);
-      setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
-      await refreshCharacters();
-      return nextDraft;
-    } catch (error) {
-      console.error("Failed to persist character draft", error);
-      await message(error instanceof Error ? error.message : "Karakter taslagi kaydedilemedi.", {
-        title: "Characters",
-        kind: "error",
-      });
-      return null;
-    }
+    return persistCharacterDraft(draft, {
+      preferredActiveLookId: activeLookId,
+      preferredViewedLookId: viewedLookId ?? activeLookId,
+    });
   }
 
   async function handleImportReferences() {
@@ -864,7 +1202,7 @@ export function Characters() {
           await appendCharacterLookReference(draft.id, activeLookId, relativePath);
         }
 
-        await refreshCharacters();
+        await refreshCharactersAndVoiceBindings();
       }
     } catch (error) {
       console.error("Failed to import character references", error);
@@ -876,45 +1214,11 @@ export function Characters() {
   }
 
   async function handleSave() {
-    if (!draft.name.trim()) {
-      await message("Karakter adi zorunludur.", {
-        title: "Characters",
-        kind: "warning",
-      });
-      return;
-    }
-
-    setSaving(true);
-
-    try {
-      if (draft.id) {
-        await updateCharacter(draft.id, toCharacterStudioInput(draft));
-      } else {
-        const created = await createCharacter(toCharacterStudioInput(draft));
-        setDraft(toStudioDraft(created));
-      }
-
-      const nextCharacters = await refreshCharacters();
-
-      if (draft.id) {
-        const refreshed = nextCharacters.find((character) => character.id === draft.id);
-        if (refreshed) {
-          const nextDraft = toStudioDraft(refreshed);
-          setDraft(nextDraft);
-          setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
-        }
-      }
-
-      setShowStudio(false);
-    } catch (error) {
-      console.error("Failed to save character", error);
-      await message(error instanceof Error ? error.message : "Karakter kaydedilemedi.", {
-        title: "Characters",
-        kind: "error",
-      });
-    } finally {
-      setSaving(false);
-    }
+    await persistCharacterDraft(draft, {
+      closeStudio: true,
+      preferredActiveLookId: activeLookId,
+      preferredViewedLookId: viewedLookId ?? activeLookId,
+    });
   }
 
   async function handleDelete(characterId: string) {
@@ -937,7 +1241,7 @@ export function Characters() {
 
     try {
       await deleteCharacter(characterId);
-      const nextCharacters = await refreshCharacters();
+      const { nextCharacters } = await refreshCharactersAndVoiceBindings();
 
       // If the deleted character was selected, clear selection
       if (selectedCharacter?.id === characterId) {
@@ -1049,7 +1353,7 @@ export function Characters() {
 
     try {
       await setCharacterLookPrimaryImage(draft.id, activeLookId, relativePath);
-      await refreshCharacters();
+      await refreshCharactersAndVoiceBindings();
     } catch (error) {
       console.error("Failed to persist character primary image", error);
       await message(error instanceof Error ? error.message : "Karakter gorseli guncellenemedi.", {
@@ -1080,7 +1384,7 @@ export function Characters() {
         await appendCharacterLookReference(draft.id, activeLookId, asset.file_path);
       }
 
-      await refreshCharacters();
+      await refreshCharactersAndVoiceBindings();
     } catch (error) {
       console.error("Failed to persist character candidate usage", error);
       await message(error instanceof Error ? error.message : "Candidate gorseli karaktere eklenemedi.", {
@@ -1114,24 +1418,97 @@ export function Characters() {
     setCandidateAssets((current) => current.filter((item) => item.id !== asset.id));
   }
 
-  async function handleGenerateCandidates() {
-    if (!activeProject || !activeLook) {
+  function handleDraftVoiceSelect(voiceId: string) {
+    if (!voiceId) {
+      updateDraft({ voice: EMPTY_CHARACTER_VOICE_STATE });
       return;
     }
 
-    const persistedDraft = await ensureSavedDraft();
+    const selectedVoice = sortedVoices.find((voice) => voice.voiceId === voiceId);
 
-    if (!persistedDraft) {
+    if (!selectedVoice) {
       return;
+    }
+
+    updateDraft({
+      voice: resolveCharacterVoiceState({
+        voiceId: selectedVoice.voiceId,
+        voiceName: selectedVoice.name,
+        voiceProvider: "elevenlabs",
+        modelId: draft.voice.modelId ?? ELEVENLABS_DIALOGUE_MODEL_ID,
+      }),
+    });
+  }
+
+  async function handleRefreshVoiceLibrary() {
+    setVoiceBusyKey("refresh");
+
+    try {
+      await refreshVoiceLibrary();
+    } finally {
+      setVoiceBusyKey(null);
+    }
+  }
+
+  async function handleImportCatalogVoice(sharedVoice: ElevenLabsSharedVoice) {
+    setVoiceBusyKey(`shared:${sharedVoice.voiceId}`);
+
+    try {
+      await importSharedElevenLabsVoice({
+        publicOwnerId: sharedVoice.publicOwnerId,
+        voiceId: sharedVoice.voiceId,
+        newName: sharedVoice.name,
+      });
+
+      const { nextVoices } = await refreshVoiceLibrary();
+      const importedVoice =
+        nextVoices.find((voice) => voice.voiceId === sharedVoice.voiceId) ?? null;
+
+      if (importedVoice) {
+        updateDraft({
+          voice: resolveCharacterVoiceState({
+            voiceId: importedVoice.voiceId,
+            voiceName: importedVoice.name,
+            voiceProvider: "elevenlabs",
+            modelId: ELEVENLABS_DIALOGUE_MODEL_ID,
+          }),
+        });
+      }
+
+      await message(`${sharedVoice.name} My Voices listesine eklendi.`, {
+        title: "Characters",
+        kind: "info",
+      });
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Voice Library sesi eklenemedi.",
+        {
+          title: "Characters",
+          kind: "error",
+        },
+      );
+    } finally {
+      setVoiceBusyKey(null);
+    }
+  }
+
+  async function enqueueLookCandidates(params: {
+    persistedDraft: CharacterStudioDraft;
+    lookId: string;
+    successMessage: string;
+    assetMetadata?: Record<string, unknown>;
+  }): Promise<boolean> {
+    if (!activeProject) {
+      return false;
     }
 
     const persistedLook =
-      persistedDraft.looks.find((look) => look.id === activeLook.id) ??
-      persistedDraft.looks.find((look) => look.id === persistedDraft.defaultLookId) ??
-      persistedDraft.looks[0];
+      params.persistedDraft.looks.find((look) => look.id === params.lookId) ??
+      params.persistedDraft.looks.find((look) => look.id === params.persistedDraft.defaultLookId) ??
+      params.persistedDraft.looks[0];
 
-    if (!persistedLook) {
-      return;
+    if (!persistedLook || !params.persistedDraft.id) {
+      return false;
     }
 
     setGeneratingCandidates(true);
@@ -1146,11 +1523,11 @@ export function Characters() {
         persistedLook.promptLocked && persistedLook.generationPrompt.trim()
           ? persistedLook.generationPrompt.trim()
           : buildCharacterGenerationPrompt(
-              persistedDraft.name,
-              persistedDraft.profile,
+              params.persistedDraft.name,
+              params.persistedDraft.profile,
               persistedLook.attributes,
             );
-      const tags = buildCharacterCandidateTags(persistedDraft.id as string, persistedLook.id);
+      const tags = buildCharacterCandidateTags(params.persistedDraft.id, persistedLook.id);
 
       await enqueueImageJobs({
         model: "fal-ai/nano-banana-2",
@@ -1162,21 +1539,108 @@ export function Characters() {
         referenceImagePaths,
         jobType: "character_image",
         assetTags: tags,
+        assetMetadata: params.assetMetadata,
       });
 
-      await message(`${candidateQuantity} karakter candidate isi kuyruga eklendi.`, {
+      await message(params.successMessage, {
         title: "Characters",
         kind: "info",
       });
+      return true;
     } catch (error) {
       console.error("Failed to enqueue character candidates", error);
-      await message(error instanceof Error ? error.message : "Character candidate kuyrugu olusturulamadi.", {
-        title: "Characters",
-        kind: "error",
-      });
+      await message(
+        error instanceof Error
+          ? error.message
+          : "Character candidate kuyrugu olusturulamadi.",
+        {
+          title: "Characters",
+          kind: "error",
+        },
+      );
+      return false;
     } finally {
       setGeneratingCandidates(false);
     }
+  }
+
+  async function handleCreateOutfitVariant(params: {
+    presetId: string;
+    sourceLookId: string;
+    customName?: string | null;
+    customOverrides?: Partial<CharacterLookAttributes> | null;
+  }) {
+    const preset = getCharacterOutfitPreset(params.presetId);
+    const sourceLook =
+      draft.looks.find((look) => look.id === params.sourceLookId) ??
+      activeLook ??
+      draft.looks[0] ??
+      null;
+
+    if (!preset || !sourceLook) {
+      return;
+    }
+
+    const nextLookId = crypto.randomUUID();
+    const nextLook = applyCharacterOutfitPreset({
+      sourceLook,
+      preset,
+      nextId: nextLookId,
+      customName: params.customName,
+      customOverrides: params.customOverrides,
+    });
+    const nextDraft = normalizeStudioDraft({
+      ...draft,
+      looks: [...draft.looks, nextLook],
+    });
+
+    setCreatingOutfit(true);
+    setDraft(nextDraft);
+    setActiveLookId(nextLookId);
+
+    try {
+      const persistedDraft = await persistCharacterDraft(nextDraft, {
+        preferredActiveLookId: nextLookId,
+        preferredViewedLookId: nextLookId,
+      });
+
+      if (!persistedDraft?.id) {
+        return;
+      }
+
+      setStudioTab("generation");
+      await enqueueLookCandidates({
+        persistedDraft,
+        lookId: nextLookId,
+        successMessage: `${candidateQuantity} kiyafet varyanti candidate isi kuyruga eklendi.`,
+        assetMetadata: buildOutfitCandidateAssetMetadata({
+          characterId: persistedDraft.id,
+          lookId: nextLookId,
+          baseLookId: sourceLook.id,
+          outfitPresetLabel: nextLook.name,
+        }),
+      });
+    } finally {
+      setCreatingOutfit(false);
+    }
+  }
+
+  async function handleGenerateCandidates() {
+    if (!activeLook) {
+      return;
+    }
+
+    const persistedDraft = await ensureSavedDraft();
+
+    if (!persistedDraft) {
+      return;
+    }
+
+    await enqueueLookCandidates({
+      persistedDraft,
+      lookId: activeLook.id,
+      successMessage: `${candidateQuantity} karakter candidate isi kuyruga eklendi.`,
+    });
   }
 
   async function handleAssignReference() {
@@ -1242,7 +1706,10 @@ export function Characters() {
     if (!selectedCharacter || !activeProject) return;
 
     // Set up the draft for this character and open studio on generation tab
-    const nextDraft = toStudioDraft(selectedCharacter);
+    const nextDraft = toStudioDraft(
+      selectedCharacter,
+      voiceBindingsByCharacterId.get(selectedCharacter.id) ?? null,
+    );
     setDraft(nextDraft);
     setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
     setStudioTab("generation");
@@ -1339,6 +1806,8 @@ export function Characters() {
           ) : (
             filteredCharacters.map((character) => {
               const isActive = selectedCharacter?.id === character.id;
+              const voiceState =
+                voiceStateByCharacterId.get(character.id) ?? EMPTY_CHARACTER_VOICE_STATE;
               const defaultLook =
                 character.looks.find((l) => l.id === character.defaultLookId) ??
                 character.looks[0] ??
@@ -1421,6 +1890,22 @@ export function Characters() {
                         {description}
                       </div>
                     ) : null}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                      <span
+                        style={{
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: voiceState.isMissing ? "var(--status-warning)" : "var(--status-success)",
+                          background: voiceState.isMissing
+                            ? "color-mix(in srgb, var(--status-warning) 14%, transparent)"
+                            : "color-mix(in srgb, var(--status-success) 14%, transparent)",
+                        }}
+                      >
+                        {voiceState.isMissing ? "Ses eksik" : voiceState.voiceName ?? "Ses bagli"}
+                      </span>
+                    </div>
                   </div>
                 </button>
               );
@@ -1459,7 +1944,10 @@ export function Characters() {
             onGenerateCandidates={() => handleDetailGenerateCandidates()}
             onLookSelect={setViewedLookId}
             onNewLook={() => {
-              const nextDraft = toStudioDraft(selectedCharacter);
+              const nextDraft = toStudioDraft(
+                selectedCharacter,
+                voiceBindingsByCharacterId.get(selectedCharacter.id) ?? null,
+              );
               setDraft(nextDraft);
               setActiveLookId(nextDraft.defaultLookId ?? nextDraft.looks[0]?.id ?? null);
               setStudioTab("looks");
@@ -1468,6 +1956,7 @@ export function Characters() {
             onUploadImages={() => void handleAttachImagesToCharacter(selectedCharacter)}
             projectFolderPath={activeProject.folderPath}
             promptCopied={promptCopied}
+            voiceState={selectedCharacterVoiceState}
             viewedLook={viewedLook}
             viewedLookId={viewedLookId}
             viewedLookPrompt={viewedLookPrompt}
@@ -1493,22 +1982,30 @@ export function Characters() {
           candidateAspectRatio={candidateAspectRatio}
           candidateLoading={candidateLoading}
           candidateQuantity={candidateQuantity}
+          creatingOutfit={creatingOutfit}
+          draftSelectedVoice={draftSelectedVoice}
+          draftVoiceUnavailable={draftVoiceUnavailable}
           draft={draft}
           generatingCandidates={generatingCandidates}
+          outfitPresets={CHARACTER_OUTFIT_PRESETS}
           onActiveTabChange={setStudioTab}
           onAddLook={handleAddLook}
           onCandidateAspectRatioChange={setCandidateAspectRatio}
           onCandidateQuantityChange={setCandidateQuantity}
           onClose={() => {
-            if (!saving && !generatingCandidates) {
+            if (!saving && !generatingCandidates && !creatingOutfit) {
               setShowStudio(false);
             }
           }}
           onDefaultLookChange={(lookId) => updateDraft({ defaultLookId: lookId })}
           onDiscardCandidate={(asset) => void handleDiscardCandidate(asset)}
           onDuplicateLook={handleDuplicateLook}
+          onCreateOutfitVariant={(params) => void handleCreateOutfitVariant(params)}
+          onDraftVoiceChange={handleDraftVoiceSelect}
+          onDraftVoiceClear={() => updateDraft({ voice: EMPTY_CHARACTER_VOICE_STATE })}
           onGenerateCandidates={() => void handleGenerateCandidates()}
           onImportReferences={() => void handleImportReferences()}
+          onImportSharedVoice={(voice) => void handleImportCatalogVoice(voice)}
           onLookFieldChange={handleLookFieldChange}
           onLookNameChange={(value) => updateActiveLook((look) => ({ ...look, name: value }))}
           onLookSelect={setActiveLookId}
@@ -1529,6 +2026,7 @@ export function Characters() {
             }))
           }
           onReferencePrimaryChange={(relativePath) => void handleReferencePrimaryChange(relativePath)}
+          onRefreshVoiceLibrary={() => void handleRefreshVoiceLibrary()}
           onRemoveLook={() => void handleRemoveLook()}
           onRemoveReference={handleRemoveReference}
           onSave={() => void handleSave()}
@@ -1537,6 +2035,11 @@ export function Characters() {
           projectFolderPath={activeProject.folderPath}
           queueJobs={activeCandidateJobs.length}
           saving={saving}
+          voiceBusyKey={voiceBusyKey}
+          voiceCatalog={turkishVoiceCatalog}
+          voiceLibraryLoading={voiceLibraryLoading}
+          voiceWarning={voiceWarning}
+          voices={sortedVoices}
         /></Portal>
       ) : null}
 
@@ -1572,6 +2075,7 @@ export function Characters() {
 
 function CharacterDetailPanel({
   character,
+  voiceState,
   viewedLookId,
   viewedLook,
   viewedLookPrompt,
@@ -1587,6 +2091,7 @@ function CharacterDetailPanel({
   onCopyPrompt,
 }: {
   character: CharacterRecord;
+  voiceState: CharacterVoiceState;
   viewedLookId: string | null;
   viewedLook: CharacterRecord["looks"][number] | null;
   viewedLookPrompt: string;
@@ -1679,6 +2184,37 @@ function CharacterDetailPanel({
             {description}
           </p>
         ) : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
+          <span
+            style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 700,
+              color: voiceState.isMissing ? "var(--status-warning)" : "var(--status-success)",
+              background: voiceState.isMissing
+                ? "color-mix(in srgb, var(--status-warning) 14%, transparent)"
+                : "color-mix(in srgb, var(--status-success) 14%, transparent)",
+            }}
+          >
+            {voiceState.isMissing ? "Ses eksik" : `Ses: ${voiceState.voiceName ?? "Bagli"}`}
+          </span>
+          {voiceState.voiceProvider ? (
+            <span
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+              }}
+            >
+              {voiceState.voiceProvider}
+            </span>
+          ) : null}
+        </div>
 
         {/* Looks Grid */}
         <div style={{ marginBottom: 32 }}>

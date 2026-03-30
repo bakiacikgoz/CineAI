@@ -10,6 +10,7 @@ import { Clapperboard, Image as ImageIcon, Play, Video, Volume2 } from "lucide-r
 import { StatusDot } from "@/components/ui";
 import {
   IMAGE_MODELS,
+  LIPSYNC_MODELS,
   VIDEO_MODELS,
   resolveImageModel,
   resolveVideoModel,
@@ -86,14 +87,36 @@ function resolveImageCardStatus(shot: ShotRow): string {
   return shot.imageStatus;
 }
 
+function resolveVideoCardStatus(shot: ShotRow): string {
+  if (!shot.lipsyncVideoPath) {
+    return shot.videoStatus;
+  }
+
+  if (shot.lipsyncStatus === "stale") {
+    return "warning";
+  }
+
+  if (shot.lipsyncStatus === "blocked") {
+    return "error";
+  }
+
+  return shot.lipsyncStatus;
+}
+
 function getImageModelLabel(shot: ShotRow): string {
   const modelId = resolveImageModel(shot.imageModelUsed ?? shot.model);
   return IMAGE_MODELS[modelId].label;
 }
 
 function getVideoModelLabel(shot: ShotRow): string | null {
-  if (!shot.promptVideo && !shot.videoPath && !shot.video4kPath && !shot.videoModelUsed) {
+  if (!shot.promptVideo && !shot.videoPath && !shot.video4kPath && !shot.lipsyncVideoPath && !shot.videoModelUsed && !shot.lipsyncModelUsed) {
     return null;
+  }
+
+  if (shot.lipsyncModelUsed) {
+    return shot.lipsyncModelUsed in LIPSYNC_MODELS
+      ? LIPSYNC_MODELS[shot.lipsyncModelUsed as keyof typeof LIPSYNC_MODELS].label
+      : shot.lipsyncModelUsed;
   }
 
   const modelId = resolveVideoModel(shot.videoModelUsed);
@@ -116,6 +139,7 @@ export function ShotCard({
   const previewHeight = isCoverage ? 92 : 180;
   const thumbnail = resolveThumbnailPath(shot);
   const imageCardStatus = resolveImageCardStatus(shot);
+  const videoCardStatus = resolveVideoCardStatus(shot);
   const missingExternalReference =
     shot.requiresExternalReference && !shot.externalReferencePath;
   const imageModelLabel = getImageModelLabel(shot);
@@ -333,7 +357,7 @@ export function ShotCard({
                 onClick={() => handlePreviewClick("end")}
               />
               <HoverActionButton
-                active={Boolean(shot.videoPath || shot.video4kPath)}
+                active={Boolean(shot.videoPath || shot.video4kPath || shot.lipsyncVideoPath)}
                 compact={isCoverage}
                 icon={<Play size={11} />}
                 label="VIDEO"
@@ -383,14 +407,14 @@ export function ShotCard({
                 {isCoverage ? (
                   <>
                     <CompactStatus icon={<ImageIcon size={10} />} status={imageCardStatus} />
-                    <CompactStatus icon={<Video size={10} />} status={shot.videoStatus} />
+                    <CompactStatus icon={<Video size={10} />} status={videoCardStatus} />
                     <CompactStatus icon={<Volume2 size={10} />} status={shot.audioStatus} />
                     {shot.upscaleStatus === "done" ? <CompactStatus label="4K" status="done" /> : null}
                   </>
                 ) : (
                   <>
                     <StatusDot status={imageCardStatus} label="IMG" />
-                    <StatusDot status={shot.videoStatus} label="VID" />
+                    <StatusDot status={videoCardStatus} label="VID" />
                     <StatusDot status={shot.audioStatus} label="SES" />
                     {shot.upscaleStatus === "done" ? (
                       <span

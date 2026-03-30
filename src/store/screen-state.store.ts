@@ -65,7 +65,7 @@ export type CharactersScreenState = {
   assignShotId: string;
   assignLookId: string;
   assignIncludePrompt: boolean;
-  studioTab: "profile" | "looks" | "generation";
+  studioTab: "profile" | "looks" | "voice" | "generation";
 };
 
 type ScreenStateStore = {

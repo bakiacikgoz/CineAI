@@ -685,6 +685,8 @@ export function stabilizeDialogueDeliveryCue(params: {
   promptVideo?: string | null;
   preset?: DialoguePerformancePreset;
   note?: string | null;
+  lockVoiceStyle?: boolean;
+  isVoiceover?: boolean;
 }): string {
   const normalizedDelivery = normalizeDeliveryCue(params.delivery);
   const performanceProfile = resolveDialoguePerformanceProfile({
@@ -697,6 +699,7 @@ export function stabilizeDialogueDeliveryCue(params: {
   const baselineCue = buildBaselineDeliveryCue(params);
   const context = buildDeliveryContextText(params);
   const explicitLowProjection = EXPLICIT_LOW_PROJECTION_CONTEXT_REGEX.test(context);
+  const shouldForceBaseline = Boolean(params.lockVoiceStyle || params.isVoiceover);
 
   if (!normalizedDelivery) {
     return baselineCue;
@@ -721,6 +724,14 @@ export function stabilizeDialogueDeliveryCue(params: {
     FLAT_DELIVERY_REGEX.test(shortenedDelivery) &&
     !HIGH_ENERGY_DELIVERY_REGEX.test(shortenedDelivery)
   ) {
+    return baselineCue;
+  }
+
+  if (shouldForceBaseline) {
+    if (explicitLowProjection && LOW_PROJECTION_DELIVERY_REGEX.test(shortenedDelivery)) {
+      return shortenedDelivery;
+    }
+
     return baselineCue;
   }
 
@@ -920,6 +931,9 @@ function buildDialogueOptimizationInstruction(): string {
     "Use em-dashes for interrupted thoughts, ellipses for trailing hesitation, commas for breath beats.",
     "Infer emotional delivery from the scene summary and video prompt cues, but do not add new plot information.",
     "If a custom performance note is provided, follow it as scene direction without changing the line's meaning.",
+    "Keep one coherent vocal identity across the whole shot. Do not reinvent accent, age, projection, or acting approach line by line.",
+    "If style_consistency_lock is true, stay very close to scene_performance_profile.baseline_delivery and vary only when the text absolutely requires it.",
+    "If is_voiceover is true, prioritize narrator consistency over theatrical variation. Keep the same vocal persona from first line to last.",
     "Keep each line concise, highly speakable, and very close in wording to the original.",
     "Return strict JSON only with this shape:",
     '{"lines":[{"speaker":"Speaker Name","text":"optimized spoken Turkish line","delivery":"English actor-direction cue"}]}',
@@ -951,6 +965,8 @@ export function createDialogueOptimizationSourceHash(input: {
   performancePreset?: DialoguePerformancePreset | string | null;
   performanceNote?: string | null;
   useOptimizer?: boolean;
+  lockVoiceStyle?: boolean;
+  isVoiceover?: boolean;
 }): string | null {
   const transcript = input.dialogueTranscript?.trim();
 
@@ -969,6 +985,8 @@ export function createDialogueOptimizationSourceHash(input: {
       String(input.useOptimizer ?? true),
       input.performancePreset ?? "auto",
       input.performanceNote?.trim() ?? "",
+      String(input.lockVoiceStyle ?? false),
+      String(input.isVoiceover ?? false),
       DEFAULT_DIALOGUE_OPTIMIZER_MODEL,
       DIALOGUE_OPTIMIZER_VERSION,
     ].join("\n---\n"),
@@ -1057,6 +1075,8 @@ export async function optimizeDialogueForSpeech(params: {
   lines: DialogueOptimizationInputLine[];
   performancePreset?: DialoguePerformancePreset;
   performanceNote?: string | null;
+  lockVoiceStyle?: boolean;
+  isVoiceover?: boolean;
 }): Promise<DialogueOptimizationResult> {
   const apiKey = (await getApiKey("OPENROUTER_API_KEY"))?.trim();
 
@@ -1127,6 +1147,8 @@ export async function optimizeDialogueForSpeech(params: {
               },
               performance_preset: params.performancePreset ?? "auto",
               performance_note: params.performanceNote?.trim() || null,
+              style_consistency_lock: Boolean(params.lockVoiceStyle),
+              is_voiceover: Boolean(params.isVoiceover),
               scene_summary_tr: params.summaryTr?.trim() || null,
               video_prompt: params.promptVideo?.trim() || null,
               lines: normalizedLines,
@@ -1172,6 +1194,8 @@ export async function optimizeDialogueForSpeech(params: {
       promptVideo: params.promptVideo,
       preset: params.performancePreset,
       note: params.performanceNote,
+      lockVoiceStyle: params.lockVoiceStyle,
+      isVoiceover: params.isVoiceover,
     }),
   }));
 

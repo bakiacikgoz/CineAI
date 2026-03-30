@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
-import { message } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import {
   Check,
   Clapperboard,
@@ -13,12 +13,18 @@ import {
   LoaderCircle,
   Pencil,
   RotateCcw,
+  Trash2,
 } from "lucide-react";
 import { MediaLightbox, type MediaLightboxItem } from "@/components/media/MediaLightbox";
 import { MediaPaginationControls } from "@/components/media/MediaPaginationControls";
 import { getAssetGroupName, normalizeAssetGroupName } from "@/lib/asset-tags";
 import { downloadMediaFile } from "@/lib/media-download";
-import { getAssets, updateAssetGroups, type AssetWithTags } from "@/services/asset.service";
+import {
+  deleteAssetsBatch,
+  getAssets,
+  updateAssetGroups,
+  type AssetWithTags,
+} from "@/services/asset.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore } from "@/store/queue.store";
 import { useScreenStateStore } from "@/store/screen-state.store";
@@ -65,6 +71,7 @@ export function GeneratedImageGallery({
   const [activeGroupKey, setActiveGroupKey] = useState<string>(ALL_GROUP_KEY);
   const [page, setPage] = useState(1);
   const [movingSelection, setMovingSelection] = useState(false);
+  const [deletingSelection, setDeletingSelection] = useState(false);
   const [groupRefreshTick, setGroupRefreshTick] = useState(0);
   const restoringGalleryStateRef = useRef(false);
   const activeProjectId = activeProject?.id ?? null;
@@ -293,6 +300,62 @@ export function GeneratedImageGallery({
       );
     } finally {
       setMovingSelection(false);
+    }
+  }
+
+  async function handleDeleteSelectedAssets() {
+    if (selectedAssetIds.length === 0) {
+      return;
+    }
+
+    const confirmed = await confirm(
+      `${selectedAssetIds.length} secili gorsel kalici olarak silinecek. Bagli slotlar varsa temizlenecek. Devam edilsin mi?`,
+      {
+        title: "Secili gorselleri sil",
+        kind: "warning",
+        okLabel: "Sil",
+        cancelLabel: "Vazgec",
+      },
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingSelection(true);
+
+    try {
+      const impact = await deleteAssetsBatch(
+        selectedAssetIds.map((assetId) => ({ assetId })),
+      );
+      setSelectedAssetIds([]);
+      setLightboxItem(null);
+      setGroupRefreshTick((value) => value + 1);
+
+      const impactSummary =
+        impact.slotCount > 0 ? ` ${impact.slotCount} slot baglantisi kaldirildi.` : "";
+      const cleanupSummary = impact.fileDeletePending
+        ? " Bazi dosyalar kilitli; fiziksel temizleme daha sonra tekrar denenecek."
+        : "";
+
+      await message(
+        `${impact.deletedCount} gorsel silindi.${impactSummary}${cleanupSummary}`,
+        {
+          title: "Galeri",
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      console.error("Failed to delete selected image assets", error);
+      await message(
+        error instanceof Error ? error.message : "Secili gorseller silinemedi.",
+        {
+          title: "Galeri",
+          kind: "error",
+        },
+      );
+    } finally {
+      setDeletingSelection(false);
     }
   }
 
@@ -569,6 +632,21 @@ export function GeneratedImageGallery({
                             : selectedGroupTarget === UNGROUPED_GROUP_KEY
                               ? "Klasorden cikar"
                               : "Secilenleri tasi"}
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        disabled={selectedAssetIds.length === 0 || deletingSelection}
+                        onClick={() => void handleDeleteSelectedAssets()}
+                        style={{
+                          padding: "9px 12px",
+                          fontSize: 11,
+                          borderColor: "rgba(239,68,68,0.18)",
+                          color: "var(--status-error)",
+                        }}
+                        type="button"
+                      >
+                        <Trash2 size={13} />
+                        {deletingSelection ? "Siliniyor..." : "Secilenleri sil"}
                       </button>
                       {selectedAssetIds.length > 0 ? (
                         <button

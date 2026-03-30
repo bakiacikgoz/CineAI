@@ -12,10 +12,16 @@ import {
 import {
   enqueueAudioDialogueJob,
   enqueueImageJobs,
+  enqueueLipSyncJob,
   enqueueStoryboardFrameJob,
   enqueueUpscaleJobs,
   enqueueVideoJobs,
 } from "@/services/jobqueue.service";
+import {
+  getShots,
+  updateShotAudioFields,
+  updateShotPaths,
+} from "@/services/import.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore, type Job } from "@/store/queue.store";
 
@@ -140,6 +146,113 @@ function dedupeJobsById(jobs: Job[]): Job[] {
   }
 
   return uniqueJobs;
+}
+
+function buildActiveShotJobTypeMap(jobs: Job[]): Map<string, Set<Job["type"]>> {
+  const map = new Map<string, Set<Job["type"]>>();
+
+  for (const job of jobs) {
+    if (
+      !job.shotId ||
+      (job.status !== "queued" && job.status !== "active")
+    ) {
+      continue;
+    }
+
+    const current = map.get(job.shotId) ?? new Set<Job["type"]>();
+    current.add(job.type);
+    map.set(job.shotId, current);
+  }
+
+  return map;
+}
+
+function hasActiveShotJob(
+  jobsByShotId: Map<string, Set<Job["type"]>>,
+  shotId: string,
+  jobTypes: Job["type"][],
+): boolean {
+  const activeTypes = jobsByShotId.get(shotId);
+  return jobTypes.some((jobType) => activeTypes?.has(jobType));
+}
+
+async function reconcileOrphanedGeneratingShotStatuses(
+  projectId: string,
+  jobs: Job[],
+): Promise<void> {
+  const jobsByShotId = buildActiveShotJobTypeMap(jobs);
+  const shots = await getShots(projectId, { includeArchived: true });
+
+  for (const shot of shots) {
+    const pendingUpdates: Array<Promise<void>> = [];
+
+    if (
+      shot.imageStatus === "generating" &&
+      !hasActiveShotJob(jobsByShotId, shot.id, [
+        "image_start",
+        "image_end",
+        "coverage_image",
+      ])
+    ) {
+      pendingUpdates.push(
+        updateShotPaths(shot.id, {
+          imageStatus:
+            shot.imageStartPath || shot.imageEndPath ? "done" : "pending",
+        }),
+      );
+    }
+
+    if (
+      shot.videoStatus === "generating" &&
+      !hasActiveShotJob(jobsByShotId, shot.id, ["video", "coverage_video"])
+    ) {
+      pendingUpdates.push(
+        updateShotPaths(shot.id, {
+          videoStatus:
+            shot.video4kPath || shot.videoPath ? "done" : "pending",
+        }),
+      );
+    }
+
+    if (
+      shot.upscaleStatus === "generating" &&
+      !hasActiveShotJob(jobsByShotId, shot.id, ["upscale"])
+    ) {
+      pendingUpdates.push(
+        updateShotPaths(shot.id, {
+          upscaleStatus: shot.video4kPath ? "done" : "none",
+        }),
+      );
+    }
+
+    if (
+      shot.audioStatus === "generating" &&
+      !hasActiveShotJob(jobsByShotId, shot.id, ["audio_dialogue"])
+    ) {
+      pendingUpdates.push(
+        updateShotAudioFields(shot.id, {
+          audioStatus: shot.audioMasterPath ? "done" : "pending",
+          audioError: null,
+        }),
+      );
+    }
+
+    if (
+      shot.lipsyncStatus === "generating" &&
+      !hasActiveShotJob(jobsByShotId, shot.id, ["lipsync"])
+    ) {
+      pendingUpdates.push(
+        updateShotPaths(shot.id, {
+          lipsyncStatus: shot.lipsyncVideoPath ? "done" : "none",
+          lipsyncError: null,
+        }),
+      );
+    }
+
+    if (pendingUpdates.length > 0) {
+      await Promise.all(pendingUpdates);
+    }
+  }
 }
 
 function isTerminalJobStatus(status: Job["status"]): boolean {
@@ -364,6 +477,18 @@ async function requeuePersistedJob(job: Job): Promise<void> {
     return;
   }
 
+  if (job.type === "lipsync") {
+    if (!job.shotId) {
+      return;
+    }
+
+    await enqueueLipSyncJob({
+      shotId: job.shotId,
+      priority: job.priority,
+    });
+    return;
+  }
+
   if (!basePrompt?.trim()) {
     return;
   }
@@ -448,6 +573,10 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       referenceImagePaths: Array.isArray(params.referenceImagePaths)
         ? (params.referenceImagePaths as string[])
         : undefined,
+      allowVideoFrameFallback:
+        typeof params.allowVideoFrameFallback === "boolean"
+          ? params.allowVideoFrameFallback
+          : undefined,
       persistToShotPath:
         typeof params.persistToShotPath === "boolean"
           ? params.persistToShotPath
@@ -473,6 +602,12 @@ async function requeuePersistedJob(job: Job): Promise<void> {
     assetTags: Array.isArray(params.assetTags)
       ? (params.assetTags as string[])
       : undefined,
+    assetMetadata:
+      params.assetMetadata &&
+      typeof params.assetMetadata === "object" &&
+      !Array.isArray(params.assetMetadata)
+        ? (params.assetMetadata as Record<string, unknown>)
+        : undefined,
   });
 }
 
@@ -506,6 +641,12 @@ async function hydrateForProject(projectId: string): Promise<void> {
       );
     } catch (error) {
       console.error("Failed to rewrite hydrated terminal jobs.", error);
+    }
+
+    try {
+      await reconcileOrphanedGeneratingShotStatuses(projectId, persistedJobs);
+    } catch (error) {
+      console.error("Failed to reconcile orphaned generating shot statuses.", error);
     }
 
     for (const queuedJob of queuedJobs) {

@@ -34,6 +34,7 @@ import {
   createDialogueOptimizationSourceHash,
   optimizeDialogueForSpeech,
   resolveDialoguePerformanceProfile,
+  type DialoguePerformanceProfile,
   type DialoguePerformancePreset,
   type OptimizedDialogueLine,
 } from "@/services/llm.service";
@@ -160,6 +161,7 @@ export interface DialogueGenerationProfile {
   useOptimizer: boolean;
   performancePreset: DialoguePerformancePreset;
   performanceNote: string | null;
+  lockVoiceStyle: boolean;
 }
 
 export interface ImportTurkishVoicesResult {
@@ -197,6 +199,7 @@ const DEFAULT_DIALOGUE_GENERATION_PROFILE: DialogueGenerationProfile = {
   useOptimizer: true,
   performancePreset: "auto",
   performanceNote: null,
+  lockVoiceStyle: true,
 };
 
 function ensureActiveProject() {
@@ -287,6 +290,8 @@ function normalizeDialogueGenerationProfile(
     useOptimizer: value?.useOptimizer ?? DEFAULT_DIALOGUE_GENERATION_PROFILE.useOptimizer,
     performancePreset: normalizeDialoguePerformancePreset(value?.performancePreset),
     performanceNote: value?.performanceNote?.trim() || null,
+    lockVoiceStyle:
+      value?.lockVoiceStyle ?? DEFAULT_DIALOGUE_GENERATION_PROFILE.lockVoiceStyle,
   };
 }
 
@@ -311,7 +316,8 @@ function stringifyDialogueGenerationProfile(profile: DialogueGenerationProfile):
   if (
     normalized.useOptimizer === DEFAULT_DIALOGUE_GENERATION_PROFILE.useOptimizer &&
     normalized.performancePreset === DEFAULT_DIALOGUE_GENERATION_PROFILE.performancePreset &&
-    normalized.performanceNote === DEFAULT_DIALOGUE_GENERATION_PROFILE.performanceNote
+    normalized.performanceNote === DEFAULT_DIALOGUE_GENERATION_PROFILE.performanceNote &&
+    normalized.lockVoiceStyle === DEFAULT_DIALOGUE_GENERATION_PROFILE.lockVoiceStyle
   ) {
     return null;
   }
@@ -445,6 +451,7 @@ function buildDialogueOptimizationSourceHashForShot(
     | "promptVideo"
     | "audioContentHash"
     | "audioGenerationProfileJson"
+    | "audioVoiceoverText"
   >,
   audioDirection: ParsedAudioDirection | null,
 ): string | null {
@@ -461,7 +468,86 @@ function buildDialogueOptimizationSourceHashForShot(
     useOptimizer: generationProfile.useOptimizer,
     performancePreset: generationProfile.performancePreset,
     performanceNote: generationProfile.performanceNote,
+    lockVoiceStyle: generationProfile.lockVoiceStyle,
+    isVoiceover: isVoiceoverAudioShot(audioDirection, shot.audioVoiceoverText),
   });
+}
+
+function isVoiceoverAudioShot(
+  audioDirection: ParsedAudioDirection | null,
+  audioVoiceoverText: string | null | undefined,
+): boolean {
+  return Boolean(
+    audioVoiceoverText?.trim() ||
+      audioDirection?.type === "voiceover" ||
+      (
+        audioDirection?.dialogueLines.length &&
+        audioDirection.dialogueLines.every((line) => line.speakerKey === "anlatici")
+      ),
+  );
+}
+
+function createDeterministicDialogueSeed(value: string): number {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return Math.max(1, (hash >>> 0) % 2147483646);
+}
+
+function buildDialogueGenerationSeed(params: {
+  projectId: string;
+  resolvedLines: ResolvedDialogueLine[];
+  generationProfile: DialogueGenerationProfile;
+  isVoiceover: boolean;
+}): number {
+  const voiceFootprint = Array.from(
+    new Set(
+      params.resolvedLines.map(
+        (line) => `${line.speakerKey}:${line.voiceId ?? "unresolved"}`,
+      ),
+    ),
+  )
+    .sort((left, right) => left.localeCompare(right))
+    .join("|");
+
+  return createDeterministicDialogueSeed(
+    [
+      params.projectId,
+      params.isVoiceover ? "voiceover" : "dialogue",
+      params.generationProfile.performancePreset,
+      params.generationProfile.performanceNote ?? "",
+      String(params.generationProfile.lockVoiceStyle),
+      voiceFootprint,
+    ].join("\n---\n"),
+  );
+}
+
+function tuneDialoguePerformanceProfileForConsistency(
+  profile: DialoguePerformanceProfile,
+  params: { lockVoiceStyle: boolean; isVoiceover: boolean },
+): DialoguePerformanceProfile {
+  if (!params.lockVoiceStyle) {
+    return profile;
+  }
+
+  const minimumStability = params.isVoiceover ? 0.6 : 0.52;
+  const minimumSimilarityBoost = params.isVoiceover ? 0.86 : 0.84;
+
+  return {
+    ...profile,
+    recommendedStability: Math.min(
+      0.78,
+      Math.max(profile.recommendedStability, minimumStability),
+    ),
+    recommendedSimilarityBoost: Math.min(
+      0.92,
+      Math.max(profile.recommendedSimilarityBoost, minimumSimilarityBoost),
+    ),
+  };
 }
 
 function parseStoredDialogueOverrideLines(
@@ -1156,14 +1242,26 @@ async function ensureOptimizedDialogueLines(params: {
   }
 
   if (!params.detail.generationProfile.useOptimizer) {
+    const sharedPerformanceProfile = resolveDialoguePerformanceProfile({
+      lines: params.detail.resolvedLines.map((line) => ({
+        speaker: line.speaker,
+        text: line.text,
+      })),
+      summaryTr: params.shot.summaryTr,
+      promptVideo: params.shot.promptVideo,
+      preset: params.detail.generationProfile.performancePreset,
+      note: params.detail.generationProfile.performanceNote,
+    });
     const passthroughLines: StoredOptimizedDialogueLine[] = params.detail.resolvedLines.map((line) => {
-      const performanceProfile = resolveDialoguePerformanceProfile({
-        sourceText: line.text,
-        summaryTr: params.shot.summaryTr,
-        promptVideo: params.shot.promptVideo,
-        preset: params.detail.generationProfile.performancePreset,
-        note: params.detail.generationProfile.performanceNote,
-      });
+      const performanceProfile = params.detail.generationProfile.lockVoiceStyle
+        ? sharedPerformanceProfile
+        : resolveDialoguePerformanceProfile({
+            sourceText: line.text,
+            summaryTr: params.shot.summaryTr,
+            promptVideo: params.shot.promptVideo,
+            preset: params.detail.generationProfile.performancePreset,
+            note: params.detail.generationProfile.performanceNote,
+          });
 
       return {
         speaker: line.speaker,
@@ -1190,13 +1288,15 @@ async function ensureOptimizedDialogueLines(params: {
     shotNumber: params.shot.shotNumber,
     durationS: params.shot.durationS,
     summaryTr: params.shot.summaryTr,
-    promptVideo: params.shot.promptVideo,
-    performancePreset: params.detail.generationProfile.performancePreset,
-    performanceNote: params.detail.generationProfile.performanceNote,
-    lines: params.detail.resolvedLines.map((line) => ({
-      speaker: line.speaker,
-      text: line.text,
-    })),
+      promptVideo: params.shot.promptVideo,
+      performancePreset: params.detail.generationProfile.performancePreset,
+      performanceNote: params.detail.generationProfile.performanceNote,
+      lockVoiceStyle: params.detail.generationProfile.lockVoiceStyle,
+      isVoiceover: params.detail.isVoiceover,
+      lines: params.detail.resolvedLines.map((line) => ({
+        speaker: line.speaker,
+        text: line.text,
+      })),
   });
   const optimizedLines: StoredOptimizedDialogueLine[] = optimizationResult.optimizedLines.map(
     (line, index) => ({
@@ -1800,22 +1900,38 @@ export async function generateShotDialogueAudio(params: {
       jobId: params.jobId,
     });
     params.onProgress?.(20);
-    const performanceProfile = resolveDialoguePerformanceProfile({
-      lines: detail.resolvedLines.map((line, index) => ({
-        speaker: line.speaker,
-        text: optimizedDialogue.lines[index]?.text ?? line.text,
-      })),
-      summaryTr: shot.summaryTr,
-      promptVideo: shot.promptVideo,
-      preset: detail.generationProfile.performancePreset,
-      note: detail.generationProfile.performanceNote,
-    });
+    const performanceProfile = tuneDialoguePerformanceProfileForConsistency(
+      resolveDialoguePerformanceProfile({
+        lines: detail.resolvedLines.map((line, index) => ({
+          speaker: line.speaker,
+          text: optimizedDialogue.lines[index]?.text ?? line.text,
+        })),
+        summaryTr: shot.summaryTr,
+        promptVideo: shot.promptVideo,
+        preset: detail.generationProfile.performancePreset,
+        note: detail.generationProfile.performanceNote,
+      }),
+      {
+        lockVoiceStyle: detail.generationProfile.lockVoiceStyle,
+        isVoiceover: detail.isVoiceover,
+      },
+    );
+    const generationSeed = detail.generationProfile.lockVoiceStyle
+      ? buildDialogueGenerationSeed({
+          projectId: project.id,
+          resolvedLines: detail.resolvedLines,
+          generationProfile: detail.generationProfile,
+          isVoiceover: detail.isVoiceover,
+        })
+      : undefined;
 
     const result = await generateDialogueWithTimestamps({
       lines: detail.resolvedLines.map((line, index) => ({
         text: buildEmotionPromptedDialogueText(
           optimizedDialogue.lines[index]?.text ?? line.text,
-          optimizedDialogue.lines[index]?.delivery ?? null,
+          detail.generationProfile.lockVoiceStyle
+            ? performanceProfile.baselineCue
+            : optimizedDialogue.lines[index]?.delivery ?? performanceProfile.baselineCue,
           detail.generationProfile.performanceNote,
         ),
         voiceId: line.voiceId!,
@@ -1826,6 +1942,7 @@ export async function generateShotDialogueAudio(params: {
       stability: performanceProfile.recommendedStability,
       similarityBoost: performanceProfile.recommendedSimilarityBoost,
       useSpeakerBoost: true,
+      seed: generationSeed,
       abortSignal: params.abortSignal,
       onProgress: params.onProgress,
     });
@@ -1865,6 +1982,7 @@ export async function generateShotDialogueAudio(params: {
         optimizerModel: optimizedDialogue.model,
         optimizedPreview: buildOptimizedDialoguePreview(optimizedDialogue.lines),
         performanceProfile,
+        generationSeed,
         voiceSegments: result.voiceSegments,
         alignment: result.alignment,
         normalizedAlignment: result.normalizedAlignment,

@@ -1,4 +1,4 @@
-import { startTransition, type CSSProperties, useEffect, useMemo, useState } from "react";
+import { startTransition, type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import {
@@ -9,6 +9,7 @@ import {
   FileAudio,
   Filter,
   Mic2,
+  PauseCircle,
   PlayCircle,
   RefreshCw,
   Save,
@@ -59,8 +60,14 @@ import {
 import {
   enqueueAudioDialogueJob,
   enqueueBulkAudioDialogueJobs,
+  enqueueBulkLipSyncJobs,
+  enqueueLipSyncJob,
 } from "@/services/jobqueue.service";
 import { getShots, type ShotRow } from "@/services/import.service";
+import {
+  listLipSyncEligibleShots,
+  type LipSyncShotDetail,
+} from "@/services/lipsync.service";
 import { useProjectStore } from "@/store/project.store";
 
 function toAbsoluteProjectPath(projectFolderPath: string, relativePath: string): string {
@@ -78,6 +85,92 @@ function formatAudioTakeCreatedAt(value: number): string {
     dateStyle: "short",
     timeStyle: "short",
   }).format(value);
+}
+
+type AudioPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
+
+function resolvePlaybackButtonLabel(status: AudioPlaybackStatus): string {
+  switch (status) {
+    case "loading":
+      return "Yukleniyor...";
+    case "playing":
+      return "Durdur";
+    case "paused":
+      return "Devam et";
+    case "error":
+      return "Tekrar dene";
+    default:
+      return "Dinle";
+  }
+}
+
+function resolvePlaybackStatusLabel(status: AudioPlaybackStatus): string | null {
+  switch (status) {
+    case "loading":
+      return "Yukleniyor";
+    case "playing":
+      return "Caliyor";
+    case "paused":
+      return "Duraklatildi";
+    case "error":
+      return "Oynatilamadi";
+    default:
+      return null;
+  }
+}
+
+function resolvePlaybackBadgeStyle(status: AudioPlaybackStatus): CSSProperties {
+  const accent =
+    status === "playing"
+      ? "var(--status-success)"
+      : status === "loading"
+        ? "var(--status-warning)"
+        : status === "error"
+          ? "var(--status-error)"
+          : "var(--text-muted)";
+
+  return {
+    ...tagStyle,
+    color: accent,
+    border: `1px solid color-mix(in srgb, ${accent} 18%, transparent)`,
+    background: `color-mix(in srgb, ${accent} 10%, var(--surface-card))`,
+  };
+}
+
+function resolvePlayerSurfaceStyle(isActive: boolean, status: AudioPlaybackStatus): CSSProperties {
+  const accent =
+    status === "playing"
+      ? "var(--status-success)"
+      : status === "loading"
+        ? "var(--status-warning)"
+        : status === "error"
+          ? "var(--status-error)"
+          : "var(--border-subtle)";
+
+  return {
+    display: "grid",
+    gap: 8,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: `1px solid ${
+      isActive
+        ? `color-mix(in srgb, ${accent} 38%, var(--border-subtle))`
+        : "var(--border-subtle)"
+    }`,
+    background: isActive
+      ? "color-mix(in srgb, var(--surface-hover) 72%, var(--surface-card))"
+      : "var(--surface-hover)",
+    transition: "border-color 150ms ease, background 150ms ease",
+  };
+}
+
+function findAudioElement(scope: ParentNode | null): HTMLAudioElement | null {
+  if (!scope) {
+    return null;
+  }
+
+  const audioElement = scope.querySelector("audio");
+  return audioElement instanceof HTMLAudioElement ? audioElement : null;
 }
 
 
@@ -188,6 +281,7 @@ export function AudioPipeline() {
   const [voiceBindings, setVoiceBindings] = useState<CharacterVoiceBindingRecord[]>([]);
   const [speakerAliases, setSpeakerAliases] = useState<AudioSpeakerAliasRecord[]>([]);
   const [speakerVoiceBindings, setSpeakerVoiceBindings] = useState<AudioSpeakerVoiceBindingRecord[]>([]);
+  const [lipsyncDetails, setLipSyncDetails] = useState<LipSyncShotDetail[]>([]);
   const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
   const [sharedVoiceWarning, setSharedVoiceWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -208,6 +302,10 @@ export function AudioPipeline() {
   const [statusFilter, setStatusFilter] = useState<"all" | "ready" | "blocked" | "missing" | "voiceover">("all");
   const [addVoiceoverShotId, setAddVoiceoverShotId] = useState<string | null>(null);
   const [addVoiceoverDraft, setAddVoiceoverDraft] = useState("");
+  const [activePlaybackId, setActivePlaybackId] = useState<string | null>(null);
+  const [activePlaybackStatus, setActivePlaybackStatus] = useState<AudioPlaybackStatus>("idle");
+  const activePlaybackIdRef = useRef<string | null>(null);
+  const activeAudioElementRef = useRef<HTMLAudioElement | null>(null);
 
   async function loadScreenData(showSpinner = true) {
     if (!activeProject) {
@@ -216,6 +314,7 @@ export function AudioPipeline() {
       setCharacters([]);
       setVoices([]);
       setTurkishVoiceCatalog([]);
+      setLipSyncDetails([]);
       setCatalogPage(-1);
       setCatalogHasMore(false);
       setVoiceBindings([]);
@@ -233,13 +332,14 @@ export function AudioPipeline() {
 
     try {
       await reconcileProjectAudioState(activeProject.id);
-      const [nextShots, nextAllShots, nextCharacters, nextBindings, nextAliases, nextSpeakerVoiceBindings] = await Promise.all([
+      const [nextShots, nextAllShots, nextCharacters, nextBindings, nextAliases, nextSpeakerVoiceBindings, nextLipSyncDetails] = await Promise.all([
         listDialogueAudioShots(activeProject.id),
         getShots(activeProject.id),
         listCharacters(),
         listCharacterVoiceBindings(),
         listAudioSpeakerAliases(),
         listAudioSpeakerVoiceBindings(),
+        listLipSyncEligibleShots(),
       ]);
       let nextVoices: ElevenLabsVoice[] = [];
       let nextVoiceWarning: string | null = null;
@@ -260,6 +360,7 @@ export function AudioPipeline() {
       setVoiceBindings(nextBindings);
       setSpeakerAliases(nextAliases);
       setSpeakerVoiceBindings(nextSpeakerVoiceBindings);
+      setLipSyncDetails(nextLipSyncDetails);
       setVoiceWarning(nextVoiceWarning);
     } catch (error) {
       console.error("Failed to load audio pipeline screen", error);
@@ -342,6 +443,18 @@ export function AudioPipeline() {
     void loadScreenData(true);
     void loadTurkishVoiceCatalogPage({ reset: true });
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    activeAudioElementRef.current?.pause();
+    activePlaybackIdRef.current = null;
+    activeAudioElementRef.current = null;
+    setActivePlaybackId(null);
+    setActivePlaybackStatus("idle");
+  }, [activeProject?.id]);
+
+  useEffect(() => () => {
+    activeAudioElementRef.current?.pause();
+  }, []);
 
   const bindingsByCharacterId = useMemo(
     () => new Map(voiceBindings.map((binding) => [binding.characterId, binding] as const)),
@@ -520,11 +633,18 @@ export function AudioPipeline() {
 
     return Array.from(map.values()).sort((left, right) => left.speakerLabel.localeCompare(right.speakerLabel));
   }, [shots]);
+  const lipSyncDetailsByShotId = useMemo(
+    () => new Map(lipsyncDetails.map((detail) => [detail.shot.id, detail] as const)),
+    [lipsyncDetails],
+  );
 
   const readyShots = shots.filter((shot) => shot.isReady);
   const missingMasters = readyShots.filter((shot) => !shot.shot.audioMasterPath);
   const blockedShots = shots.filter((shot) => Boolean(shot.blockerReason));
   const voiceoverShots = shots.filter((shot) => shot.isVoiceover);
+  const readyLipSyncShots = lipsyncDetails.filter((detail) => detail.isEligible);
+  const staleLipSyncShots = readyLipSyncShots.filter((detail) => detail.isStale);
+  const missingLipSyncMasters = readyLipSyncShots.filter((detail) => !detail.masterVideoPath);
   const audioShotIds = useMemo(() => new Set(shots.map((s) => s.shot.id)), [shots]);
   const shotsWithoutAudio = useMemo(
     () => allProjectShots.filter((s) => !audioShotIds.has(s.id) && !s.isArchived),
@@ -538,6 +658,116 @@ export function AudioPipeline() {
     if (statusFilter === "voiceover") return voiceoverShots;
     return shots;
   }, [shots, readyShots, blockedShots, missingMasters, voiceoverShots, statusFilter]);
+
+  function syncActivePlayback(
+    playbackId: string,
+    element: HTMLAudioElement,
+    status: AudioPlaybackStatus,
+  ) {
+    const previousElement = activeAudioElementRef.current;
+
+    activePlaybackIdRef.current = playbackId;
+    activeAudioElementRef.current = element;
+    setActivePlaybackId(playbackId);
+    setActivePlaybackStatus(status);
+
+    if (previousElement && previousElement !== element) {
+      previousElement.pause();
+    }
+  }
+
+  function clearActivePlayback(
+    playbackId?: string,
+    element?: HTMLAudioElement | null,
+  ) {
+    const matchesActivePlayback =
+      (!playbackId || activePlaybackIdRef.current === playbackId) &&
+      (!element || activeAudioElementRef.current === element);
+
+    if (!matchesActivePlayback) {
+      return;
+    }
+
+    activePlaybackIdRef.current = null;
+    activeAudioElementRef.current = null;
+    setActivePlaybackId(null);
+    setActivePlaybackStatus("idle");
+  }
+
+  function resolvePlaybackState(playbackId: string): AudioPlaybackStatus {
+    return activePlaybackId === playbackId ? activePlaybackStatus : "idle";
+  }
+
+  async function toggleAudioPlayback(playbackId: string, trigger: HTMLButtonElement) {
+    const element = findAudioElement(trigger.closest("[data-audio-player]"));
+
+    if (!element?.src) {
+      return;
+    }
+
+    const isCurrentPlayback =
+      activePlaybackIdRef.current === playbackId &&
+      activeAudioElementRef.current === element;
+
+    if (isCurrentPlayback && !element.paused && !element.ended) {
+      element.pause();
+      return;
+    }
+
+    if (element.ended) {
+      element.currentTime = 0;
+    }
+
+    syncActivePlayback(playbackId, element, "loading");
+
+    try {
+      await element.play();
+    } catch (error) {
+      console.error("Audio playback failed", error);
+      syncActivePlayback(playbackId, element, "error");
+    }
+  }
+
+  function handleAudioPlay(playbackId: string, element: HTMLAudioElement) {
+    syncActivePlayback(
+      playbackId,
+      element,
+      element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA ? "playing" : "loading",
+    );
+  }
+
+  function handleAudioPlaying(playbackId: string, element: HTMLAudioElement) {
+    syncActivePlayback(playbackId, element, "playing");
+  }
+
+  function handleAudioPause(playbackId: string, element: HTMLAudioElement) {
+    if (
+      activePlaybackIdRef.current !== playbackId ||
+      activeAudioElementRef.current !== element
+    ) {
+      return;
+    }
+
+    if (element.ended) {
+      clearActivePlayback(playbackId, element);
+      return;
+    }
+
+    setActivePlaybackStatus("paused");
+  }
+
+  function handleAudioEnded(playbackId: string, element: HTMLAudioElement) {
+    element.currentTime = 0;
+    clearActivePlayback(playbackId, element);
+  }
+
+  function handleAudioWaiting(playbackId: string, element: HTMLAudioElement) {
+    syncActivePlayback(playbackId, element, "loading");
+  }
+
+  function handleAudioError(playbackId: string, element: HTMLAudioElement) {
+    syncActivePlayback(playbackId, element, "error");
+  }
 
   function handleStatusFilterClick(filter: "all" | "ready" | "blocked" | "missing" | "voiceover") {
     setStatusFilter((current) => (current === filter ? "all" : filter));
@@ -586,6 +816,53 @@ export function AudioPipeline() {
     } catch (error) {
       await message(
         error instanceof Error ? error.message : "Toplu dialogue queue islemi basarisiz.",
+        { title: "Seslendirme", kind: "error" },
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleQueueSingleLipSync(shotId: string) {
+    setBusyKey(`lipsync:${shotId}`);
+
+    try {
+      await enqueueLipSyncJob({ shotId });
+      await loadScreenData(false);
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Lipsync shot kuyruga eklenemedi.",
+        { title: "Seslendirme", kind: "error" },
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleBulkLipSync(filter: "missing" | "all" | "stale") {
+    setBusyKey(`bulk-lipsync:${filter}`);
+
+    try {
+      const targetShots =
+        filter === "missing"
+          ? missingLipSyncMasters
+          : filter === "stale"
+            ? staleLipSyncShots
+            : readyLipSyncShots;
+
+      if (targetShots.length === 0) {
+        throw new Error("Queue'lanabilir lipsync shot yok.");
+      }
+
+      const result = await enqueueBulkLipSyncJobs({ filter });
+      await loadScreenData(false);
+      await message(`${result.jobCount} lipsync shot kuyruga eklendi.`, {
+        title: "Seslendirme",
+        kind: "info",
+      });
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Toplu lipsync queue islemi basarisiz.",
         { title: "Seslendirme", kind: "error" },
       );
     } finally {
@@ -864,6 +1141,10 @@ export function AudioPipeline() {
                 <StatusDot status="success" label={`${readyShots.length} Hazir`} />
                 <StatusDot status="error" label={`${blockedShots.length} Engelli`} />
                 <StatusDot status="warning" label={`${missingMasters.length} Eksik`} />
+                <StatusDot status="active" label={`${readyLipSyncShots.length} Lipsync uygun`} />
+                {staleLipSyncShots.length > 0 ? (
+                  <StatusDot status="warning" label={`${staleLipSyncShots.length} Lipsync stale`} />
+                ) : null}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -893,6 +1174,24 @@ export function AudioPipeline() {
               >
                 <Sparkles size={14} />
                 Toplu uretim baslat
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={busyKey === "bulk-lipsync:missing"}
+                onClick={() => void handleBulkLipSync("missing")}
+                type="button"
+              >
+                <CircleDot size={14} />
+                Eksik lipsync
+              </button>
+              <button
+                className="btn-primary"
+                disabled={busyKey === "bulk-lipsync:all"}
+                onClick={() => void handleBulkLipSync("all")}
+                type="button"
+              >
+                <Waves size={14} />
+                Uygun lipsync queue
               </button>
             </div>
           </div>
@@ -1148,15 +1447,20 @@ export function AudioPipeline() {
               ) : (
                 <>
                   <div style={voiceGridStyle}>
-                    {filteredTurkishVoiceCatalog.map(({ voice, alreadyAdded }) => (
-                      <article
-                        key={`${voice.publicOwnerId}:${voice.voiceId}`}
-                        style={{
-                          ...voiceCardStyle,
-                          borderColor: alreadyAdded ? "var(--status-success)" : "var(--border-subtle)",
-                          opacity: alreadyAdded ? 0.7 : 1,
-                        }}
-                      >
+                    {filteredTurkishVoiceCatalog.map(({ voice, alreadyAdded }) => {
+                      const previewPlaybackId = `catalog-preview:${voice.voiceId}`;
+                      const previewPlaybackState = resolvePlaybackState(previewPlaybackId);
+                      const previewStatusLabel = resolvePlaybackStatusLabel(previewPlaybackState);
+
+                      return (
+                        <article
+                          key={`${voice.publicOwnerId}:${voice.voiceId}`}
+                          style={{
+                            ...voiceCardStyle,
+                            borderColor: alreadyAdded ? "var(--status-success)" : "var(--border-subtle)",
+                            opacity: alreadyAdded ? 0.7 : 1,
+                          }}
+                        >
                         <div style={{ display: "grid", gap: 8 }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                             <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{voice.name}</strong>
@@ -1188,20 +1492,45 @@ export function AudioPipeline() {
                               : null}
                           </div>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                        <div
+                          data-audio-player={previewPlaybackId}
+                          style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}
+                        >
                           {voice.previewUrl ? (
-                            <button
-                              className="btn-secondary"
-                              onClick={() => {
-                                const a = new Audio(voice.previewUrl!);
-                                void a.play();
-                              }}
-                              type="button"
-                              style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
-                            >
-                              <PlayCircle size={12} />
-                              Dinle
-                            </button>
+                            <>
+                              <audio
+                                onEnded={(event) => handleAudioEnded(previewPlaybackId, event.currentTarget)}
+                                onError={(event) => handleAudioError(previewPlaybackId, event.currentTarget)}
+                                onPause={(event) => handleAudioPause(previewPlaybackId, event.currentTarget)}
+                                onPlay={(event) => handleAudioPlay(previewPlaybackId, event.currentTarget)}
+                                onPlaying={(event) => handleAudioPlaying(previewPlaybackId, event.currentTarget)}
+                                onWaiting={(event) => handleAudioWaiting(previewPlaybackId, event.currentTarget)}
+                                preload="none"
+                                src={voice.previewUrl}
+                                style={{ display: "none" }}
+                              />
+                              <button
+                                aria-pressed={previewPlaybackState === "playing"}
+                                className={previewPlaybackState === "playing" ? "btn-primary" : "btn-secondary"}
+                                onClick={(event) =>
+                                  void toggleAudioPlayback(previewPlaybackId, event.currentTarget)
+                                }
+                                type="button"
+                                style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
+                              >
+                                {previewPlaybackState === "playing" ? (
+                                  <PauseCircle size={12} />
+                                ) : (
+                                  <PlayCircle size={12} />
+                                )}
+                                {resolvePlaybackButtonLabel(previewPlaybackState)}
+                              </button>
+                              {previewStatusLabel ? (
+                                <span style={resolvePlaybackBadgeStyle(previewPlaybackState)}>
+                                  {previewStatusLabel}
+                                </span>
+                              ) : null}
+                            </>
                           ) : null}
                           <button
                             className="btn-secondary"
@@ -1214,7 +1543,8 @@ export function AudioPipeline() {
                           </button>
                         </div>
                       </article>
-                    ))}
+                    );
+                    })}
                   </div>
                   {catalogHasMore ? (
                     <div style={{ display: "flex", justifyContent: "center" }}>
@@ -1274,6 +1604,13 @@ export function AudioPipeline() {
                     characters.map((character) => {
                       const binding = bindingsByCharacterId.get(character.id);
                       const selectedVoice = sortedVoices.find((voice) => voice.voiceId === binding?.voiceId) ?? null;
+                      const previewPlaybackId = selectedVoice
+                        ? `character-preview:${character.id}:${selectedVoice.voiceId}`
+                        : null;
+                      const previewPlaybackState = previewPlaybackId
+                        ? resolvePlaybackState(previewPlaybackId)
+                        : "idle";
+                      const previewStatusLabel = resolvePlaybackStatusLabel(previewPlaybackState);
 
                       return (
                         <div key={character.id} style={bindingRowStyle}>
@@ -1286,7 +1623,10 @@ export function AudioPipeline() {
                               {binding?.voiceName ?? "Ses atanmadi"}
                             </span>
                           </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <div
+                            data-audio-player={previewPlaybackId ?? undefined}
+                            style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+                          >
                             <select
                               className="studio-field"
                               disabled={busyKey === `voice:${character.id}`}
@@ -1304,18 +1644,66 @@ export function AudioPipeline() {
                               ))}
                             </select>
                             {selectedVoice?.previewUrl ? (
-                              <button
-                                className="btn-secondary"
-                                onClick={() => {
-                                  const a = new Audio(selectedVoice.previewUrl!);
-                                  void a.play();
-                                }}
-                                type="button"
-                                style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
-                              >
-                                <PlayCircle size={12} />
-                                Dinle
-                              </button>
+                              <>
+                                <audio
+                                  onEnded={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioEnded(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  onError={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioError(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  onPause={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioPause(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  onPlay={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioPlay(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  onPlaying={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioPlaying(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  onWaiting={(event) =>
+                                    previewPlaybackId
+                                      ? handleAudioWaiting(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  preload="none"
+                                  src={selectedVoice.previewUrl}
+                                  style={{ display: "none" }}
+                                />
+                                <button
+                                  aria-pressed={previewPlaybackState === "playing"}
+                                  className={previewPlaybackState === "playing" ? "btn-primary" : "btn-secondary"}
+                                  onClick={(event) =>
+                                    previewPlaybackId
+                                      ? void toggleAudioPlayback(previewPlaybackId, event.currentTarget)
+                                      : undefined
+                                  }
+                                  type="button"
+                                  style={{ padding: "5px 10px", minHeight: 28, fontSize: 11 }}
+                                >
+                                  {previewPlaybackState === "playing" ? (
+                                    <PauseCircle size={12} />
+                                  ) : (
+                                    <PlayCircle size={12} />
+                                  )}
+                                  {resolvePlaybackButtonLabel(previewPlaybackState)}
+                                </button>
+                                {previewStatusLabel ? (
+                                  <span style={resolvePlaybackBadgeStyle(previewPlaybackState)}>
+                                    {previewStatusLabel}
+                                  </span>
+                                ) : null}
+                              </>
                             ) : null}
                           </div>
                         </div>
@@ -1442,6 +1830,7 @@ export function AudioPipeline() {
                   />
                 ) : (
                   filteredShots.map((detail) => {
+                    const lipsync = lipSyncDetailsByShotId.get(detail.shot.id) ?? null;
                     const activeTake =
                       detail.audioTakes.find((take) => take.isMaster) ?? detail.audioTakes[0] ?? null;
                     const audioSrc = activeTake
@@ -1452,6 +1841,11 @@ export function AudioPipeline() {
                     const historicalTakes = detail.audioTakes.filter(
                       (take) => !activeTake || take.relativePath !== activeTake.relativePath,
                     );
+                    const masterPlaybackId = activeTake ? `take:${activeTake.id}` : null;
+                    const masterPlaybackState = masterPlaybackId
+                      ? resolvePlaybackState(masterPlaybackId)
+                      : "idle";
+                    const masterStatusLabel = resolvePlaybackStatusLabel(masterPlaybackState);
 
                     return (
                       <article
@@ -1504,6 +1898,24 @@ export function AudioPipeline() {
                               {!detail.generationProfile.useOptimizer ? (
                                 <span style={tagStyle}>Optimizer kapali</span>
                               ) : null}
+                              {lipsync?.modelLabel ? (
+                                <span style={{ ...tagStyle, color: "var(--status-info)", borderColor: "rgba(59,130,246,0.18)" }}>
+                                  {lipsync.modelLabel}
+                                </span>
+                              ) : null}
+                              {lipsync?.estimatedCostUsd ? (
+                                <span style={tagStyle}>${lipsync.estimatedCostUsd.toFixed(3)}</span>
+                              ) : null}
+                              {lipsync?.status === "stale" ? (
+                                <span style={{ ...tagStyle, color: "var(--status-warning)", borderColor: "rgba(245,158,11,0.18)" }}>
+                                  Lipsync stale
+                                </span>
+                              ) : null}
+                              {lipsync?.masterVideoPath ? (
+                                <span style={{ ...tagStyle, color: "var(--status-success)", borderColor: "rgba(34,197,94,0.18)" }}>
+                                  Lipsync master var
+                                </span>
+                              ) : null}
                               <button
                                 className="btn-primary"
                                 disabled={busyKey === `shot:${detail.shot.id}`}
@@ -1513,6 +1925,23 @@ export function AudioPipeline() {
                               >
                                 <PlayCircle size={14} />
                                 {activeTake ? "Yeniden uret" : "Uret"}
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                disabled={
+                                  busyKey === `lipsync:${detail.shot.id}` ||
+                                  Boolean(lipsync?.blockerReasons.length)
+                                }
+                                onClick={() => void handleQueueSingleLipSync(detail.shot.id)}
+                                type="button"
+                                style={{ minHeight: 34 }}
+                              >
+                                <CircleDot size={14} />
+                                {busyKey === `lipsync:${detail.shot.id}`
+                                  ? "Kuyrukta..."
+                                  : lipsync?.isStale || lipsync?.masterVideoPath
+                                    ? "Lipsync yenile"
+                                    : "Lipsync"}
                               </button>
                             </div>
                           </div>
@@ -1527,6 +1956,40 @@ export function AudioPipeline() {
                             <div style={blockerStyle}>
                               <AlertTriangle size={13} style={{ flexShrink: 0, color: "var(--status-error)" }} />
                               <span>{detail.blockerReason}</span>
+                            </div>
+                          ) : null}
+
+                          {!detail.blockerReason && detail.shot.audioStatus === "error" && detail.shot.audioError ? (
+                            <div style={blockerStyle}>
+                              <AlertTriangle size={13} style={{ flexShrink: 0, color: "var(--status-error)" }} />
+                              <span>{detail.shot.audioError}</span>
+                            </div>
+                          ) : null}
+
+                          {lipsync?.blockerReasons.length ? (
+                            <div style={blockerStyle}>
+                              <AlertTriangle size={13} style={{ flexShrink: 0, color: "var(--status-error)" }} />
+                              <span>{`Lipsync: ${lipsync.blockerReasons.join(" ")}`}</span>
+                            </div>
+                          ) : null}
+
+                          {lipsync?.staleReasons.length ? (
+                            <div
+                              style={{
+                                ...blockerStyle,
+                                borderColor: "rgba(245,158,11,0.18)",
+                                background: "rgba(245,158,11,0.06)",
+                                color: "var(--status-warning)",
+                              }}
+                            >
+                              <AlertTriangle size={13} style={{ flexShrink: 0, color: "var(--status-warning)" }} />
+                              <span>{`Lipsync: ${lipsync.staleReasons.join(" ")}`}</span>
+                            </div>
+                          ) : null}
+
+                          {lipsync?.resolvedPlan ? (
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                              {`Lipsync plani: ${lipsync.resolvedPlan.reason}`}
                             </div>
                           ) : null}
 
@@ -1578,7 +2041,56 @@ export function AudioPipeline() {
                           {/* Ses oynatici */}
                           {audioSrc ? (
                             <div style={{ display: "grid", gap: 8 }}>
-                              <audio controls src={audioSrc} style={{ width: "100%", borderRadius: 8 }} />
+                              {masterPlaybackId ? (
+                                <div
+                                  data-audio-player={masterPlaybackId}
+                                  style={resolvePlayerSurfaceStyle(
+                                    activePlaybackId === masterPlaybackId,
+                                    masterPlaybackState,
+                                  )}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                      <button
+                                        aria-pressed={masterPlaybackState === "playing"}
+                                        className={masterPlaybackState === "playing" ? "btn-primary" : "btn-secondary"}
+                                        onClick={(event) =>
+                                          void toggleAudioPlayback(masterPlaybackId, event.currentTarget)
+                                        }
+                                        type="button"
+                                        style={{ minHeight: 30, padding: "4px 12px", fontSize: 11 }}
+                                      >
+                                        {masterPlaybackState === "playing" ? (
+                                          <PauseCircle size={13} />
+                                        ) : (
+                                          <PlayCircle size={13} />
+                                        )}
+                                        {resolvePlaybackButtonLabel(masterPlaybackState)}
+                                      </button>
+                                      {masterStatusLabel ? (
+                                        <span style={resolvePlaybackBadgeStyle(masterPlaybackState)}>
+                                          {masterStatusLabel}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                                      Ayni anda tek oynatici aktif olur
+                                    </span>
+                                  </div>
+                                  <audio
+                                    controls
+                                    onEnded={(event) => handleAudioEnded(masterPlaybackId, event.currentTarget)}
+                                    onError={(event) => handleAudioError(masterPlaybackId, event.currentTarget)}
+                                    onPause={(event) => handleAudioPause(masterPlaybackId, event.currentTarget)}
+                                    onPlay={(event) => handleAudioPlay(masterPlaybackId, event.currentTarget)}
+                                    onPlaying={(event) => handleAudioPlaying(masterPlaybackId, event.currentTarget)}
+                                    onWaiting={(event) => handleAudioWaiting(masterPlaybackId, event.currentTarget)}
+                                    preload="metadata"
+                                    src={audioSrc}
+                                    style={{ width: "100%", borderRadius: 8 }}
+                                  />
+                                </div>
+                              ) : null}
                               {activeTake ? (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                                   <span style={tagStyle}>
@@ -1601,6 +2113,9 @@ export function AudioPipeline() {
                                       const takeSrc = convertFileSrc(
                                         toAbsoluteProjectPath(activeProject.folderPath, take.relativePath),
                                       );
+                                      const takePlaybackId = `take:${take.id}`;
+                                      const takePlaybackState = resolvePlaybackState(takePlaybackId);
+                                      const takeStatusLabel = resolvePlaybackStatusLabel(takePlaybackState);
 
                                       return (
                                         <div
@@ -1621,7 +2136,49 @@ export function AudioPipeline() {
                                               <span style={tagStyle}>{take.outputFormat}</span>
                                             ) : null}
                                           </div>
-                                          <audio controls src={takeSrc} style={{ width: "100%", borderRadius: 8 }} />
+                                          <div
+                                            data-audio-player={takePlaybackId}
+                                            style={resolvePlayerSurfaceStyle(
+                                              activePlaybackId === takePlaybackId,
+                                              takePlaybackState,
+                                            )}
+                                          >
+                                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                              <button
+                                                aria-pressed={takePlaybackState === "playing"}
+                                                className={takePlaybackState === "playing" ? "btn-primary" : "btn-secondary"}
+                                                onClick={(event) =>
+                                                  void toggleAudioPlayback(takePlaybackId, event.currentTarget)
+                                                }
+                                                type="button"
+                                                style={{ minHeight: 30, padding: "4px 12px", fontSize: 11 }}
+                                              >
+                                                {takePlaybackState === "playing" ? (
+                                                  <PauseCircle size={13} />
+                                                ) : (
+                                                  <PlayCircle size={13} />
+                                                )}
+                                                {resolvePlaybackButtonLabel(takePlaybackState)}
+                                              </button>
+                                              {takeStatusLabel ? (
+                                                <span style={resolvePlaybackBadgeStyle(takePlaybackState)}>
+                                                  {takeStatusLabel}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                            <audio
+                                              controls
+                                              onEnded={(event) => handleAudioEnded(takePlaybackId, event.currentTarget)}
+                                              onError={(event) => handleAudioError(takePlaybackId, event.currentTarget)}
+                                              onPause={(event) => handleAudioPause(takePlaybackId, event.currentTarget)}
+                                              onPlay={(event) => handleAudioPlay(takePlaybackId, event.currentTarget)}
+                                              onPlaying={(event) => handleAudioPlaying(takePlaybackId, event.currentTarget)}
+                                              onWaiting={(event) => handleAudioWaiting(takePlaybackId, event.currentTarget)}
+                                              preload="metadata"
+                                              src={takeSrc}
+                                              style={{ width: "100%", borderRadius: 8 }}
+                                            />
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -1631,7 +2188,7 @@ export function AudioPipeline() {
                             </div>
                           ) : (
                             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-                              Master WAV henuz uretilmedi.
+                              Master ses dosyasi henuz uretilmedi.
                             </p>
                           )}
                         </div>

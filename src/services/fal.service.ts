@@ -1,7 +1,7 @@
-import { extname } from "@tauri-apps/api/path";
-import { ApiError, ValidationError, fal } from "@fal-ai/client";
-import { readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { extractAudioDirectionBlock } from "@/lib/audio-direction-parser";
+import { type LipSyncModelId, type LipSyncSyncMode } from "@/lib/lipsync";
 import { getApiKey } from "@/lib/store";
 
 export const IMAGE_MODELS = {
@@ -31,6 +31,25 @@ export const VIDEO_MODELS = {
 } as const;
 
 export type VideoModelId = keyof typeof VIDEO_MODELS;
+export const LIPSYNC_MODELS = {
+  "fal-ai/latentsync": {
+    label: "LatentSync",
+    endpointId: "fal-ai/latentsync",
+  },
+  "fal-ai/sync-lipsync": {
+    label: "Sync Lipsync 1.9",
+    endpointId: "fal-ai/sync-lipsync",
+  },
+  "fal-ai/sync-lipsync/v2": {
+    label: "Sync Lipsync 2.0",
+    endpointId: "fal-ai/sync-lipsync/v2",
+  },
+  "fal-ai/sync-lipsync/v2/pro": {
+    label: "Sync Lipsync 2.0 Pro",
+    endpointId: "fal-ai/sync-lipsync/v2/pro",
+  },
+} as const;
+
 export type VideoAspectRatio = "16:9" | "9:16" | "1:1";
 export type KlingShotType = "customize" | "intelligent";
 export type KlingMultiShotDuration =
@@ -120,22 +139,39 @@ export interface GenerateVideoResult {
   requestId?: string;
 }
 
-let falConfigured = false;
+export interface GenerateLipSyncVideoParams {
+  jobId: string;
+  model: LipSyncModelId;
+  videoPath: string;
+  audioPath: string;
+  syncMode?: LipSyncSyncMode | null;
+  abortSignal?: AbortSignal;
+  onProgress?: (pct: number) => void;
+}
+
+export interface GenerateLipSyncVideoResult {
+  url: string;
+  requestId?: string;
+}
+
 const DEFAULT_KLING_NEGATIVE_PROMPT = "blur, distort, and low quality";
 
-const MIME_BY_EXTENSION: Record<string, string> = {
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".mp4": "video/mp4",
+type FalAliasSummary = {
+  aliasCount: number;
 };
 
-type FalAliasListResponse = {
-  aliases?: unknown[];
-  data?: unknown[];
-  items?: unknown[];
+type FalQueueSubmitResponse = {
+  requestId: string;
+};
+
+type FalQueueStatusResponse = {
+  status: string;
+  error?: string | null;
+};
+
+type FalQueueResultResponse = {
+  requestId?: string;
+  data?: unknown;
 };
 
 function normalizeAspectRatio(aspectRatio: string): "auto" | "21:9" | "16:9" | "3:2" | "4:3" | "5:4" | "1:1" | "4:5" | "3:4" | "2:3" | "9:16" {
@@ -219,36 +255,119 @@ function stripKlingShotHeader(shotPrompt: string): string {
 }
 
 function summarizeFalApiError(error: unknown): string {
-  if (error instanceof ValidationError) {
-    const detail = error.fieldErrors
-      .map((item) => {
-        const location = item.loc?.join(".") || "body";
-        return `${location}: ${item.msg}`;
-      })
-      .filter(Boolean)
-      .join(" | ");
-
-    return [error.message, detail, error.requestId ? `requestId: ${error.requestId}` : undefined]
-      .filter(Boolean)
-      .join(" | ");
-  }
-
-  if (error instanceof ApiError) {
-    const bodyMessage =
-      error.body && typeof error.body === "object" && "message" in error.body
-        ? String(error.body.message)
-        : undefined;
-
-    return [
-      error.message || `Fal istegi HTTP ${error.status} ile basarisiz oldu.`,
-      bodyMessage,
-      error.requestId ? `requestId: ${error.requestId}` : undefined,
-    ]
-      .filter(Boolean)
-      .join(" | ");
-  }
-
   return error instanceof Error ? error.message : String(error);
+}
+
+function createAbortError(): Error {
+  return typeof DOMException === "function"
+    ? new DOMException("Islem iptal edildi.", "AbortError")
+    : new Error("Islem iptal edildi.");
+}
+
+async function waitForDelay(durationMs: number, abortSignal?: AbortSignal): Promise<void> {
+  if (abortSignal?.aborted) {
+    throw createAbortError();
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, durationMs);
+
+    function cleanup() {
+      globalThis.clearTimeout(timeoutId);
+      abortSignal?.removeEventListener("abort", handleAbort);
+    }
+
+    function handleAbort() {
+      cleanup();
+      reject(createAbortError());
+    }
+
+    abortSignal?.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+async function invokeFalCommand<T>(command: string, payload: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, payload);
+  } catch (error) {
+    throw new Error(summarizeFalApiError(error));
+  }
+}
+
+async function resolveFalApiKey(apiKeyOverride?: string): Promise<string> {
+  const apiKey = apiKeyOverride?.trim() || (await getApiKey("FAL_API_KEY"))?.trim();
+
+  if (!apiKey) {
+    throw new Error("FAL API key bulunamadi. Ayarlardan ekleyin.");
+  }
+
+  return apiKey;
+}
+
+async function uploadLocalFileToFal(filePath: string, apiKey: string): Promise<string> {
+  return invokeFalCommand<string>("fal_upload_file", {
+    apiKey,
+    filePath,
+  });
+}
+
+async function runFalQueue(params: {
+  apiKey: string;
+  endpointId: string;
+  input: Record<string, unknown>;
+  pollIntervalMs: number;
+  abortSignal?: AbortSignal;
+  onQueueUpdate?: (update: FalQueueStatusResponse) => void;
+}): Promise<FalQueueResultResponse> {
+  const { requestId } = await invokeFalCommand<FalQueueSubmitResponse>("fal_queue_submit", {
+    apiKey: params.apiKey,
+    endpointId: params.endpointId,
+    input: params.input,
+  });
+
+  try {
+    while (true) {
+      if (params.abortSignal?.aborted) {
+        throw createAbortError();
+      }
+
+      const status = await invokeFalCommand<FalQueueStatusResponse>("fal_queue_status", {
+        apiKey: params.apiKey,
+        endpointId: params.endpointId,
+        requestId,
+        logs: false,
+      });
+
+      params.onQueueUpdate?.(status);
+
+      if (status.status === "COMPLETED") {
+        return invokeFalCommand<FalQueueResultResponse>("fal_queue_result", {
+          apiKey: params.apiKey,
+          endpointId: params.endpointId,
+          requestId,
+        });
+      }
+
+      if (status.status === "FAILED" || status.status === "CANCELLED") {
+        throw new Error(status.error?.trim() || "fal istegi tamamlanamadi.");
+      }
+
+      await waitForDelay(params.pollIntervalMs, params.abortSignal);
+    }
+  } catch (error) {
+    if (params.abortSignal?.aborted) {
+      void invokeFalCommand("fal_queue_cancel", {
+        apiKey: params.apiKey,
+        endpointId: params.endpointId,
+        requestId,
+      }).catch(() => undefined);
+    }
+
+    throw error;
+  }
 }
 
 export function isKlingDuration(value: number): value is KlingDuration {
@@ -382,79 +501,15 @@ export function getKlingMultiPromptValidationMessage(
   return null;
 }
 
-async function ensureFalConfigured() {
-  if (falConfigured) {
-    return;
-  }
-
-  const key = (await getApiKey("FAL_API_KEY"))?.trim();
-
-  if (!key) {
-    throw new Error("FAL API key bulunamadi. Ayarlardan ekleyin.");
-  }
-
-  fal.config({ credentials: key });
-  falConfigured = true;
-}
-
-async function uploadLocalFileToFal(filePath: string): Promise<string> {
-  await ensureFalConfigured();
-
-  const bytes = await readFile(filePath);
-  const fileExtension = (await extname(filePath)).toLowerCase();
-  const mimeType = MIME_BY_EXTENSION[fileExtension] ?? "application/octet-stream";
-  const fileName = `cineai-upload${fileExtension || ".bin"}`;
-  const file = new File([bytes], fileName, { type: mimeType });
-
-  return fal.storage.upload(file);
-}
-
 export async function initFal(): Promise<boolean> {
-  const key = (await getApiKey("FAL_API_KEY"))?.trim();
-
-  if (!key) {
-    falConfigured = false;
-    return false;
-  }
-
-  fal.config({ credentials: key });
-  falConfigured = true;
-  return true;
+  return Boolean((await getApiKey("FAL_API_KEY"))?.trim());
 }
 
 export async function testFalConnection(
   apiKeyOverride?: string,
 ): Promise<{ aliasCount: number }> {
-  const apiKey = apiKeyOverride?.trim() || (await getApiKey("FAL_API_KEY"))?.trim();
-
-  if (!apiKey) {
-    throw new Error("FAL API key bulunamadi. Ayarlardan ekleyin.");
-  }
-
-  let lastError: Error | null = null;
-
-  for (const authorizationValue of [apiKey, `Key ${apiKey}`]) {
-    const response = await fetch("https://api.fal.ai/v1/serverless/endpoints/aliases", {
-      headers: {
-        Authorization: authorizationValue,
-      },
-    });
-
-    if (response.ok) {
-      const payload = (await response.json()) as FalAliasListResponse;
-      const aliases = payload.aliases ?? payload.data ?? payload.items ?? [];
-      return { aliasCount: aliases.length };
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      lastError = new Error("FAL anahtari dogrulanamadi.");
-      continue;
-    }
-
-    throw new Error(`FAL baglanti testi basarisiz oldu (${response.status}).`);
-  }
-
-  throw lastError ?? new Error("FAL baglanti testi basarisiz oldu.");
+  const apiKey = await resolveFalApiKey(apiKeyOverride);
+  return invokeFalCommand<FalAliasSummary>("fal_test_connection", { apiKey });
 }
 
 export async function generateImage(
@@ -472,13 +527,13 @@ export async function generateImage(
     onProgress,
   } = params;
 
-  await ensureFalConfigured();
+  const apiKey = await resolveFalApiKey();
   const mergedReferencePaths = Array.from(
     new Set([...(referenceImagePaths ?? []), ...(refImagePath ? [refImagePath] : [])]),
   );
   const referenceUrls =
     mergedReferencePaths.length > 0
-      ? await Promise.all(mergedReferencePaths.map((path) => uploadLocalFileToFal(path)))
+      ? await Promise.all(mergedReferencePaths.map((path) => uploadLocalFileToFal(path, apiKey)))
       : [];
   let endpoint: string = model;
   let input: Record<string, unknown>;
@@ -514,12 +569,12 @@ export async function generateImage(
 
   onProgress?.(18);
 
-  const result = await fal.subscribe(endpoint, {
+  const result = await runFalQueue({
+    apiKey,
+    endpointId: endpoint,
     input,
     abortSignal,
-    mode: "polling",
-    pollInterval: 800,
-    logs: true,
+    pollIntervalMs: 800,
     onQueueUpdate(update) {
       if (update.status === "IN_QUEUE") {
         onProgress?.(12);
@@ -579,11 +634,17 @@ export async function generateVideo(
     onProgress,
   } = params;
 
-  await ensureFalConfigured();
+  const apiKey = await resolveFalApiKey();
 
-  const imageUrl = await uploadLocalFileToFal(imageStartPath);
-  const tailImageUrl = imageEndPath ? await uploadLocalFileToFal(imageEndPath) : undefined;
+  const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey);
   const promptAnalysis = analyzeKlingVideoPrompt(prompt);
+  const multiPrompt = promptAnalysis.multiPrompt;
+  const usesMultiPrompt = Array.isArray(multiPrompt) && multiPrompt.length > 1;
+  const suppressEndImageForMultiPrompt = Boolean(imageEndPath) && usesMultiPrompt;
+  const tailImageUrl =
+    imageEndPath && !suppressEndImageForMultiPrompt
+      ? await uploadLocalFileToFal(imageEndPath, apiKey)
+      : undefined;
   const input: Record<string, unknown> = {
     start_image_url: imageUrl,
     duration,
@@ -601,7 +662,7 @@ export async function generateVideo(
     input.end_image_url = tailImageUrl;
   }
 
-  if (promptAnalysis.multiPrompt && promptAnalysis.multiPrompt.length > 1) {
+  if (usesMultiPrompt) {
     const validationMessage = getKlingMultiPromptValidationMessage(promptAnalysis);
 
     if (validationMessage) {
@@ -610,9 +671,9 @@ export async function generateVideo(
 
     const shotDurations = distributeKlingMultiShotDurations(
       duration,
-      promptAnalysis.multiPrompt.length,
+      multiPrompt.length,
     );
-    input.multi_prompt = promptAnalysis.multiPrompt.map((element, index) => ({
+    input.multi_prompt = multiPrompt.map((element, index) => ({
       ...element,
       duration: shotDurations[index],
     }));
@@ -623,27 +684,13 @@ export async function generateVideo(
 
   onProgress?.(18);
 
-  const subscribeVideo = fal.subscribe as unknown as (
-    endpoint: string,
-    options: {
-      input: Record<string, unknown>;
-      abortSignal?: AbortSignal;
-      mode: "polling";
-      pollInterval: number;
-      logs: boolean;
-      onQueueUpdate: (update: { status: string }) => void;
-    },
-  ) => Promise<{ data: unknown; requestId?: string }>;
-
-  let result: { data: unknown; requestId?: string };
-
   try {
-    result = await subscribeVideo(model, {
+    const result = await runFalQueue({
+      apiKey,
+      endpointId: model,
       input,
       abortSignal,
-      mode: "polling",
-      pollInterval: 1200,
-      logs: true,
+      pollIntervalMs: 1200,
       onQueueUpdate(update) {
         if (update.status === "IN_QUEUE") {
           onProgress?.(16);
@@ -658,6 +705,21 @@ export async function generateVideo(
         }
       },
     });
+
+    const data = result.data as {
+      video?: { url?: string };
+      videos?: Array<{ url?: string }>;
+    };
+    const videoUrl = data.video?.url ?? data.videos?.[0]?.url;
+
+    if (!videoUrl) {
+      throw new Error("fal yanitinda indirilebilir video bulunamadi.");
+    }
+
+    return {
+      url: videoUrl,
+      requestId: result.requestId,
+    };
   } catch (error) {
     console.error("Fal video request failed", {
       model,
@@ -666,6 +728,7 @@ export async function generateVideo(
         aspectRatio: params.aspectRatio,
         generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
         hasEndImage: Boolean(tailImageUrl),
+        endImageSuppressed: suppressEndImageForMultiPrompt,
         detectedMultiShot: promptAnalysis.detectedMultiShot,
         shotCount: promptAnalysis.shotCount,
         shotType: params.shotType,
@@ -675,21 +738,84 @@ export async function generateVideo(
 
     throw new Error(summarizeFalApiError(error));
   }
+}
 
-  const data = result.data as {
-    video?: { url?: string };
-    videos?: Array<{ url?: string }>;
+export async function generateLipSyncVideoOnFal(
+  params: GenerateLipSyncVideoParams,
+): Promise<GenerateLipSyncVideoResult> {
+  const {
+    model,
+    videoPath,
+    audioPath,
+    abortSignal,
+    onProgress,
+  } = params;
+
+  const apiKey = await resolveFalApiKey();
+  const videoUrl = await uploadLocalFileToFal(videoPath, apiKey);
+  const audioUrl = await uploadLocalFileToFal(audioPath, apiKey);
+  const endpoint = LIPSYNC_MODELS[model];
+  const input: Record<string, unknown> = {
+    video_url: videoUrl,
+    audio_url: audioUrl,
   };
-  const videoUrl = data.video?.url ?? data.videos?.[0]?.url;
 
-  if (!videoUrl) {
-    throw new Error("fal yanitinda indirilebilir video bulunamadi.");
+  if (params.syncMode) {
+    input.sync_mode = params.syncMode;
   }
 
-  return {
-    url: videoUrl,
-    requestId: result.requestId,
-  };
+  if (model === "fal-ai/sync-lipsync") {
+    input.model = "lipsync-1.9.0-beta";
+  }
+
+  onProgress?.(18);
+
+  try {
+    const result = await runFalQueue({
+      apiKey,
+      endpointId: endpoint.endpointId,
+      input,
+      abortSignal,
+      pollIntervalMs: 1400,
+      onQueueUpdate(update) {
+        if (update.status === "IN_QUEUE") {
+          onProgress?.(16);
+        }
+
+        if (update.status === "IN_PROGRESS") {
+          onProgress?.(64);
+        }
+
+        if (update.status === "COMPLETED") {
+          onProgress?.(84);
+        }
+      },
+    });
+
+    const data = result.data as {
+      video?: { url?: string };
+    };
+    const outputUrl = data.video?.url;
+
+    if (!outputUrl) {
+      throw new Error("fal yanitinda indirilebilir lipsync video bulunamadi.");
+    }
+
+    return {
+      url: outputUrl,
+      requestId: result.requestId,
+    };
+  } catch (error) {
+    console.error("Fal lipsync request failed", {
+      model,
+      videoPath,
+      audioPath,
+      syncMode: params.syncMode ?? null,
+      error,
+    });
+
+    throw new Error(summarizeFalApiError(error));
+  }
 }
 
 async function downloadBinaryToLocal(

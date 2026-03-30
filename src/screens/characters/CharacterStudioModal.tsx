@@ -11,21 +11,32 @@ import {
   Download,
   Images,
   Layers,
+  Mic2,
   Plus,
+  RefreshCw,
   Sparkles,
   Star,
   Trash2,
   UserRound,
   WandSparkles,
 } from "lucide-react";
+import type { CharacterOutfitPreset } from "@/lib/character-outfit-presets";
 import {
   buildCharacterGenerationPrompt,
   buildCharacterPromptHint,
   type CharacterLookAttributes,
   type CharacterProfile,
 } from "@/lib/character-studio";
+import {
+  buildVoiceOptionLabel,
+  type CharacterVoiceState,
+} from "@/lib/character-voice";
 import { downloadMediaFile } from "@/lib/media-download";
 import type { AssetWithTags } from "@/services/asset.service";
+import type {
+  ElevenLabsSharedVoice,
+  ElevenLabsVoice,
+} from "@/services/elevenlabs.service";
 
 /* ═══════════════════════════════════════════════════════════════
    Shared Types & Constants
@@ -49,6 +60,7 @@ export type CharacterStudioDraft = {
   profile: CharacterProfile;
   looks: StudioLookDraft[];
   defaultLookId: string | null;
+  voice: CharacterVoiceState;
 };
 
 export type CandidateAsset = AssetWithTags & { assetUrl: string };
@@ -79,11 +91,12 @@ export function toProjectAssetAbsolutePath(
    Tab System
    ═══════════════════════════════════════════════════════════════ */
 
-type TabId = "profile" | "looks" | "generation";
+type TabId = "profile" | "looks" | "voice" | "generation";
 
 const TABS: { id: TabId; label: string; icon: typeof UserRound }[] = [
   { id: "profile", label: "Profil", icon: UserRound },
   { id: "looks", label: "Looks", icon: Layers },
+  { id: "voice", label: "Voice", icon: Mic2 },
   { id: "generation", label: "Uretim", icon: Sparkles },
 ];
 
@@ -102,6 +115,15 @@ interface CharacterStudioModalProps {
   candidateAssets: CandidateAsset[];
   candidateAspectRatio: (typeof CANDIDATE_ASPECT_RATIOS)[number];
   candidateQuantity: number;
+  creatingOutfit: boolean;
+  voices: ElevenLabsVoice[];
+  voiceCatalog: ElevenLabsSharedVoice[];
+  voiceLibraryLoading: boolean;
+  voiceWarning: string | null;
+  voiceBusyKey: string | null;
+  draftSelectedVoice: ElevenLabsVoice | null;
+  draftVoiceUnavailable: boolean;
+  outfitPresets: CharacterOutfitPreset[];
   queueJobs: number;
   activeTab: TabId;
   onClose: () => void;
@@ -114,7 +136,17 @@ interface CharacterStudioModalProps {
   onAddLook: () => void;
   onDuplicateLook: () => void;
   onRemoveLook: () => void;
+  onCreateOutfitVariant: (params: {
+    presetId: string;
+    sourceLookId: string;
+    customName?: string | null;
+    customOverrides?: Partial<CharacterLookAttributes> | null;
+  }) => void;
   onDefaultLookChange: (lookId: string) => void;
+  onDraftVoiceChange: (voiceId: string) => void;
+  onDraftVoiceClear: () => void;
+  onRefreshVoiceLibrary: () => void;
+  onImportSharedVoice: (voice: ElevenLabsSharedVoice) => void;
   onPromptChange: (value: string) => void;
   onPromptReset: () => void;
   onImportReferences: () => void;
@@ -297,6 +329,10 @@ function CharacterPreview({
         <div style={{ display: "grid", gap: 8 }}>
           <PreviewStat label="Look varyanti" value={String(draft.looks.length)} />
           <PreviewStat label="Referans gorsel" value={String(totalRefs)} />
+          <PreviewStat
+            label="Ses"
+            value={draft.voice.isMissing ? "Ses eksik" : draft.voice.voiceName ?? "Bagli"}
+          />
           {draft.klingElementId.trim() && (
             <PreviewStat label="Kling Element" value={draft.klingElementId.trim()} />
           )}
@@ -387,10 +423,13 @@ function LooksTab({
   draft,
   activeLook,
   activeLookId,
+  outfitPresets,
+  creatingOutfit,
   onLookSelect,
   onAddLook,
   onDuplicateLook,
   onRemoveLook,
+  onCreateOutfitVariant,
   onLookNameChange,
   onDefaultLookChange,
   onLookFieldChange,
@@ -398,14 +437,31 @@ function LooksTab({
   draft: CharacterStudioDraft;
   activeLook: StudioLookDraft | null;
   activeLookId: string | null;
+  outfitPresets: CharacterStudioModalProps["outfitPresets"];
+  creatingOutfit: boolean;
   onLookSelect: (id: string) => void;
   onAddLook: () => void;
   onDuplicateLook: () => void;
   onRemoveLook: () => void;
+  onCreateOutfitVariant: CharacterStudioModalProps["onCreateOutfitVariant"];
   onLookNameChange: (value: string) => void;
   onDefaultLookChange: (lookId: string) => void;
   onLookFieldChange: CharacterStudioModalProps["onLookFieldChange"];
 }) {
+  const [sourceLookId, setSourceLookId] = useState(
+    activeLookId ?? draft.defaultLookId ?? draft.looks[0]?.id ?? "",
+  );
+  const [customName, setCustomName] = useState("");
+  const [customWardrobe, setCustomWardrobe] = useState("");
+  const [customPalette, setCustomPalette] = useState("");
+  const [customSceneContext, setCustomSceneContext] = useState("");
+  const [customMood, setCustomMood] = useState("");
+  const [customContinuityNotes, setCustomContinuityNotes] = useState("");
+  const resolvedSourceLookId = draft.looks.some((look) => look.id === sourceLookId)
+    ? sourceLookId
+    : activeLookId ?? draft.defaultLookId ?? draft.looks[0]?.id ?? "";
+  const presetButtons = outfitPresets.filter((preset) => preset.id !== "custom");
+
   return (
     <div style={{ display: "grid", gap: 20 }}>
       {/* Look selector */}
@@ -461,11 +517,11 @@ function LooksTab({
       {activeLook && (
         <>
           <FieldGroup title="Look Detaylari" defaultOpen>
-            <FormField
-              label="Look adi"
-              value={activeLook.name}
-              onChange={onLookNameChange}
-              placeholder="Look varyant adi"
+          <FormField
+            label="Look adi"
+            value={activeLook.name}
+            onChange={onLookNameChange}
+            placeholder="Look varyant adi"
             />
             <label style={toggleStyle}>
               <input
@@ -503,6 +559,107 @@ function LooksTab({
             rows={3}
             placeholder="Bu look icin tutarlilik notlari"
           />
+
+          <FieldGroup title="Tek Tik Kiyafet Varyantlari">
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <label style={fieldLabelStyle}>Kaynak look</label>
+                <select
+                  className="studio-field"
+                  onChange={(event) => setSourceLookId(event.target.value)}
+                  style={selectStyle}
+                  value={resolvedSourceLookId}
+                >
+                  {draft.looks.map((look) => (
+                    <option key={look.id} value={look.id}>
+                      {look.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={hintBoxStyle}>
+                <WandSparkles size={14} style={{ flexShrink: 0, color: "var(--accent)" }} />
+                <span style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                  Preset secildiginde yeni bir persistent look olusur, mevcut referanslar korunur ve candidate gorseller aninda kuyruga girer.
+                </span>
+              </div>
+
+              <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                {presetButtons.map((preset) => (
+                  <button
+                    key={preset.id}
+                    className="btn-secondary"
+                    disabled={creatingOutfit}
+                    onClick={() =>
+                      onCreateOutfitVariant({
+                        presetId: preset.id,
+                        sourceLookId: resolvedSourceLookId,
+                      })
+                    }
+                    style={{ justifyContent: "space-between", alignItems: "flex-start", minHeight: 68 }}
+                    type="button"
+                  >
+                    <span style={{ display: "grid", gap: 4, textAlign: "left" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{preset.label}</span>
+                      <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        {preset.promptHint ?? preset.overrides.wardrobe ?? "Yeni giyim varyanti olustur"}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ ...previewCardStyle, padding: 16 }}>
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
+                      Custom Varyant
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.6 }}>
+                      Spesifik meslek, ortam veya kiyafet brief'i gerekiyorsa burada tek seferlik bir varyant tarif et.
+                    </div>
+                  </div>
+                  <div style={fieldGridStyle}>
+                    <FormField label="Varyant adi" value={customName} onChange={setCustomName} placeholder="Orn: Cerrah Uniformasi" />
+                    <FormField label="Wardrobe brief" value={customWardrobe} onChange={setCustomWardrobe} placeholder="Orn: sterile surgeon scrubs" />
+                    <FormField label="Palet" value={customPalette} onChange={setCustomPalette} placeholder="Orn: clean teal and white" />
+                    <FormField label="Sahne" value={customSceneContext} onChange={setCustomSceneContext} placeholder="Orn: hospital operating room" />
+                  </div>
+                  <div style={fieldGridStyle}>
+                    <FormField label="Mood" value={customMood} onChange={setCustomMood} placeholder="Orn: focused and precise" />
+                    <FormField
+                      label="Continuity"
+                      value={customContinuityNotes}
+                      onChange={setCustomContinuityNotes}
+                      placeholder="Yuz, sac, yara izi gibi korunacak seyler"
+                    />
+                  </div>
+                  <button
+                    className="btn-primary"
+                    disabled={creatingOutfit || (!customName.trim() && !customWardrobe.trim())}
+                    onClick={() =>
+                      onCreateOutfitVariant({
+                        presetId: "custom",
+                        sourceLookId: resolvedSourceLookId,
+                        customName: customName.trim() || "Custom Varyant",
+                        customOverrides: {
+                          wardrobe: customWardrobe,
+                          palette: customPalette,
+                          sceneContext: customSceneContext,
+                          mood: customMood,
+                          continuityNotes: customContinuityNotes,
+                        },
+                      })
+                    }
+                    type="button"
+                  >
+                    {creatingOutfit ? "Olusturuluyor..." : "Custom Varyant Uret"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </FieldGroup>
         </>
       )}
     </div>
@@ -512,6 +669,152 @@ function LooksTab({
 /* ═══════════════════════════════════════════════════════════════
    Generation Tab
    ═══════════════════════════════════════════════════════════════ */
+
+function VoiceTab({
+  draft,
+  voices,
+  voiceCatalog,
+  voiceLibraryLoading,
+  voiceWarning,
+  voiceBusyKey,
+  draftSelectedVoice,
+  draftVoiceUnavailable,
+  onDraftVoiceChange,
+  onDraftVoiceClear,
+  onRefreshVoiceLibrary,
+  onImportSharedVoice,
+}: {
+  draft: CharacterStudioDraft;
+  voices: CharacterStudioModalProps["voices"];
+  voiceCatalog: CharacterStudioModalProps["voiceCatalog"];
+  voiceLibraryLoading: boolean;
+  voiceWarning: string | null;
+  voiceBusyKey: string | null;
+  draftSelectedVoice: CharacterStudioModalProps["draftSelectedVoice"];
+  draftVoiceUnavailable: boolean;
+  onDraftVoiceChange: CharacterStudioModalProps["onDraftVoiceChange"];
+  onDraftVoiceClear: CharacterStudioModalProps["onDraftVoiceClear"];
+  onRefreshVoiceLibrary: CharacterStudioModalProps["onRefreshVoiceLibrary"];
+  onImportSharedVoice: CharacterStudioModalProps["onImportSharedVoice"];
+}) {
+  return (
+    <div style={{ display: "grid", gap: 20 }}>
+      <FieldGroup title="Karakter Sesi" defaultOpen>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Aktif ses durumu</span>
+            <span
+              style={{
+                display: "inline-flex",
+                width: "fit-content",
+                padding: "6px 10px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                color: draft.voice.isMissing ? "var(--status-warning)" : "var(--status-success)",
+                background: draft.voice.isMissing
+                  ? "color-mix(in srgb, var(--status-warning) 14%, transparent)"
+                  : "color-mix(in srgb, var(--status-success) 14%, transparent)",
+              }}
+            >
+              {draft.voice.isMissing ? "Ses eksik" : draft.voice.voiceName ?? "Ses bagli"}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="btn-secondary"
+              disabled={voiceLibraryLoading || voiceBusyKey === "refresh"}
+              onClick={onRefreshVoiceLibrary}
+              type="button"
+            >
+              <RefreshCw size={14} />
+              Yenile
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={draft.voice.isMissing}
+              onClick={onDraftVoiceClear}
+              type="button"
+            >
+              Sesi Temizle
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 6 }}>
+          <label style={fieldLabelStyle}>My Voices</label>
+          <select
+            className="studio-field"
+            disabled={voiceLibraryLoading}
+            onChange={(event) => onDraftVoiceChange(event.target.value)}
+            style={selectStyle}
+            value={draft.voice.voiceId ?? ""}
+          >
+            <option value="">Ses sec...</option>
+            {voices.map((voice) => (
+              <option key={voice.voiceId} value={voice.voiceId}>
+                {buildVoiceOptionLabel(voice)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {draftVoiceUnavailable ? (
+          <div style={warningBoxStyle}>
+            Secili voice binding korunuyor ancak mevcut ElevenLabs hesabinda bu voice su an gorunmuyor.
+          </div>
+        ) : null}
+
+        {voiceWarning ? <div style={warningBoxStyle}>{voiceWarning}</div> : null}
+
+        {draftSelectedVoice?.previewUrl ? (
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Secili voice onizleme</span>
+            <audio controls preload="none" src={draftSelectedVoice.previewUrl} />
+          </div>
+        ) : null}
+
+        {!voiceWarning && voices.length === 0 && !voiceLibraryLoading ? (
+          <div style={emptyBoxStyle}>My Voices listesi bos. Asagidaki katalogdan voice ekleyebilirsin.</div>
+        ) : null}
+      </FieldGroup>
+
+      <FieldGroup title="Turkce Voice Katalogu">
+        {voiceCatalog.length === 0 && !voiceLibraryLoading ? (
+          <div style={emptyBoxStyle}>Katalog su an bos veya yuklenemedi.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            {voiceCatalog.map((voice) => (
+              <article key={`${voice.publicOwnerId}:${voice.voiceId}`} style={voiceCardStyle}>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{voice.name}</strong>
+                      <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        {[voice.gender, voice.accent, voice.useCase].filter(Boolean).join(" | ") || "Paylasilan Turkish voice"}
+                      </span>
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      disabled={voiceBusyKey === `shared:${voice.voiceId}`}
+                      onClick={() => onImportSharedVoice(voice)}
+                      type="button"
+                    >
+                      {voiceBusyKey === `shared:${voice.voiceId}` ? "Ekleniyor..." : "Seslerime ekle"}
+                    </button>
+                  </div>
+                  {voice.previewUrl ? (
+                    <audio controls preload="none" src={voice.previewUrl} />
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </FieldGroup>
+    </div>
+  );
+}
 
 function GenerationTab({
   draft,
@@ -812,6 +1115,15 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
     candidateLoading,
     candidateAspectRatio,
     candidateQuantity,
+    creatingOutfit,
+    voices,
+    voiceCatalog,
+    voiceLibraryLoading,
+    voiceWarning,
+    voiceBusyKey,
+    draftSelectedVoice,
+    draftVoiceUnavailable,
+    outfitPresets,
     queueJobs,
     onClose,
     onActiveTabChange,
@@ -823,7 +1135,12 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
     onAddLook,
     onDuplicateLook,
     onRemoveLook,
+    onCreateOutfitVariant,
     onDefaultLookChange,
+    onDraftVoiceChange,
+    onDraftVoiceClear,
+    onRefreshVoiceLibrary,
+    onImportSharedVoice,
     onPromptChange,
     onPromptReset,
     onImportReferences,
@@ -868,7 +1185,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <button
               className="btn-secondary"
-              disabled={saving || generatingCandidates}
+              disabled={saving || generatingCandidates || creatingOutfit}
               onClick={onClose}
               type="button"
             >
@@ -876,7 +1193,7 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
             </button>
             <button
               className="btn-primary"
-              disabled={saving}
+              disabled={saving || creatingOutfit}
               onClick={onSave}
               type="button"
             >
@@ -944,14 +1261,33 @@ export function CharacterStudioModal(props: CharacterStudioModalProps) {
                     <LooksTab
                       activeLook={activeLook}
                       activeLookId={activeLookId}
+                      creatingOutfit={creatingOutfit}
                       draft={draft}
+                      onCreateOutfitVariant={onCreateOutfitVariant}
                       onAddLook={onAddLook}
                       onDefaultLookChange={onDefaultLookChange}
                       onDuplicateLook={onDuplicateLook}
                       onLookFieldChange={onLookFieldChange}
                       onLookNameChange={onLookNameChange}
                       onLookSelect={onLookSelect}
+                      outfitPresets={outfitPresets}
                       onRemoveLook={onRemoveLook}
+                    />
+                  )}
+                  {activeTab === "voice" && (
+                    <VoiceTab
+                      draft={draft}
+                      draftSelectedVoice={draftSelectedVoice}
+                      draftVoiceUnavailable={draftVoiceUnavailable}
+                      onDraftVoiceChange={onDraftVoiceChange}
+                      onDraftVoiceClear={onDraftVoiceClear}
+                      onImportSharedVoice={onImportSharedVoice}
+                      onRefreshVoiceLibrary={onRefreshVoiceLibrary}
+                      voiceBusyKey={voiceBusyKey}
+                      voiceCatalog={voiceCatalog}
+                      voiceLibraryLoading={voiceLibraryLoading}
+                      voiceWarning={voiceWarning}
+                      voices={voices}
                     />
                   )}
                   {activeTab === "generation" && (
@@ -1219,6 +1555,28 @@ const textareaStyle = {
   resize: "vertical",
   fontFamily: "inherit",
   lineHeight: 1.65,
+} satisfies React.CSSProperties;
+
+const selectStyle = {
+  ...inputStyle,
+  appearance: "none",
+} satisfies React.CSSProperties;
+
+const warningBoxStyle = {
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid color-mix(in srgb, var(--status-warning) 32%, var(--border-default))",
+  background: "color-mix(in srgb, var(--status-warning) 10%, transparent)",
+  color: "var(--text-secondary)",
+  fontSize: 12,
+  lineHeight: 1.6,
+} satisfies React.CSSProperties;
+
+const voiceCardStyle = {
+  padding: "14px 16px",
+  borderRadius: 14,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--bg-elevated)",
 } satisfies React.CSSProperties;
 
 const fieldGridStyle = {

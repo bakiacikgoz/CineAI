@@ -12,6 +12,7 @@ export interface CostOverview {
   totalUsd: number;
   imageUsd: number;
   videoUsd: number;
+  lipsyncUsd: number;
   upscaleUsd: number;
   llmUsd: number;
   ttsUsd: number;
@@ -128,6 +129,7 @@ export async function getCostOverview(
     totalUsd: number | null;
     imageUsd: number | null;
     videoUsd: number | null;
+    lipsyncUsd: number | null;
     upscaleUsd: number | null;
     llmUsd: number | null;
     ttsUsd: number | null;
@@ -137,6 +139,7 @@ export async function getCostOverview(
        COALESCE(SUM(amount_usd), 0) AS totalUsd,
        COALESCE(SUM(CASE WHEN type = 'image' THEN amount_usd ELSE 0 END), 0) AS imageUsd,
        COALESCE(SUM(CASE WHEN type = 'video' THEN amount_usd ELSE 0 END), 0) AS videoUsd,
+       COALESCE(SUM(CASE WHEN type = 'lipsync' THEN amount_usd ELSE 0 END), 0) AS lipsyncUsd,
        COALESCE(SUM(CASE WHEN type = 'upscale' THEN amount_usd ELSE 0 END), 0) AS upscaleUsd,
        COALESCE(SUM(CASE WHEN type = 'llm' THEN amount_usd ELSE 0 END), 0) AS llmUsd,
        COALESCE(SUM(CASE WHEN type = 'tts' THEN amount_usd ELSE 0 END), 0) AS ttsUsd,
@@ -234,6 +237,7 @@ export async function getCostOverview(
     totalUsd: totalsRow?.totalUsd ?? 0,
     imageUsd: totalsRow?.imageUsd ?? 0,
     videoUsd: totalsRow?.videoUsd ?? 0,
+    lipsyncUsd: totalsRow?.lipsyncUsd ?? 0,
     upscaleUsd: totalsRow?.upscaleUsd ?? 0,
     llmUsd: totalsRow?.llmUsd ?? 0,
     ttsUsd: totalsRow?.ttsUsd ?? 0,
@@ -273,6 +277,7 @@ export function exportCostOverviewCsv(overview: CostOverview): string {
   rows.push(["summary", "total", "", overview.totalUsd.toFixed(4), "", "", "", ""]);
   rows.push(["summary", "image", "", overview.imageUsd.toFixed(4), "", "", "", ""]);
   rows.push(["summary", "video", "", overview.videoUsd.toFixed(4), "", "", "", ""]);
+  rows.push(["summary", "lipsync", "", overview.lipsyncUsd.toFixed(4), "", "", "", ""]);
   rows.push(["summary", "upscale", "", overview.upscaleUsd.toFixed(4), "", "", "", ""]);
   rows.push(["summary", "llm", "", overview.llmUsd.toFixed(4), "", "", "", ""]);
 

@@ -1,4 +1,5 @@
 import { dirname, join } from "@tauri-apps/api/path";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { exists, mkdir } from "@tauri-apps/plugin-fs";
 import { v4 as uuidv4 } from "uuid";
 import { getCoveragePrompt, resolveBulkScope } from "@/lib/bulk-production";
@@ -30,7 +31,13 @@ import {
   type VideoModelId,
   type VideoAspectRatio,
 } from "@/services/fal.service";
+import {
+  generateLipSyncVideo,
+  getLipSyncDetailByShotId,
+  listLipSyncEligibleShots,
+} from "@/services/lipsync.service";
 import { upscaleVideoTo4k } from "@/services/tensorpix.service";
+import { extractVideoLastFrameToPng } from "@/services/video-frame.service";
 import {
   getShotMissingExternalReferenceMessage,
   getShotById,
@@ -79,6 +86,31 @@ async function syncAudioDialogueShotStatusFromQueue(
   });
 }
 
+async function syncLipSyncShotStatusFromQueue(
+  shotId: string,
+  nextStatus: "queued" | "cancelled",
+): Promise<void> {
+  const detail = await getLipSyncDetailByShotId(shotId);
+
+  if (!detail) {
+    return;
+  }
+
+  if (nextStatus === "queued") {
+    await updateShotPaths(shotId, {
+      lipsyncStatus: "queued",
+      lipsyncError: null,
+      lipsyncModelUsed: detail.resolvedPlan?.modelId ?? detail.shot.lipsyncModelUsed,
+    });
+    return;
+  }
+
+  await updateShotPaths(shotId, {
+    lipsyncStatus: detail.masterVideoPath ? "done" : "none",
+    lipsyncError: null,
+  });
+}
+
 class JobRunner {
   private running = 0;
 
@@ -115,6 +147,9 @@ class JobRunner {
     if (job.type === "audio_dialogue" && job.shotId) {
       void syncAudioDialogueShotStatusFromQueue(job.shotId, "queued");
     }
+    if (job.type === "lipsync" && job.shotId) {
+      void syncLipSyncShotStatusFromQueue(job.shotId, "queued");
+    }
 
     this.pendingIds = this.pendingIds.filter((pendingId) => pendingId !== jobId);
     this.pendingIds.push(jobId);
@@ -140,6 +175,9 @@ class JobRunner {
     });
     if (job.type === "audio_dialogue" && job.shotId) {
       void syncAudioDialogueShotStatusFromQueue(job.shotId, "cancelled");
+    }
+    if (job.type === "lipsync" && job.shotId) {
+      void syncLipSyncShotStatusFromQueue(job.shotId, "cancelled");
     }
   }
 
@@ -277,7 +315,20 @@ export interface EnqueueImageJobParams {
   shotId?: string;
   jobType?: JobType;
   assetTags?: string[];
+  assetMetadata?: ImageAssetMetadataExtras;
 }
+
+export interface CharacterOutfitImageAssetMetadata {
+  source?: "character-outfit";
+  characterId?: string;
+  lookId?: string;
+  baseLookId?: string;
+  outfitPresetLabel?: string;
+}
+
+export type ImageAssetMetadataExtras =
+  | Record<string, unknown>
+  | CharacterOutfitImageAssetMetadata;
 
 export interface EnqueueStoryboardFrameJobParams {
   shotId: string;
@@ -293,6 +344,7 @@ export interface EnqueueStoryboardFrameJobParams {
   persistToShotPath?: boolean;
   completeStatus?: string;
   referenceImagePaths?: string[];
+  allowVideoFrameFallback?: boolean;
 }
 
 export interface EnqueueVideoJobParams {
@@ -329,6 +381,11 @@ export interface EnqueueUpscaleJobParams {
 }
 
 export interface EnqueueAudioDialogueJobParams {
+  shotId: string;
+  priority?: number;
+}
+
+export interface EnqueueLipSyncJobParams {
   shotId: string;
   priority?: number;
 }
@@ -374,6 +431,7 @@ function buildImageAssetMetadata(params: {
   quantity: number;
   refImagePath?: string | null;
   referenceImagePaths?: string[];
+  assetMetadata?: ImageAssetMetadataExtras;
 }): Record<string, unknown> {
   return {
     source: params.source,
@@ -384,6 +442,7 @@ function buildImageAssetMetadata(params: {
     quantity: params.quantity,
     refImagePath: params.refImagePath ?? null,
     referenceImagePaths: params.referenceImagePaths ?? [],
+    ...(params.assetMetadata ?? {}),
   };
 }
 
@@ -415,7 +474,7 @@ function findQueuedJob(shotId: string, type: JobType): Job | undefined {
       (job) =>
         job.shotId === shotId &&
         job.type === type &&
-        (job.status === "queued" || job.status === "active" || job.status === "done"),
+        (job.status === "queued" || job.status === "active"),
     );
 }
 
@@ -503,8 +562,23 @@ async function resolveStartReferenceForShot(
   shot: ShotRow,
   jobId: string,
   priority: number,
+  allowVideoFrameFallback = false,
 ): Promise<string[]> {
   const store = useQueueStore.getState();
+  const previousShot = shot.prevShotId ? await getShotById(shot.prevShotId) : null;
+
+  if (allowVideoFrameFallback && previousShot) {
+    try {
+      await hydratePreviousShotEndFrameFromVideo(previousShot, jobId);
+    } catch (error) {
+      console.warn("Failed to derive END frame from previous video. Falling back to normal chain flow.", {
+        shotId: shot.id,
+        previousShotId: previousShot.id,
+        error,
+      });
+    }
+  }
+
   let chainResult = await resolveStartImage(shot);
 
   if (chainResult.status === "ready" && chainResult.refImagePath) {
@@ -533,25 +607,40 @@ async function resolveStartReferenceForShot(
   }
 
   if (chainResult.status === "needs_production" && shot.prevShotId) {
-    const previousShot = await getShotById(shot.prevShotId);
+    const dependencyMode =
+      previousShot?.promptEnd?.trim()
+        ? "end"
+        : previousShot?.promptStart?.trim()
+          ? "start"
+          : null;
+    const dependencyPrompt =
+      dependencyMode === "end"
+        ? previousShot?.promptEnd?.trim()
+        : dependencyMode === "start"
+          ? previousShot?.promptStart?.trim()
+          : null;
 
-    if (!previousShot?.promptEnd) {
-      throw new Error(`Onceki shot icin END promptu yok: ${previousShot?.shotNumber ?? shot.prevShotId}`);
+    if (!previousShot || !dependencyMode || !dependencyPrompt) {
+      throw new Error(
+        `Onceki shot icin referans kare promptu yok: ${previousShot?.shotNumber ?? shot.prevShotId}`,
+      );
     }
 
     const dependencyJobId = await ensureStoryboardFrameJobQueued({
       shotId: previousShot.id,
-      prompt: previousShot.promptEnd,
-      mode: "end",
+      prompt: dependencyPrompt,
+      mode: dependencyMode,
       model: resolveImageModel(previousShot.model),
       aspectRatio: DEFAULT_ASPECT_RATIO,
       cfg: previousShot.cfg ?? 7,
       steps: DEFAULT_IMAGE_STEPS,
       priority: priority + 1,
+      allowVideoFrameFallback:
+        dependencyMode === "start" ? allowVideoFrameFallback : undefined,
     });
 
     store.updateJob(jobId, {
-      errorMsg: `${previousShot.shotNumber} END uretiliyor`,
+      errorMsg: `${previousShot.shotNumber} ${dependencyMode.toUpperCase()} uretiliyor`,
       progress: 6,
     });
     await waitForJob(dependencyJobId);
@@ -559,7 +648,11 @@ async function resolveStartReferenceForShot(
   }
 
   if (chainResult.status !== "ready") {
-    throw new Error(`Zincir referansi hazirlanamadi: ${shot.shotNumber}`);
+    throw new Error(
+      `Zincir referansi hazirlanamadi: ${shot.shotNumber}${
+        previousShot?.shotNumber ? ` (${previousShot.shotNumber} referans karesi hazir degil)` : ""
+      }`,
+    );
   }
 
   const externalReferencePath = await resolveShotExternalReferencePath(shot);
@@ -570,11 +663,197 @@ async function resolveStartReferenceForShot(
     }))?.referencePaths ?? [];
   return Array.from(
     new Set(
-      [externalReferencePath, ...characterReferencePaths].filter(
+      [chainResult.refImagePath, externalReferencePath, ...characterReferencePaths].filter(
         (value): value is string => Boolean(value),
       ),
     ),
   );
+}
+
+async function resolvePreviousShotVideoFallbackCandidate(
+  shot: ShotRow,
+): Promise<
+  | {
+      previousShot: ShotRow;
+      videoAbsolutePath: string;
+      videoRelativePath: string;
+    }
+  | null
+> {
+  if (
+    shot.chainStatus !== "continue" ||
+    !shot.prevShotId ||
+    !shot.usePreviousEndForStart
+  ) {
+    return null;
+  }
+
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const previousShot = await getShotById(shot.prevShotId);
+
+  if (!previousShot) {
+    return null;
+  }
+
+  if (previousShot.imageEndPath) {
+    const endAbsolutePath = await resolveProjectFilePath(
+      project.folderPath,
+      previousShot.imageEndPath,
+    );
+
+    if (await exists(endAbsolutePath)) {
+      return null;
+    }
+  }
+
+  const videoRelativePath = previousShot.video4kPath ?? previousShot.videoPath;
+
+  if (!videoRelativePath) {
+    return null;
+  }
+
+  const videoAbsolutePath = await resolveProjectFilePath(
+    project.folderPath,
+    videoRelativePath,
+  );
+
+  if (!(await exists(videoAbsolutePath))) {
+    return null;
+  }
+
+  return {
+    previousShot,
+    videoAbsolutePath,
+    videoRelativePath,
+  };
+}
+
+export async function resolveStoryboardVideoFrameFallbackPermission(params: {
+  shot: ShotRow;
+  mode: StoryboardFrameMode;
+  explicitReferenceImagePaths?: string[];
+  allowVideoFrameFallback?: boolean;
+}): Promise<boolean> {
+  if (typeof params.allowVideoFrameFallback === "boolean") {
+    return params.allowVideoFrameFallback;
+  }
+
+  if (params.mode !== "start" || (params.explicitReferenceImagePaths?.length ?? 0) > 0) {
+    return false;
+  }
+
+  const candidate = await resolvePreviousShotVideoFallbackCandidate(params.shot);
+
+  if (!candidate) {
+    return false;
+  }
+
+  return confirm(
+    `${candidate.previousShot.shotNumber} icin END karesi yok ama video mevcut. ${params.shot.shotNumber} START referansi icin videonun son karesi cikarilsin ve ${candidate.previousShot.shotNumber} END slotuna otomatik yazilsin mi?`,
+    {
+      title: "Video son karesi kullanilsin mi?",
+      kind: "warning",
+      okLabel: "Kullan",
+      cancelLabel: "Hayir",
+    },
+  );
+}
+
+async function hydratePreviousShotEndFrameFromVideo(
+  previousShot: ShotRow,
+  jobId?: string | null,
+  options?: { forceExtract?: boolean },
+): Promise<string | null> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const videoRelativePath = previousShot.video4kPath ?? previousShot.videoPath;
+
+  if (!videoRelativePath) {
+    return null;
+  }
+
+  if (!options?.forceExtract && previousShot.imageEndPath) {
+    const existingEndAbsolutePath = await resolveProjectFilePath(
+      project.folderPath,
+      previousShot.imageEndPath,
+    );
+
+    if (await exists(existingEndAbsolutePath)) {
+      return previousShot.imageEndPath;
+    }
+  }
+
+  const videoAbsolutePath = await resolveProjectFilePath(
+    project.folderPath,
+    videoRelativePath,
+  );
+
+  if (!(await exists(videoAbsolutePath))) {
+    return null;
+  }
+
+  if (jobId) {
+    useQueueStore.getState().updateJob(jobId, {
+      errorMsg: `${previousShot.shotNumber} videodan son kare aliniyor`,
+      progress: 6,
+    });
+  }
+
+  const destinationPath = await buildStoryboardImagePath(
+    project.folderPath,
+    previousShot,
+    "end",
+    "from_video",
+  );
+
+  await ensureFileDirectory(destinationPath);
+  const widthHeight = await extractVideoLastFrameToPng({
+    videoAbsolutePath,
+    destinationAbsolutePath: destinationPath,
+  });
+  const relativePath = toRelativeProjectPath(project.folderPath, destinationPath);
+  const filename = destinationPath.split(/[\\/]/).pop() ?? `${previousShot.shotNumber}_end_from_video.png`;
+
+  await updateShotPaths(previousShot.id, {
+    imageEndPath: relativePath,
+    imageStatus: previousShot.imageStartPath ? "done" : "review",
+  });
+
+  await saveAsset({
+    projectId: project.id,
+    type: "image",
+    filePath: relativePath,
+    filename,
+    width: widthHeight.width,
+    height: widthHeight.height,
+    modelUsed: "video-last-frame",
+    prompt: previousShot.promptVideo ?? previousShot.shotNumber,
+    costUsd: 0,
+    shotId: previousShot.id,
+    metadata: {
+      source: "video-last-frame",
+      sourceVideoPath: videoRelativePath,
+    },
+    tags: ["stage:end", "derived", "video-last-frame"],
+  });
+
+  return relativePath;
+}
+
+export async function ensureShotEndFrameFromVideo(
+  previousShot: ShotRow,
+  options?: { forceExtract?: boolean },
+): Promise<string | null> {
+  return hydratePreviousShotEndFrameFromVideo(previousShot, null, options);
 }
 
 async function resolveDirectReferenceForShot(
@@ -583,7 +862,7 @@ async function resolveDirectReferenceForShot(
   allowMissingReference = false,
 ): Promise<string[]> {
   const missingReferenceMessage =
-    !allowMissingReference ? getShotMissingExternalReferenceMessage(shot, mode) : null;
+    !allowMissingReference ? await getShotMissingExternalReferenceMessage(shot, mode) : null;
 
   if (missingReferenceMessage) {
     throw new Error(missingReferenceMessage);
@@ -718,6 +997,7 @@ export async function enqueueImageJobs(
     shotId,
     jobType = "image_start",
     assetTags,
+    assetMetadata,
   } = params;
 
   const costPerImage = calcImageCost(model, 1);
@@ -737,7 +1017,14 @@ export async function enqueueImageJobs(
       shotId,
       model,
       prompt,
-      params: { aspectRatio, cfg, steps, referenceImagePaths: mergedReferenceImagePaths, assetTags },
+      params: {
+        aspectRatio,
+        cfg,
+        steps,
+        referenceImagePaths: mergedReferenceImagePaths,
+        assetTags,
+        assetMetadata,
+      },
       refImagePath: mergedReferenceImagePaths[0],
       progress: 0,
       costUsd: costPerImage,
@@ -809,6 +1096,7 @@ export async function enqueueImageJobs(
           quantity,
           refImagePath: mergedReferenceImagePaths[0],
           referenceImagePaths: mergedReferenceImagePaths,
+          assetMetadata,
         }),
         tags: assetTags,
       });
@@ -857,7 +1145,7 @@ export async function enqueueStoryboardFrameJob(
   );
   const missingReferenceMessage =
     explicitReferenceImagePaths.length === 0
-      ? getShotMissingExternalReferenceMessage(shot, params.mode)
+      ? await getShotMissingExternalReferenceMessage(shot, params.mode)
       : null;
 
   if (missingReferenceMessage) {
@@ -867,6 +1155,12 @@ export async function enqueueStoryboardFrameJob(
   const mode = params.mode;
   const jobType: JobType =
     mode === "start" ? "image_start" : mode === "end" ? "image_end" : "coverage_image";
+  const allowVideoFrameFallback = await resolveStoryboardVideoFrameFallbackPermission({
+    shot,
+    mode,
+    explicitReferenceImagePaths,
+    allowVideoFrameFallback: params.allowVideoFrameFallback,
+  });
   const model = resolveImageModel(params.model ?? shot.model);
   const aspectRatio = params.aspectRatio ?? DEFAULT_ASPECT_RATIO;
   const cfg = params.cfg ?? shot.cfg ?? 7;
@@ -905,6 +1199,7 @@ export async function enqueueStoryboardFrameJob(
       persistToShotPath,
       completeStatus,
       basePrompt: params.prompt.trim(),
+      allowVideoFrameFallback,
     },
     refImagePath: explicitReferenceImagePaths[0],
     progress: 0,
@@ -928,6 +1223,7 @@ export async function enqueueStoryboardFrameJob(
           shot,
           jobId,
           params.priority ?? 120,
+          allowVideoFrameFallback,
         );
         referenceImagePaths = Array.from(
           new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
@@ -1462,6 +1758,102 @@ export async function enqueueAudioDialogueJob(
   return jobId;
 }
 
+export async function enqueueLipSyncJob(
+  params: EnqueueLipSyncJobParams,
+): Promise<string> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const shot = await getShotById(params.shotId);
+
+  if (!shot) {
+    throw new Error("Shot bulunamadi.");
+  }
+
+  const detail = await getLipSyncDetailByShotId(shot.id);
+
+  if (!detail) {
+    throw new Error("Bu shot icin lipsync detayi olusturulamadi.");
+  }
+
+  if (detail.blockerReasons.length > 0) {
+    throw new Error(detail.blockerReasons.join(" "));
+  }
+
+  if (!detail.resolvedPlan) {
+    throw new Error("Lipsync modeli secilemedi.");
+  }
+
+  const existingJob = useQueueStore
+    .getState()
+    .jobs.slice()
+    .reverse()
+    .find(
+      (job) =>
+        job.type === "lipsync" &&
+        job.shotId === shot.id &&
+        (job.status === "queued" || job.status === "active"),
+    );
+
+  if (existingJob) {
+    return existingJob.id;
+  }
+
+  const jobId = uuidv4();
+  const job: Job = {
+    id: jobId,
+    projectId: project.id,
+    type: "lipsync",
+    status: "queued",
+    priority: params.priority ?? 78,
+    shotId: shot.id,
+    model: detail.resolvedPlan.modelId,
+    prompt: detail.resolvedPlan.reason,
+    params: {
+      syncMode: detail.resolvedPlan.syncMode,
+      sourceVideoPath: detail.sourceVideoPath,
+      sourceAudioPath: detail.sourceAudioPath,
+      fallbackVideoPath: detail.fallbackVideoPath,
+      estimatedCostUsd: detail.resolvedPlan.estimatedCostUsd,
+      reasonTags: detail.resolvedPlan.reasonTags,
+    },
+    progress: 0,
+    queuedAt: Date.now(),
+  };
+
+  await updateShotPaths(shot.id, {
+    lipsyncStatus: "queued",
+    lipsyncError: null,
+    lipsyncModelUsed: detail.resolvedPlan.modelId,
+  });
+
+  jobRunner.enqueue(job, async (abortSignal) => {
+    const queue = useQueueStore.getState();
+    const updateProgress = (progress: number) => {
+      queue.updateJob(jobId, { progress });
+    };
+
+    const result = await generateLipSyncVideo({
+      shotId: shot.id,
+      jobId,
+      abortSignal,
+      onProgress: updateProgress,
+    });
+
+    queue.updateJob(jobId, {
+      assetId: result.assetId,
+      resultPath: result.outputPath,
+      costUsd: result.costUsd,
+      progress: 96,
+    });
+  });
+
+  return jobId;
+}
+
 export async function enqueueBulkAudioDialogueJobs(params?: {
   filter?: "all" | "missing" | "selected";
   selectedShotIds?: string[];
@@ -1504,6 +1896,46 @@ export async function enqueueBulkAudioDialogueJobs(params?: {
   return { jobCount };
 }
 
+export async function enqueueBulkLipSyncJobs(params?: {
+  filter?: "all" | "missing" | "stale" | "selected";
+  selectedShotIds?: string[];
+}): Promise<{ jobCount: number }> {
+  const filter = params?.filter ?? "missing";
+  const selectedShotIds = new Set(params?.selectedShotIds ?? []);
+  const details = await listLipSyncEligibleShots();
+  const readyShots = details.filter((detail) => {
+    if (!detail.isEligible) {
+      return false;
+    }
+
+    if (filter === "missing") {
+      return !detail.masterVideoPath;
+    }
+
+    if (filter === "stale") {
+      return detail.isStale;
+    }
+
+    if (filter === "selected") {
+      return selectedShotIds.has(detail.shot.id);
+    }
+
+    return true;
+  });
+
+  let jobCount = 0;
+
+  for (const [index, detail] of readyShots.entries()) {
+    await enqueueLipSyncJob({
+      shotId: detail.shot.id,
+      priority: 78 - index,
+    });
+    jobCount += 1;
+  }
+
+  return { jobCount };
+}
+
 export async function enqueueBulkProduction(
   options: BulkProductionOptions,
 ): Promise<{ jobCount: number; estimatedCost: number }> {
@@ -1520,14 +1952,18 @@ export async function enqueueBulkProduction(
 
   for (const shot of mainShots) {
     if (options.produceStartFrames && shot.promptStart) {
-      const missingReference = getShotMissingExternalReferenceMessage(shot, "start");
+      const missingReference = await getShotMissingExternalReferenceMessage(shot, "start", {
+        shots: allShots,
+      });
       if (missingReference) {
         missingReferenceShots.add(`${shot.shotNumber} START`);
       }
     }
 
     if (options.produceEndFrames && shot.promptEnd) {
-      const missingReference = getShotMissingExternalReferenceMessage(shot, "end");
+      const missingReference = await getShotMissingExternalReferenceMessage(shot, "end", {
+        shots: allShots,
+      });
       if (missingReference) {
         missingReferenceShots.add(`${shot.shotNumber} END`);
       }
@@ -1539,7 +1975,11 @@ export async function enqueueBulkProduction(
       const prompt = getCoveragePrompt(shot);
 
       if (prompt) {
-        const missingReference = getShotMissingExternalReferenceMessage(shot, "coverage");
+        const missingReference = await getShotMissingExternalReferenceMessage(
+          shot,
+          "coverage",
+          { shots: allShots },
+        );
         if (missingReference) {
           missingReferenceShots.add(`${shot.shotNumber} COVERAGE`);
         }
@@ -1547,7 +1987,11 @@ export async function enqueueBulkProduction(
     }
 
     if (options.produceVideos && shot.promptVideo) {
-      const missingReference = getShotMissingExternalReferenceMessage(shot, "coverage");
+      const missingReference = await getShotMissingExternalReferenceMessage(
+        shot,
+        "coverage",
+        { shots: allShots },
+      );
       if (missingReference) {
         missingReferenceShots.add(`${shot.shotNumber} COVERAGE VIDEO`);
       }

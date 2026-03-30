@@ -5,22 +5,31 @@ export interface AssetDetachShot {
   imageEndPath: string | null;
   videoPath: string | null;
   video4kPath: string | null;
+  lipsyncVideoPath: string | null;
   externalReferencePath: string | null;
 }
 
 export interface AssetDetachUpdate {
   shotId: string;
   shotNumber: string;
-  slots: Array<"start" | "end" | "video" | "video4k" | "reference">;
+  slots: Array<"start" | "end" | "video" | "video4k" | "lipsync" | "reference">;
   updates: Partial<{
     imageStartPath: string | null;
     imageEndPath: string | null;
     videoPath: string | null;
     video4kPath: string | null;
+    lipsyncVideoPath: string | null;
     externalReferencePath: string | null;
     imageStatus: string;
     videoStatus: string;
     upscaleStatus: string;
+    lipsyncStatus: string;
+    lipsyncModelUsed: string | null;
+    lipsyncCostUsd: number | null;
+    lipsyncError: string | null;
+    lipsyncSourceVideoPath: string | null;
+    lipsyncSourceAudioPath: string | null;
+    lipsyncMetadataJson: string | null;
   }>;
 }
 
@@ -42,6 +51,7 @@ export function buildAssetDetachUpdates(
     const endPath = normalizeAssetPath(shot.imageEndPath);
     const videoPath = normalizeAssetPath(shot.videoPath);
     const video4kPath = normalizeAssetPath(shot.video4kPath);
+    const lipsyncVideoPath = normalizeAssetPath(shot.lipsyncVideoPath);
     const referencePath = normalizeAssetPath(shot.externalReferencePath);
     const nextImageStartPath = startPath === normalizedAssetPath ? null : shot.imageStartPath;
     const nextImageEndPath = endPath === normalizedAssetPath ? null : shot.imageEndPath;
@@ -75,6 +85,18 @@ export function buildAssetDetachUpdates(
       slots.push("video4k");
       nextUpdates.video4kPath = null;
       nextUpdates.upscaleStatus = "none";
+    }
+
+    if (lipsyncVideoPath === normalizedAssetPath) {
+      slots.push("lipsync");
+      nextUpdates.lipsyncVideoPath = null;
+      nextUpdates.lipsyncStatus = "none";
+      nextUpdates.lipsyncModelUsed = null;
+      nextUpdates.lipsyncCostUsd = null;
+      nextUpdates.lipsyncError = null;
+      nextUpdates.lipsyncSourceVideoPath = null;
+      nextUpdates.lipsyncSourceAudioPath = null;
+      nextUpdates.lipsyncMetadataJson = null;
     }
 
     if (referencePath === normalizedAssetPath) {

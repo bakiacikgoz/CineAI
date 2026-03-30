@@ -1,12 +1,21 @@
 import { v4 as uuidv4 } from "uuid";
 import { getProjectDb } from "@/db/project-db";
 import {
+  buildContinuityGroups,
+  getMainShots,
+  mergeScenarioChunkPlans,
+  type PlannedMainShot,
+  shouldChunkScenarioAnalysis,
+  splitScenarioIntoChunks,
+} from "@/lib/scenario-generation-utils";
+import {
   buildPass1SystemPrompt,
   buildShotGeneratorSystemPrompt,
   describePlannedChainStatus,
   validatePass1Output,
   validateShotGeneratorMarkdown,
 } from "@/lib/scenario-prompts";
+import { getAppSettings } from "@/lib/store";
 import type {
   GeneratedShot,
   GeneratedShotFile,
@@ -149,6 +158,7 @@ function buildPass1RetryPrompt(scenarioText: string): string {
     "CRITICAL RETRY: Your previous response was invalid JSON or got truncated.",
     "Regenerate the FULL shot plan from scratch.",
     "Return ONLY one valid JSON object.",
+    'Use this root shape exactly: {"scenes":[...],"totalMainShots":0,"totalCoverageShots":0,"estimatedDurationS":0,"tensionArc":[...],"dialogueNamePolicy":"preserve","targetModel":"veo31"}.',
     "Do not use markdown fences, comments, trailing commas, or explanatory text.",
     "Double-check that every opened [ or { is fully closed before you stop.",
     "",
@@ -157,16 +167,20 @@ function buildPass1RetryPrompt(scenarioText: string): string {
   ].join("\n");
 }
 
-function padNumber(value: number): string {
-  return String(value).padStart(2, "0");
+function buildPass1ChunkPrompt(chunkText: string, chunkIndex: number, chunkCount: number): string {
+  return [
+    `SCENARIO CHUNK ${chunkIndex}/${chunkCount}`,
+    "Plan ONLY the scenes that appear in this chunk.",
+    "Scene numbers and shot numbers may restart inside this chunk.",
+    "Do not reference content outside the chunk.",
+    "Return the same JSON contract as the full-plan mode.",
+    "",
+    chunkText,
+  ].join("\n");
 }
 
-function getMainShots(plan: ShotPlan): Array<{ scene: ScenePlan; shot: ShotPlanItem }> {
-  return plan.scenes.flatMap((scene) =>
-    scene.shots
-      .filter((shot) => shot.type === "main")
-      .map((shot) => ({ scene, shot })),
-  );
+function padNumber(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function inferSceneUnit(scene: ScenePlan, totalScenes: number): ScenarioSceneUnit {
@@ -532,6 +546,163 @@ function validateDeliveryGate(shots: GeneratedShot[], shotFiles: GeneratedShotFi
 
 // ─── PASS 1: ANALYZE SCENARIO ─────────────────────────────────────────
 
+async function analyzeScenarioInChunks(params: {
+  scenarioText: string;
+  targetModel: TargetVideoModel;
+  klingPreset?: KlingPreset;
+  llmModel: string;
+  abortSignal?: AbortSignal;
+}): Promise<{ plan: ShotPlan; model: string; chunkCount: number }> {
+  const chunks = splitScenarioIntoChunks(params.scenarioText);
+  const systemPrompt = buildPass1SystemPrompt(params.targetModel);
+  const plans: ShotPlan[] = [];
+  let lastModel = params.llmModel;
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (params.abortSignal?.aborted) {
+      throw new Error("Senaryo analizi iptal edildi.");
+    }
+
+    let result = await callLLMWithRetry({
+      systemPrompt,
+      userPrompt: buildPass1ChunkPrompt(chunks[index] ?? "", index + 1, chunks.length),
+      model: params.llmModel,
+      abortSignal: params.abortSignal,
+      maxTokens: 7000,
+      temperature: 0.08,
+    });
+
+    let plan: ShotPlan | null = null;
+    let parseError: Error | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        plan = parseScenarioPlanContent({
+          content: result.content,
+          targetModel: params.targetModel,
+          klingPreset: params.klingPreset,
+        });
+        break;
+      } catch (error) {
+        parseError = toError(error, "Chunk shot plan parse edilemedi.");
+      }
+
+      if (params.abortSignal?.aborted || attempt === 1) {
+        break;
+      }
+
+      result = await callLLMWithRetry({
+        systemPrompt,
+        userPrompt: buildPass1RetryPrompt(chunks[index] ?? ""),
+        model: params.llmModel,
+        abortSignal: params.abortSignal,
+        maxRetries: 0,
+        maxTokens: result.finishReason === "length" ? 10000 : 8000,
+        temperature: 0.04,
+      });
+    }
+
+    if (!plan) {
+      throw new Error(
+        `Chunk ${index + 1}/${chunks.length} planlanamadi: ${parseError?.message ?? "Bilinmeyen parse hatasi"}`,
+      );
+    }
+
+    plans.push(plan);
+    lastModel = result.model;
+  }
+
+  return {
+    plan: enrichShotPlan(
+      mergeScenarioChunkPlans({
+        plans,
+        targetModel: params.targetModel,
+        klingPreset: params.klingPreset,
+      }),
+      params.targetModel,
+      params.klingPreset,
+    ),
+    model: lastModel,
+    chunkCount: chunks.length,
+  };
+}
+
+async function generateContinuityGroup(params: {
+  group: PlannedMainShot[];
+  nextMainShotByNumber: Map<string, ShotPlanItem | null>;
+  generatedByMainShot: Map<string, { model: string; shotFile: GeneratedShotFile; shots: GeneratedShot[] }>;
+  completedCounter: { value: number };
+  totalShots: number;
+  workerLabel: string;
+  scenarioId: string;
+  scenarioText: string;
+  targetModel: TargetVideoModel;
+  klingPreset?: KlingPreset;
+  llmModel: string;
+  abortSignal?: AbortSignal;
+  onProgress?: (status: GenerationProgress) => void;
+  onLogEntry?: (pass: number, message: string, shotNumber?: string) => void;
+  onShotCompleted?: (shotNumber: string) => void;
+}): Promise<void> {
+  let previousGeneratedMainShot: GeneratedShot | null = null;
+
+  for (const { scene, shot } of params.group) {
+    if (params.abortSignal?.aborted) {
+      throw new Error("Uretim iptal edildi.");
+    }
+
+    const coveragePlan = scene.shots.filter(
+      (candidate) =>
+        candidate.type === "coverage" && candidate.parentShotNumber === shot.shotNumber,
+    );
+    const nextMainShot = params.nextMainShotByNumber.get(shot.shotNumber) ?? null;
+    const completedShots = params.completedCounter.value;
+
+    params.onProgress?.({
+      currentPass: 2,
+      passLabel: `${params.workerLabel} - Shot Generator`,
+      shotNumber: shot.shotNumber,
+      completedShots,
+      totalShots: params.totalShots,
+      percent: Math.min(78, 10 + Math.round((completedShots / Math.max(params.totalShots, 1)) * 68)),
+    });
+    params.onLogEntry?.(
+      2,
+      `${params.workerLabel} ${shot.shotNumber} icin shot-generator calisiyor`,
+      shot.shotNumber,
+    );
+
+    const generated = await generateSingleShotFile({
+      scenarioId: params.scenarioId,
+      scenarioText: params.scenarioText,
+      scene,
+      mainShot: shot,
+      coveragePlan,
+      previousGeneratedMainShot,
+      nextMainShot,
+      targetModel: params.targetModel,
+      klingPreset: params.klingPreset,
+      llmModel: params.llmModel,
+      abortSignal: params.abortSignal,
+    });
+
+    params.generatedByMainShot.set(shot.shotNumber, generated);
+    previousGeneratedMainShot =
+      generated.shots.find((candidate) => candidate.shotNumber === shot.shotNumber) ?? null;
+
+    for (const generatedShot of generated.shots) {
+      params.onShotCompleted?.(generatedShot.shotNumber);
+      params.completedCounter.value += 1;
+    }
+
+    params.onLogEntry?.(
+      2,
+      `${params.workerLabel} ${shot.shotNumber} onaylandi (${coveragePlan.length} coverage ayni dosyada)`,
+      shot.shotNumber,
+    );
+  }
+}
+
 export async function analyzeScenario(params: {
   scenarioText: string;
   targetModel: TargetVideoModel;
@@ -574,6 +745,8 @@ export async function analyzeScenario(params: {
 
     let plan: ShotPlan | null = null;
     let parseError: Error | null = null;
+    let analysisModel = result.model;
+    let analysisChunkCount = 1;
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -600,6 +773,25 @@ export async function analyzeScenario(params: {
         maxTokens: result.finishReason === "length" ? 10000 : 8000,
         temperature: 0.05,
       });
+      analysisModel = result.model;
+    }
+
+    if (
+      !plan &&
+      !params.abortSignal?.aborted &&
+      (result.finishReason === "length" || shouldChunkScenarioAnalysis(params.scenarioText))
+    ) {
+      const chunked = await analyzeScenarioInChunks({
+        scenarioText: params.scenarioText,
+        targetModel: params.targetModel,
+        klingPreset: params.klingPreset,
+        llmModel: params.llmModel,
+        abortSignal: params.abortSignal,
+      });
+
+      plan = chunked.plan;
+      analysisModel = chunked.model;
+      analysisChunkCount = chunked.chunkCount;
     }
 
     if (!plan) {
@@ -623,16 +815,16 @@ export async function analyzeScenario(params: {
     await logGenerationPass({
       scenarioId,
       passName: "pass1_lead_director",
-      model: result.model,
-      costUsd: 0.02,
+      model: analysisModel,
+      costUsd: 0.02 * analysisChunkCount,
       durationMs,
     });
 
     await logCost({
       projectId: project.id,
-      model: result.model,
+      model: analysisModel,
       type: "llm",
-      amountUsd: 0.02,
+      amountUsd: 0.02 * analysisChunkCount,
     });
 
     return { plan, scenarioId };
@@ -666,11 +858,16 @@ export async function generateShotsFromPlan(params: {
   const allGeneratedShots: GeneratedShot[] = [];
   const shotFiles: GeneratedShotFile[] = [];
   const allPlannedMainShots = getMainShots(params.plan);
+  const nextMainShotByNumber = new Map(
+    allPlannedMainShots.map((entry, index) => [
+      entry.shot.shotNumber,
+      allPlannedMainShots[index + 1]?.shot ?? null,
+    ] as const),
+  );
   const totalShots = params.plan.totalMainShots + params.plan.totalCoverageShots;
   let totalCostUsd = 0;
-  let completedShots = 0;
+  const completedCounter = { value: 0 };
   let lastLLMModel = "openrouter/auto";
-  let previousGeneratedMainShot: GeneratedShot | null = null;
 
   await db.execute(
     `UPDATE scenarios SET status = $1, updated_at = $2 WHERE id = $3`,
@@ -680,8 +877,72 @@ export async function generateShotsFromPlan(params: {
   try {
     // ── Pass 2: Shot Generator ──
     const pass2Start = Date.now();
+    const continuityGroups = buildContinuityGroups(params.plan);
+    const { queueParallelLimit } = await getAppSettings();
+    const workerCount = Math.max(1, Math.min(queueParallelLimit, continuityGroups.length || 1));
+    const generatedByMainShot = new Map<
+      string,
+      { model: string; shotFile: GeneratedShotFile; shots: GeneratedShot[] }
+    >();
+    let nextGroupIndex = 0;
 
-    for (let index = 0; index < allPlannedMainShots.length; index += 1) {
+    params.onLogEntry?.(
+      2,
+      `${continuityGroups.length} continuity zinciri ${workerCount} worker ile baslatildi.`,
+    );
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async (_value, workerIndex) => {
+        while (nextGroupIndex < continuityGroups.length) {
+          const currentGroupIndex = nextGroupIndex;
+          nextGroupIndex += 1;
+          const group = continuityGroups[currentGroupIndex];
+
+          if (!group || group.length === 0) {
+            continue;
+          }
+
+          const workerLabel = `Worker ${workerIndex + 1}`;
+          params.onLogEntry?.(
+            2,
+            `${workerLabel} ${group[0]?.shot.shotNumber}-${group[group.length - 1]?.shot.shotNumber} zincirine girdi.`,
+          );
+
+          await generateContinuityGroup({
+            group,
+            nextMainShotByNumber,
+            generatedByMainShot,
+            completedCounter,
+            totalShots,
+            workerLabel,
+            scenarioId: params.scenarioId,
+            scenarioText: params.scenarioText,
+            targetModel: params.targetModel,
+            klingPreset: params.klingPreset,
+            llmModel: params.llmModel,
+            abortSignal: params.abortSignal,
+            onProgress: params.onProgress,
+            onLogEntry: params.onLogEntry,
+            onShotCompleted: params.onShotCompleted,
+          });
+        }
+      }),
+    );
+
+    for (const { shot } of allPlannedMainShots) {
+      const generated = generatedByMainShot.get(shot.shotNumber);
+
+      if (!generated) {
+        throw new Error(`${shot.shotNumber} uretimi tamamlanamadi.`);
+      }
+
+      lastLLMModel = generated.model;
+      shotFiles.push(generated.shotFile);
+      allGeneratedShots.push(...generated.shots);
+    }
+
+    /* Legacy sequential path removed after worker-based continuity execution.
+    for (let index = 0; index < 0; index += 1) {
       if (params.abortSignal?.aborted) {
         throw new Error("Uretim iptal edildi.");
       }
@@ -736,6 +997,8 @@ export async function generateShotsFromPlan(params: {
       );
     }
 
+    */
+
     const pass2Duration = Date.now() - pass2Start;
     const pass2CostUsd = Math.max(0.06, allPlannedMainShots.length * 0.03);
     totalCostUsd += pass2CostUsd;
@@ -760,7 +1023,7 @@ export async function generateShotsFromPlan(params: {
     params.onProgress?.({
       currentPass: 3,
       passLabel: "Continuity Editor",
-      completedShots,
+      completedShots: completedCounter.value,
       totalShots,
       percent: 84,
     });
@@ -793,7 +1056,7 @@ export async function generateShotsFromPlan(params: {
     params.onProgress?.({
       currentPass: 4,
       passLabel: "Delivery Contract",
-      completedShots,
+      completedShots: completedCounter.value,
       totalShots,
       percent: 92,
     });

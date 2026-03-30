@@ -10,6 +10,10 @@ import {
   type ParsedAudioDirection,
   type ParsedDialogueLine,
 } from "@/lib/audio-direction-parser";
+import {
+  resolveInheritedExternalReferencePath,
+  type ExternalReferenceLookupShot,
+} from "@/lib/external-reference";
 import { parseShot, type ParsedShot } from "@/lib/markdown-parser";
 import { createDialogueOptimizationSourceHash } from "@/services/llm.service";
 import { syncActiveProjectPresentation } from "@/services/project-presentation.service";
@@ -83,6 +87,14 @@ export interface ShotRow {
   audioDialogueOverrideJson: string | null;
   audioTakeHistoryJson: string | null;
   audioVoiceoverText: string | null;
+  lipsyncVideoPath: string | null;
+  lipsyncStatus: string;
+  lipsyncModelUsed: string | null;
+  lipsyncCostUsd: number | null;
+  lipsyncError: string | null;
+  lipsyncSourceVideoPath: string | null;
+  lipsyncSourceAudioPath: string | null;
+  lipsyncMetadataJson: string | null;
   sourceFile: string | null;
   createdAt: number;
   updatedAt: number;
@@ -183,6 +195,14 @@ const SHOT_SELECT_SQL = `SELECT
   audio_dialogue_override_json AS audioDialogueOverrideJson,
   audio_take_history_json AS audioTakeHistoryJson,
   audio_voiceover_text AS audioVoiceoverText,
+  lipsync_video_path AS lipsyncVideoPath,
+  COALESCE(lipsync_status, 'none') AS lipsyncStatus,
+  lipsync_model_used AS lipsyncModelUsed,
+  lipsync_cost_usd AS lipsyncCostUsd,
+  lipsync_error AS lipsyncError,
+  lipsync_source_video_path AS lipsyncSourceVideoPath,
+  lipsync_source_audio_path AS lipsyncSourceAudioPath,
+  lipsync_metadata_json AS lipsyncMetadataJson,
   source_file AS sourceFile,
   created_at AS createdAt,
   updated_at AS updatedAt
@@ -193,7 +213,21 @@ export type ShotMediaAssignmentTarget =
   | "start"
   | "end"
   | "video"
+  | "lipsync"
   | "external-reference";
+
+type ExternalReferenceResolverShot = Pick<
+  ShotRow,
+  | "id"
+  | "shotNumber"
+  | "parentShotId"
+  | "prevShotId"
+  | "requiresExternalReference"
+  | "externalReferenceName"
+  | "externalReferencePath"
+  | "chainStatus"
+  | "usePreviousEndForStart"
+>;
 
 type ImportedAudioState = {
   audioDirectionJson: string | null;
@@ -307,6 +341,7 @@ function parseStoredAudioGenerationProfile(
   useOptimizer?: boolean;
   performancePreset?: string | null;
   performanceNote?: string | null;
+  lockVoiceStyle?: boolean;
 } | null {
   if (!value) {
     return null;
@@ -317,6 +352,7 @@ function parseStoredAudioGenerationProfile(
       useOptimizer?: boolean;
       performancePreset?: string | null;
       performanceNote?: string | null;
+      lockVoiceStyle?: boolean;
     };
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
@@ -385,6 +421,11 @@ async function buildImportedAudioState(
     useOptimizer: existingGenerationProfile?.useOptimizer ?? true,
     performancePreset: existingGenerationProfile?.performancePreset ?? "auto",
     performanceNote: existingGenerationProfile?.performanceNote ?? null,
+    lockVoiceStyle: existingGenerationProfile?.lockVoiceStyle ?? true,
+    isVoiceover: Boolean(
+      existingShot?.audioVoiceoverText?.trim() ||
+        effectiveAudioDirection?.type === "voiceover",
+    ),
   });
   const baseStatus = resolveAudioShotStatus(effectiveAudioDirection);
   const audioError = getAudioBlockedMessage(effectiveAudioDirection);
@@ -560,7 +601,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
 
   await db.execute("DELETE FROM shots WHERE project_id = $1", [project.id]);
 
-  for (const shot of parsedShots) {
+  const parsedShotDrafts = parsedShots.map((shot) => {
     const existingShot = existingByShotNumber.get(shot.shotNumber.toUpperCase());
     const sharedExternalReferencePath =
       shot.externalReferenceName
@@ -578,11 +619,53 @@ export async function executeImport(outputsFolder: string): Promise<void> {
     const prevShotId = shot.prevShotRef
       ? (persistedIdsByShotNumber.get(shot.prevShotRef.toUpperCase()) ?? null)
       : null;
+
+    return {
+      shot,
+      existingShot,
+      id,
+      parentId,
+      prevShotId,
+      seedExternalReferencePath:
+        existingShot?.externalReferencePath ?? sharedExternalReferencePath ?? null,
+    };
+  });
+
+  const importReferenceLookup: ExternalReferenceLookupShot[] = parsedShotDrafts.map((draft) => ({
+    id: draft.id,
+    shotNumber: draft.shot.shotNumber,
+    parentShotId: draft.parentId,
+    prevShotId: draft.prevShotId,
+    requiresExternalReference: draft.shot.requiresExternalReference,
+    externalReferenceName: draft.shot.externalReferenceName,
+    externalReferencePath: draft.seedExternalReferencePath,
+  }));
+
+  for (const draft of parsedShotDrafts) {
+    const { shot, existingShot, id, parentId, prevShotId } = draft;
     const audioState = await buildImportedAudioState(
       project.folderPath,
       existingShot,
       shot,
     );
+    const resolvedExternalReferencePath =
+      draft.seedExternalReferencePath ??
+      resolveInheritedExternalReferencePath(
+        {
+          id,
+          shotNumber: shot.shotNumber,
+          parentShotId: parentId,
+          prevShotId,
+          requiresExternalReference: shot.requiresExternalReference,
+          externalReferenceName: shot.externalReferenceName,
+          externalReferencePath: draft.seedExternalReferencePath,
+        },
+        importReferenceLookup,
+      );
+    const lookupEntry = importReferenceLookup.find((candidate) => candidate.id === id);
+    if (lookupEntry) {
+      lookupEntry.externalReferencePath = resolvedExternalReferencePath;
+    }
 
     await db.execute(
       `INSERT INTO shots (
@@ -602,14 +685,18 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         audio_optimized_dialogue_json, audio_optimized_dialogue_preview,
         audio_optimizer_model, audio_optimizer_source_hash,
         audio_generation_profile_json,
-        audio_dialogue_override_json, audio_take_history_json, source_file, created_at, updated_at
+        audio_dialogue_override_json, audio_take_history_json, audio_voiceover_text,
+        lipsync_video_path, lipsync_status, lipsync_model_used, lipsync_cost_usd,
+        lipsync_error, lipsync_source_video_path, lipsync_source_audio_path, lipsync_metadata_json,
+        source_file, created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
         $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
         $31, $32, $33, $34, $35, $36, $37, $38, $39, $40,
         $41, $42, $43, $44, $45, $46, $47, $48, $49, $50,
-        $51, $52, $53, $54, $55, $56, $57, $58
+        $51, $52, $53, $54, $55, $56, $57, $58, $59, $60,
+        $61, $62, $63, $64, $65, $66
       )`,
       [
         id,
@@ -636,7 +723,7 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         shot.requiresExternalReference ? 1 : 0,
         shot.externalReferenceName,
         shot.externalReferenceNotes,
-        existingShot?.externalReferencePath ?? sharedExternalReferencePath ?? null,
+        resolvedExternalReferencePath,
         existingShot?.characterId ?? null,
         existingShot?.characterLookId ?? null,
         (existingShot?.includeCharacterPrompt ?? true) ? 1 : 0,
@@ -666,6 +753,15 @@ export async function executeImport(outputsFolder: string): Promise<void> {
         audioState.audioGenerationProfileJson,
         audioState.audioDialogueOverrideJson,
         audioState.audioTakeHistoryJson,
+        existingShot?.audioVoiceoverText ?? null,
+        existingShot?.lipsyncVideoPath ?? null,
+        existingShot?.lipsyncStatus ?? "none",
+        existingShot?.lipsyncModelUsed ?? null,
+        existingShot?.lipsyncCostUsd ?? null,
+        existingShot?.lipsyncError ?? null,
+        existingShot?.lipsyncSourceVideoPath ?? null,
+        existingShot?.lipsyncSourceAudioPath ?? null,
+        existingShot?.lipsyncMetadataJson ?? null,
         shot.sourceFile,
         existingShot?.createdAt ?? now,
         now,
@@ -714,6 +810,14 @@ export async function updateShotPaths(
     imageStatus: string;
     videoStatus: string;
     upscaleStatus: string;
+    lipsyncVideoPath: string | null;
+    lipsyncStatus: string;
+    lipsyncModelUsed: string | null;
+    lipsyncCostUsd: number | null;
+    lipsyncError: string | null;
+    lipsyncSourceVideoPath: string | null;
+    lipsyncSourceAudioPath: string | null;
+    lipsyncMetadataJson: string | null;
   }>,
 ): Promise<void> {
   const db = await getProjectDb();
@@ -766,6 +870,54 @@ export async function updateShotPaths(
   if (updates.upscaleStatus !== undefined) {
     setClauses.push(`upscale_status = $${parameterIndex}`);
     values.push(updates.upscaleStatus);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncVideoPath !== undefined) {
+    setClauses.push(`lipsync_video_path = $${parameterIndex}`);
+    values.push(updates.lipsyncVideoPath);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncStatus !== undefined) {
+    setClauses.push(`lipsync_status = $${parameterIndex}`);
+    values.push(updates.lipsyncStatus);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncModelUsed !== undefined) {
+    setClauses.push(`lipsync_model_used = $${parameterIndex}`);
+    values.push(updates.lipsyncModelUsed);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncCostUsd !== undefined) {
+    setClauses.push(`lipsync_cost_usd = $${parameterIndex}`);
+    values.push(updates.lipsyncCostUsd);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncError !== undefined) {
+    setClauses.push(`lipsync_error = $${parameterIndex}`);
+    values.push(updates.lipsyncError);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncSourceVideoPath !== undefined) {
+    setClauses.push(`lipsync_source_video_path = $${parameterIndex}`);
+    values.push(updates.lipsyncSourceVideoPath);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncSourceAudioPath !== undefined) {
+    setClauses.push(`lipsync_source_audio_path = $${parameterIndex}`);
+    values.push(updates.lipsyncSourceAudioPath);
+    parameterIndex += 1;
+  }
+
+  if (updates.lipsyncMetadataJson !== undefined) {
+    setClauses.push(`lipsync_metadata_json = $${parameterIndex}`);
+    values.push(updates.lipsyncMetadataJson);
     parameterIndex += 1;
   }
 
@@ -1092,6 +1244,20 @@ export async function assignShotMediaPath(
     return;
   }
 
+  if (target === "lipsync") {
+    await updateShotPaths(shotId, {
+      lipsyncVideoPath: filePath,
+      lipsyncStatus: filePath ? "done" : "none",
+      lipsyncModelUsed: null,
+      lipsyncCostUsd: null,
+      lipsyncError: null,
+      lipsyncSourceVideoPath: null,
+      lipsyncSourceAudioPath: null,
+      lipsyncMetadataJson: null,
+    });
+    return;
+  }
+
   await updateShotExternalReferencePath(shotId, filePath);
 }
 
@@ -1113,17 +1279,17 @@ export async function setShotArchived(
   await syncActiveProjectPresentation();
 }
 
-export function shotNeedsExternalReferenceForMode(
-  shot: Pick<
-    ShotRow,
-    | "requiresExternalReference"
-    | "externalReferencePath"
-    | "chainStatus"
-    | "usePreviousEndForStart"
-  >,
+export async function shotNeedsExternalReferenceForMode(
+  shot: ExternalReferenceResolverShot,
   mode: StoryboardReferenceMode,
-): boolean {
-  if (!shot.requiresExternalReference || shot.externalReferencePath) {
+  options?: { shots?: ExternalReferenceResolverShot[] },
+): Promise<boolean> {
+  const effectiveExternalReferencePath = await getEffectiveShotExternalReferencePath(
+    shot,
+    options,
+  );
+
+  if (!shot.requiresExternalReference || effectiveExternalReferencePath) {
     return false;
   }
 
@@ -1138,19 +1304,56 @@ export function shotNeedsExternalReferenceForMode(
   return true;
 }
 
-export function getShotMissingExternalReferenceMessage(
-  shot: Pick<
-    ShotRow,
-    | "shotNumber"
-    | "requiresExternalReference"
-    | "externalReferencePath"
-    | "chainStatus"
-    | "usePreviousEndForStart"
-    | "externalReferenceName"
-  >,
+export async function getEffectiveShotExternalReferencePath(
+  shot: ExternalReferenceResolverShot,
+  options?: { shots?: ExternalReferenceResolverShot[] },
+): Promise<string | null> {
+  if (shot.externalReferencePath) {
+    return shot.externalReferencePath;
+  }
+
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const sourceShots =
+    options?.shots ?? (await getShots(project.id, { includeArchived: true }));
+  const lookupShots = sourceShots.map<ExternalReferenceLookupShot>((candidate) => ({
+    id: candidate.id,
+    shotNumber: candidate.shotNumber,
+    parentShotId: candidate.parentShotId,
+    prevShotId: candidate.prevShotId,
+    requiresExternalReference: candidate.requiresExternalReference,
+    externalReferenceName: candidate.externalReferenceName,
+    externalReferencePath: candidate.externalReferencePath,
+  }));
+  const existingLookupShot = lookupShots.find((candidate) => candidate.id === shot.id);
+  const lookupShot =
+    existingLookupShot ??
+    {
+      id: shot.id,
+      shotNumber: shot.shotNumber,
+      parentShotId: shot.parentShotId,
+      prevShotId: shot.prevShotId,
+      requiresExternalReference: shot.requiresExternalReference,
+      externalReferenceName: shot.externalReferenceName,
+      externalReferencePath: shot.externalReferencePath,
+    };
+
+  return resolveInheritedExternalReferencePath(
+    lookupShot,
+    existingLookupShot ? lookupShots : [...lookupShots, lookupShot],
+  );
+}
+
+export async function getShotMissingExternalReferenceMessage(
+  shot: ExternalReferenceResolverShot,
   mode: StoryboardReferenceMode,
-): string | null {
-  if (!shotNeedsExternalReferenceForMode(shot, mode)) {
+  options?: { shots?: ExternalReferenceResolverShot[] },
+): Promise<string | null> {
+  if (!(await shotNeedsExternalReferenceForMode(shot, mode, options))) {
     return null;
   }
 
@@ -1206,16 +1409,28 @@ export async function clearShotExternalReference(shotId: string): Promise<void> 
   await updateShotExternalReferencePath(shotId, null);
 }
 
-export async function resolveShotExternalReferencePath(shot: Pick<ShotRow, "externalReferencePath">): Promise<string | undefined> {
+export async function resolveShotExternalReferencePath(
+  shot: ExternalReferenceResolverShot,
+  options?: { shots?: ExternalReferenceResolverShot[] },
+): Promise<string | undefined> {
   const project = useProjectStore.getState().activeProject;
 
-  if (!project || !shot.externalReferencePath) {
+  if (!project) {
+    return undefined;
+  }
+
+  const effectiveExternalReferencePath = await getEffectiveShotExternalReferencePath(
+    shot,
+    options,
+  );
+
+  if (!effectiveExternalReferencePath) {
     return undefined;
   }
 
   const absolutePath = await join(
     project.folderPath,
-    ...shot.externalReferencePath.split(/[\\/]+/).filter(Boolean),
+    ...effectiveExternalReferencePath.split(/[\\/]+/).filter(Boolean),
   );
 
   return (await exists(absolutePath)) ? absolutePath : undefined;

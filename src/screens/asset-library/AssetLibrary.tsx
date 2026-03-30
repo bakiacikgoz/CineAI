@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
-import { message, open } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpToLine,
+  Check,
   ChevronDown,
   Download,
   Expand,
@@ -16,7 +17,9 @@ import {
   LoaderCircle,
   Search,
   Sparkles,
+  Trash2,
   Video,
+  X,
 } from "lucide-react";
 import { ProEmptyState } from "@/components/ui";
 import {
@@ -26,6 +29,7 @@ import {
 import { downloadMediaFile } from "@/lib/media-download";
 import {
   assignAssetToShot,
+  deleteAssetsBatch,
   getAssets,
   importProjectAsset,
   type AssetWithTags,
@@ -41,7 +45,7 @@ type LibraryAsset = AssetWithTags & {
   assetUrl: string;
 };
 
-type AssignmentTarget = "start" | "end" | "video" | "reference";
+type AssignmentTarget = "start" | "end" | "video" | "lipsync" | "reference";
 type AssetLibraryLocationState = {
   shotId?: string;
   assignmentTarget?: AssignmentTarget;
@@ -88,11 +92,13 @@ export function AssetLibrary() {
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [lightboxItem, setLightboxItem] = useState<MediaLightboxItem | null>(null);
   const [shotTargetId, setShotTargetId] = useState<string>("");
   const [assignmentTarget, setAssignmentTarget] = useState<AssignmentTarget>("start");
   const [upscaling, setUpscaling] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [deletingSelection, setDeletingSelection] = useState(false);
   const hasAnimatedRef = useRef(false);
   const activeProjectId = activeProject?.id ?? null;
   const refreshMarker = queueJobs
@@ -201,6 +207,7 @@ export function AssetLibrary() {
     filteredAssets.find((asset) => asset.id === selectedAssetId) ??
     assets.find((asset) => asset.id === selectedAssetId) ??
     null;
+  const selectedAssetIdSet = useMemo(() => new Set(selectedAssetIds), [selectedAssetIds]);
   const shotOptions = shots.filter((shot) => !shot.parentShotId);
   const selectedShot = selectedAsset?.shot_id
     ? shots.find((shot) => shot.id === selectedAsset.shot_id) ?? null
@@ -249,6 +256,12 @@ export function AssetLibrary() {
       setShotTargetId(selectedAsset.shot_id);
     }
   }, [selectedAsset]);
+
+  useEffect(() => {
+    setSelectedAssetIds((current) =>
+      current.filter((assetId) => assets.some((asset) => asset.id === assetId)),
+    );
+  }, [assets]);
 
   /* ---- handlers ---- */
 
@@ -369,6 +382,99 @@ export function AssetLibrary() {
       );
     } finally {
       setImporting(false);
+    }
+  }
+
+  function toggleSelectedAsset(assetId: string) {
+    setSelectedAssetIds((current) =>
+      current.includes(assetId)
+        ? current.filter((entry) => entry !== assetId)
+        : [...current, assetId],
+    );
+  }
+
+  function handleToggleSelectAllFilteredAssets() {
+    if (filteredAssets.length === 0) {
+      return;
+    }
+
+    const filteredAssetIds = filteredAssets.map((asset) => asset.id);
+    const hasUnselectedAsset = filteredAssetIds.some(
+      (assetId) => !selectedAssetIdSet.has(assetId),
+    );
+
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+
+      if (hasUnselectedAsset) {
+        for (const assetId of filteredAssetIds) {
+          next.add(assetId);
+        }
+      } else {
+        for (const assetId of filteredAssetIds) {
+          next.delete(assetId);
+        }
+      }
+
+      return Array.from(next);
+    });
+  }
+
+  async function handleDeleteSelectedAssets() {
+    if (selectedAssetIds.length === 0) {
+      return;
+    }
+
+    const confirmed = await confirm(
+      `${selectedAssetIds.length} secili asset kalici olarak silinecek. Bagli shot slotlari varsa temizlenecek. Devam edilsin mi?`,
+      {
+        title: "Secili assetleri sil",
+        kind: "warning",
+        okLabel: "Sil",
+        cancelLabel: "Vazgec",
+      },
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingSelection(true);
+
+    try {
+      const impact = await deleteAssetsBatch(
+        selectedAssetIds.map((assetId) => ({ assetId })),
+      );
+      const deletedAssetIdSet = new Set(selectedAssetIds);
+      const remainingAssets = assets.filter((asset) => !deletedAssetIdSet.has(asset.id));
+
+      setAssets(remainingAssets);
+      setSelectedAssetIds([]);
+      setSelectedAssetId((current) =>
+        current && !deletedAssetIdSet.has(current) ? current : (remainingAssets[0]?.id ?? null),
+      );
+      setLightboxItem(null);
+
+      const impactSummary =
+        impact.slotCount > 0 ? ` ${impact.slotCount} slot baglantisi kaldirildi.` : "";
+      const cleanupSummary = impact.fileDeletePending
+        ? " Bazi dosyalar kilitli; fiziksel temizleme daha sonra tekrar denenecek."
+        : "";
+
+      await message(
+        `${impact.deletedCount} asset silindi.${impactSummary}${cleanupSummary}`,
+        {
+          title: "Asset Library",
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Secili assetler silinemedi.",
+        { title: "Asset Library", kind: "error" },
+      );
+    } finally {
+      setDeletingSelection(false);
     }
   }
 
@@ -544,15 +650,54 @@ export function AssetLibrary() {
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                 {filteredAssets.length} / {assets.length} asset
               </div>
-              <button
-                className="btn-secondary"
-                disabled={importing}
-                onClick={() => void handleImportAssets()}
-                type="button"
-              >
-                <ArrowUpToLine size={14} />
-                {importing ? "Ice aktariliyor..." : "Dosya ice aktar"}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn-secondary"
+                  disabled={filteredAssets.length === 0}
+                  onClick={handleToggleSelectAllFilteredAssets}
+                  type="button"
+                >
+                  <Check size={14} />
+                  {filteredAssets.length > 0 &&
+                  filteredAssets.every((asset) => selectedAssetIdSet.has(asset.id))
+                    ? "Filtre secimini kaldir"
+                    : "Filtreyi sec"}
+                </button>
+                {selectedAssetIds.length > 0 ? (
+                  <>
+                    <button
+                      className="btn-secondary"
+                      disabled={deletingSelection}
+                      onClick={() => void handleDeleteSelectedAssets()}
+                      style={{
+                        borderColor: "rgba(239,68,68,0.18)",
+                        color: "var(--status-error)",
+                      }}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                      {deletingSelection ? "Siliniyor..." : `Secilenleri sil (${selectedAssetIds.length})`}
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => setSelectedAssetIds([])}
+                      type="button"
+                    >
+                      <X size={14} />
+                      Secimi temizle
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  className="btn-secondary"
+                  disabled={importing}
+                  onClick={() => void handleImportAssets()}
+                  type="button"
+                >
+                  <ArrowUpToLine size={14} />
+                  {importing ? "Ice aktariliyor..." : "Dosya ice aktar"}
+                </button>
+              </div>
             </div>
           </header>
 
@@ -581,6 +726,7 @@ export function AssetLibrary() {
               >
                 {filteredAssets.map((asset) => {
                   const isSelected = selectedAssetId === asset.id;
+                  const isMarkedForBatchDelete = selectedAssetIdSet.has(asset.id);
                   return (
                     <motion.div
                       key={asset.id}
@@ -610,6 +756,36 @@ export function AssetLibrary() {
                     >
                       {/* Media with gradient overlay */}
                       <div style={cardMediaWrapStyle}>
+                        <button
+                          className="btn-secondary"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleSelectedAsset(asset.id);
+                          }}
+                          style={{
+                            position: "absolute",
+                            top: 8,
+                            left: 8,
+                            width: 34,
+                            height: 34,
+                            padding: 0,
+                            borderRadius: 999,
+                            background: isMarkedForBatchDelete
+                              ? "var(--accent)"
+                              : "var(--glass-bg)",
+                            borderColor: isMarkedForBatchDelete
+                              ? "var(--accent)"
+                              : "var(--border-default)",
+                            color: isMarkedForBatchDelete
+                              ? "var(--on-accent)"
+                              : "var(--text-primary)",
+                            backdropFilter: "blur(10px)",
+                            zIndex: 1,
+                          }}
+                          type="button"
+                        >
+                          <Check size={14} />
+                        </button>
                         {asset.type === "image" ? (
                           <img
                             alt={asset.filename}
@@ -662,6 +838,17 @@ export function AssetLibrary() {
                         </button>
                         {/* Selection indicator */}
                         {isSelected && <div style={cardSelectionRingStyle} />}
+                        {isMarkedForBatchDelete ? (
+                          <div
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              borderRadius: 24,
+                              border: "2px solid rgba(34,197,94,0.45)",
+                              pointerEvents: "none",
+                            }}
+                          />
+                        ) : null}
                       </div>
 
                       {/* Card info */}
@@ -815,7 +1002,10 @@ export function AssetLibrary() {
                           <option value="reference">Harici referans</option>
                         </>
                       ) : (
-                        <option value="video">Video slotu</option>
+                        <>
+                          <option value="video">Video slotu</option>
+                          <option value="lipsync">Lipsync slotu</option>
+                        </>
                       )}
                     </select>
                   </label>
@@ -838,7 +1028,7 @@ export function AssetLibrary() {
                           state: {
                             focusShotId: shotTargetId,
                             previewTarget:
-                              assignmentTarget === "video"
+                              assignmentTarget === "video" || assignmentTarget === "lipsync"
                                 ? "video"
                                 : assignmentTarget === "end"
                                   ? "end"

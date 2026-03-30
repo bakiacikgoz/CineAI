@@ -6,6 +6,7 @@ export type JobType =
   | "image_end"
   | "character_image"
   | "video"
+  | "lipsync"
   | "upscale"
   | "coverage_image"
   | "coverage_video"

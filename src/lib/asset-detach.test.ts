@@ -12,6 +12,7 @@ describe("asset detach planning", () => {
           imageEndPath: null,
           videoPath: "asset.mp4",
           video4kPath: "asset-4k.mp4",
+          lipsyncVideoPath: null,
           externalReferencePath: "asset.png",
         },
         {
@@ -21,6 +22,7 @@ describe("asset detach planning", () => {
           imageEndPath: "asset.png",
           videoPath: null,
           video4kPath: null,
+          lipsyncVideoPath: null,
           externalReferencePath: null,
         },
       ],
@@ -61,6 +63,7 @@ describe("asset detach planning", () => {
           imageEndPath: null,
           videoPath: "base.mp4",
           video4kPath: "asset-4k.mp4",
+          lipsyncVideoPath: null,
           externalReferencePath: null,
         },
       ],
@@ -88,6 +91,7 @@ describe("asset detach planning", () => {
           imageEndPath: "assets/images/end.png",
           videoPath: "assets\\videos\\clip.mp4",
           video4kPath: null,
+          lipsyncVideoPath: "assets\\videos\\lipsync.mp4",
           externalReferencePath: "assets\\images\\ref.png",
         },
       ],
@@ -100,6 +104,40 @@ describe("asset detach planning", () => {
       slots: ["start"],
       updates: {
         imageStartPath: null,
+      },
+    });
+  });
+
+  it("clears lipsync slot without touching the source video slots", () => {
+    const updates = buildAssetDetachUpdates(
+      [
+        {
+          id: "shot-5",
+          shotNumber: "A05",
+          imageStartPath: null,
+          imageEndPath: null,
+          videoPath: "base.mp4",
+          video4kPath: "base-4k.mp4",
+          lipsyncVideoPath: "lipsync.mp4",
+          externalReferencePath: null,
+        },
+      ],
+      "lipsync.mp4",
+    );
+
+    expect(updates[0]).toEqual({
+      shotId: "shot-5",
+      shotNumber: "A05",
+      slots: ["lipsync"],
+      updates: {
+        lipsyncVideoPath: null,
+        lipsyncStatus: "none",
+        lipsyncModelUsed: null,
+        lipsyncCostUsd: null,
+        lipsyncError: null,
+        lipsyncSourceVideoPath: null,
+        lipsyncSourceAudioPath: null,
+        lipsyncMetadataJson: null,
       },
     });
   });

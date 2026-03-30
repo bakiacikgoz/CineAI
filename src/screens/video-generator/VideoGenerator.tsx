@@ -11,9 +11,10 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Sparkles,
+  Trash2,
   Video as VideoIcon,
 } from "lucide-react";
-import { message, open } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open } from "@tauri-apps/plugin-dialog";
 import {
   MediaLightbox,
   type MediaLightboxItem,
@@ -39,7 +40,12 @@ import {
   type VideoAspectRatio,
   type VideoModelId,
 } from "@/services/fal.service";
-import { getAssets, updateAssetGroups, type AssetWithTags } from "@/services/asset.service";
+import {
+  deleteAssetsBatch,
+  getAssets,
+  updateAssetGroups,
+  type AssetWithTags,
+} from "@/services/asset.service";
 import { getShots, type ShotRow } from "@/services/import.service";
 import { enqueueVideoJobs } from "@/services/jobqueue.service";
 import { getDefaultModelPreset, getModelPreset } from "@/services/model-preset.service";
@@ -484,6 +490,15 @@ export function VideoGenerator() {
           : asset,
       ),
     );
+  }
+
+  function handleVideoAssetsDeleted(assetIds: string[]) {
+    const assetIdSet = new Set(assetIds);
+    setVideoAssets((current) =>
+      current.filter((asset) => !assetIdSet.has(asset.id)),
+    );
+    setStartAssetId((current) => (current && assetIdSet.has(current) ? "" : current));
+    setEndAssetId((current) => (current && assetIdSet.has(current) ? "" : current));
   }
 
   async function handlePickLocalSource(target: "start" | "end") {
@@ -991,6 +1006,7 @@ export function VideoGenerator() {
               />
               <VideoGallery
                 assets={videoAssets}
+                onAssetsDeleted={handleVideoAssetsDeleted}
                 onAssetsRegrouped={handleVideoAssetsRegrouped}
                 onDownload={(asset) =>
                   void handleDownloadMedia(asset.absolutePath, asset.filename, asset.filename)
@@ -1206,12 +1222,14 @@ function PreviewCard({
 
 function VideoGallery({
   assets,
+  onAssetsDeleted,
   onAssetsRegrouped,
   onDownload,
   onPreview,
   projectId,
 }: {
   assets: VideoAsset[];
+  onAssetsDeleted: (assetIds: string[]) => void;
   onAssetsRegrouped: (assetIds: string[], groupName: string | null) => void;
   onDownload: (asset: VideoAsset) => void;
   onPreview: (asset: VideoAsset) => void;
@@ -1226,6 +1244,7 @@ function VideoGallery({
   const [activeGroupKey, setActiveGroupKey] = useState<string>(ALL_GROUP_KEY);
   const [page, setPage] = useState(1);
   const [movingSelection, setMovingSelection] = useState(false);
+  const [deletingSelection, setDeletingSelection] = useState(false);
   const restoringGalleryStateRef = useRef(false);
 
   useEffect(() => {
@@ -1363,6 +1382,61 @@ function VideoGallery({
     }
   }
 
+  async function handleDeleteSelectedAssets() {
+    if (selectedAssetIds.length === 0) {
+      return;
+    }
+
+    const confirmed = await confirm(
+      `${selectedAssetIds.length} secili video kalici olarak silinecek. Bagli slotlar varsa temizlenecek. Devam edilsin mi?`,
+      {
+        title: "Secili videolari sil",
+        kind: "warning",
+        okLabel: "Sil",
+        cancelLabel: "Vazgec",
+      },
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingSelection(true);
+
+    try {
+      const impact = await deleteAssetsBatch(
+        selectedAssetIds.map((assetId) => ({ assetId })),
+      );
+      onAssetsDeleted(selectedAssetIds);
+      setSelectedAssetIds([]);
+
+      const impactSummary =
+        impact.slotCount > 0 ? ` ${impact.slotCount} slot baglantisi kaldirildi.` : "";
+      const cleanupSummary = impact.fileDeletePending
+        ? " Bazi dosyalar kilitli; fiziksel temizleme daha sonra tekrar denenecek."
+        : "";
+
+      await message(
+        `${impact.deletedCount} video silindi.${impactSummary}${cleanupSummary}`,
+        {
+          title: "Video Generator",
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      console.error("Failed to delete selected video assets", error);
+      await message(
+        error instanceof Error ? error.message : "Secili videolar silinemedi.",
+        {
+          title: "Video Generator",
+          kind: "error",
+        },
+      );
+    } finally {
+      setDeletingSelection(false);
+    }
+  }
+
   if (assets.length === 0) {
     return (
       <EmptyProjectState
@@ -1475,6 +1549,21 @@ function VideoGallery({
                 : selectedGroupTarget === UNGROUPED_GROUP_KEY
                   ? "Klasorden cikar"
                   : "Secilenleri tasi"}
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={selectedAssetIds.length === 0 || deletingSelection}
+            onClick={() => void handleDeleteSelectedAssets()}
+            style={{
+              padding: "9px 12px",
+              fontSize: 11,
+              borderColor: "rgba(239,68,68,0.18)",
+              color: "var(--status-error)",
+            }}
+            type="button"
+          >
+            <Trash2 size={13} />
+            {deletingSelection ? "Siliniyor..." : "Secilenleri sil"}
           </button>
           {selectedAssetIds.length > 0 ? (
             <button

@@ -52,7 +52,7 @@ const API_KEYS: Array<{
   {
     key: "FAL_API_KEY",
     title: "fal.ai",
-    description: "Image Generator gercek istekleri bu anahtar ile gonderir.",
+    description: "Image ve video istekleri bu anahtar ile Tauri proxy uzerinden gonderilir.",
     accentColor: "#3b82f6",
   },
   {
@@ -314,7 +314,7 @@ export function Settings() {
           <div style={headerTitleStyle}>Ayarlar</div>
           <p style={headerDescStyle}>
             API anahtarlari Tauri Store uzerinden yerel olarak saklanir. fal.ai
-            kaydi guncellendiginde istemci yeniden konfigure edilir.
+            istekleri browser yerine Tauri komutlari uzerinden akar.
           </p>
         </header>
 
@@ -575,8 +575,9 @@ export function Settings() {
             </strong>
             <span style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.7 }}>
               Dialogue pipeline ElevenLabs `eleven_v3` modeliyle once `wav_44100` dener;
-              plan izin vermiyorsa otomatik `mp3_44100_128` fallback kullanir. Buradaki USD
-              alani dashboard tahmini icindir; faturalama kaynagi degildir.
+              hesap veya plan izin vermiyorsa otomatik `mp3_44100_128` fallback kullanir.
+              Kredi veya billing sorunu varsa ElevenLabs 402 donebilir. Buradaki USD alani
+              dashboard tahmini icindir; faturalama kaynagi degildir.
             </span>
           </div>
         </CollapsibleSection>

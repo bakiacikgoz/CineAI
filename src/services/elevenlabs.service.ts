@@ -10,6 +10,28 @@ export const ELEVENLABS_LANGUAGE_CODE = "tr";
 export const ELEVENLABS_MAX_DIALOGUE_CHARS = 5000;
 let supportsPreferredDialogueOutputFormat: boolean | null = null;
 
+class ElevenLabsApiError extends Error {
+  readonly httpStatus: number;
+  readonly detailStatus: string | null;
+  readonly detailMessage: string | null;
+  readonly rawDetail: string;
+
+  constructor(params: {
+    httpStatus: number;
+    detailStatus: string | null;
+    detailMessage: string | null;
+    rawDetail: string;
+    message: string;
+  }) {
+    super(params.message);
+    this.name = "ElevenLabsApiError";
+    this.httpStatus = params.httpStatus;
+    this.detailStatus = params.detailStatus;
+    this.detailMessage = params.detailMessage;
+    this.rawDetail = params.rawDetail;
+  }
+}
+
 type ElevenLabsVoiceRow = {
   voice_id?: string;
   name?: string | null;
@@ -177,6 +199,118 @@ async function getElevenLabsKey(apiKeyOverride?: string): Promise<string> {
   return apiKey;
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function parseElevenLabsErrorDetail(rawDetail: string): {
+  detailStatus: string | null;
+  detailMessage: string | null;
+} {
+  const trimmed = rawDetail.trim();
+
+  if (!trimmed) {
+    return {
+      detailStatus: null,
+      detailMessage: null,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+
+    if (!isObjectRecord(parsed)) {
+      return {
+        detailStatus: null,
+        detailMessage: trimmed,
+      };
+    }
+
+    const parsedDetail = parsed.detail;
+
+    if (typeof parsedDetail === "string") {
+      return {
+        detailStatus: getNonEmptyString(parsed.status),
+        detailMessage: getNonEmptyString(parsedDetail) ?? getNonEmptyString(parsed.message),
+      };
+    }
+
+    if (isObjectRecord(parsedDetail)) {
+      return {
+        detailStatus:
+          getNonEmptyString(parsedDetail.status) ?? getNonEmptyString(parsed.status),
+        detailMessage:
+          getNonEmptyString(parsedDetail.message) ?? getNonEmptyString(parsed.message),
+      };
+    }
+
+    return {
+      detailStatus: getNonEmptyString(parsed.status),
+      detailMessage: getNonEmptyString(parsed.message) ?? trimmed,
+    };
+  } catch {
+    return {
+      detailStatus: null,
+      detailMessage: trimmed,
+    };
+  }
+}
+
+function formatElevenLabsErrorMessage(
+  httpStatus: number,
+  detailStatus: string | null,
+  detailMessage: string | null,
+  rawDetail: string,
+): string {
+  const normalizedStatus = detailStatus?.toLowerCase() ?? "";
+  const normalizedMessage = (detailMessage ?? rawDetail).toLowerCase();
+
+  if (httpStatus === 401 || normalizedStatus === "invalid_api_key") {
+    return "ElevenLabs API key gecersiz veya yetkisiz. Ayarlar ekranindan anahtari kontrol edin.";
+  }
+
+  if (
+    httpStatus === 402 ||
+    normalizedStatus === "quota_exceeded" ||
+    normalizedMessage.includes("credit") ||
+    normalizedMessage.includes("quota")
+  ) {
+    return "ElevenLabs kredisi yetersiz veya kullanim limiti dolmus. ElevenLabs hesabinizdaki kredi ve billing durumunu kontrol edin.";
+  }
+
+  if (
+    httpStatus === 403 &&
+    (
+      normalizedStatus === "output_format_not_allowed" ||
+      normalizedMessage.includes("output format") ||
+      (normalizedMessage.includes("wav") && normalizedMessage.includes("pro")) ||
+      (normalizedMessage.includes("pcm") && normalizedMessage.includes("pro"))
+    )
+  ) {
+    return "Secilen ses cikti formati bu hesapta kullanilamiyor. ElevenLabs `wav_44100` icin Pro tier ister.";
+  }
+
+  if (httpStatus === 403) {
+    return "ElevenLabs istegi reddedildi. API key kisitlari, hesap plani veya ozellik izinleri yeterli olmayabilir.";
+  }
+
+  if (httpStatus === 429 || normalizedStatus === "too_many_concurrent_requests") {
+    return "ElevenLabs rate limitine ulasildi. Kisa bir sure sonra tekrar deneyin.";
+  }
+
+  const detail = detailMessage ?? getNonEmptyString(rawDetail);
+  return `ElevenLabs istegi basarisiz oldu (${httpStatus})${detail ? `: ${detail}` : "."}`;
+}
+
 async function elevenLabsRequest<T>(
   path: string,
   init?: RequestInit,
@@ -196,17 +330,28 @@ async function elevenLabsRequest<T>(
   });
 
   if (!response.ok) {
-    let detail = "";
+    let rawDetail = "";
 
     try {
-      detail = await response.text();
+      rawDetail = await response.text();
     } catch {
-      detail = "";
+      rawDetail = "";
     }
 
-    throw new Error(
-      `ElevenLabs istegi basarisiz oldu (${response.status})${detail ? `: ${detail}` : "."}`,
-    );
+    const { detailStatus, detailMessage } = parseElevenLabsErrorDetail(rawDetail);
+
+    throw new ElevenLabsApiError({
+      httpStatus: response.status,
+      detailStatus,
+      detailMessage,
+      rawDetail,
+      message: formatElevenLabsErrorMessage(
+        response.status,
+        detailStatus,
+        detailMessage,
+        rawDetail,
+      ),
+    });
   }
 
   return {
@@ -216,6 +361,20 @@ async function elevenLabsRequest<T>(
 }
 
 function isOutputFormatNotAllowedError(error: unknown): boolean {
+  if (error instanceof ElevenLabsApiError) {
+    const normalizedMessage = `${error.detailStatus ?? ""} ${error.detailMessage ?? ""}`.toLowerCase();
+
+    return (
+      error.httpStatus === 403 &&
+      (
+        normalizedMessage.includes("output_format_not_allowed") ||
+        normalizedMessage.includes("output format") ||
+        (normalizedMessage.includes("wav") && normalizedMessage.includes("pro")) ||
+        (normalizedMessage.includes("pcm") && normalizedMessage.includes("pro"))
+      )
+    );
+  }
+
   if (!(error instanceof Error)) {
     return false;
   }

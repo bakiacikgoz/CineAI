@@ -48,6 +48,7 @@ export function DialoguePerformanceEditor({
       useOptimizer: Boolean(draft.useOptimizer),
       performancePreset: draft.performancePreset,
       performanceNote: draft.performanceNote?.trim() || null,
+      lockVoiceStyle: draft.lockVoiceStyle ?? true,
     }),
     [draft],
   );
@@ -56,13 +57,15 @@ export function DialoguePerformanceEditor({
       useOptimizer: Boolean(profile.useOptimizer),
       performancePreset: profile.performancePreset,
       performanceNote: profile.performanceNote?.trim() || null,
+      lockVoiceStyle: profile.lockVoiceStyle ?? true,
     }),
     [profile],
   );
   const isDirty =
     normalizedDraft.useOptimizer !== normalizedSource.useOptimizer ||
     normalizedDraft.performancePreset !== normalizedSource.performancePreset ||
-    normalizedDraft.performanceNote !== normalizedSource.performanceNote;
+    normalizedDraft.performanceNote !== normalizedSource.performanceNote ||
+    normalizedDraft.lockVoiceStyle !== normalizedSource.lockVoiceStyle;
   const activePreset = PRESET_OPTIONS.find((option) => option.value === normalizedDraft.performancePreset);
 
   return (
@@ -98,6 +101,30 @@ export function DialoguePerformanceEditor({
             <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>
               Kapaliysa orijinal veya elle duzenlenmis metin dogrudan kullanilir. Aciksa akicilik
               ve delivery cue katmani da calisir.
+            </span>
+          </span>
+        </label>
+
+        <label style={toggleWrapStyle}>
+          <input
+            checked={normalizedDraft.lockVoiceStyle}
+            disabled={busy}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                lockVoiceStyle: event.target.checked,
+              }))
+            }
+            style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+            type="checkbox"
+          />
+          <span style={{ display: "grid", gap: 3 }}>
+            <strong style={{ fontSize: 12, color: "var(--text-primary)" }}>
+              Ton ve uslup tutarliligini kilitle
+            </strong>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+              Ayni voice icin seed, stability ve delivery cue daha konservatif tutulur. Shotlar
+              arasi savrulma ve yapay performans riski azalir.
             </span>
           </span>
         </label>

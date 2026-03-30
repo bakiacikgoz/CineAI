@@ -11,6 +11,7 @@ import {
   PlayCircle,
   Search,
   Sparkles,
+  Star,
   Upload,
 } from "lucide-react";
 import {
@@ -37,6 +38,7 @@ import { insertGeneratedShots, persistGeneratedShotFiles } from "@/services/scen
 import type { TargetVideoModel, KlingPreset, ShotPlan } from "@/lib/scenario-types";
 
 type WizardPhase = "input" | "plan" | "generating" | "done";
+type ModelPresetFilter = "all" | "favorites" | "cheap" | "fast" | "premium";
 
 function extractErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -109,6 +111,79 @@ function normalizeSearchValue(value: string): string {
   return value.trim().toLocaleLowerCase("tr-TR");
 }
 
+function estimateModelUnitCost(option: OpenRouterModelOption): number {
+  return (option.promptPricePerM ?? 0) + (option.completionPricePerM ?? 0);
+}
+
+function resolveModelPreset(option: OpenRouterModelOption): Exclude<ModelPresetFilter, "all" | "favorites"> | null {
+  const id = `${option.id} ${option.name}`.toLocaleLowerCase("en-US");
+  const promptPrice = option.promptPricePerM ?? Number.POSITIVE_INFINITY;
+  const completionPrice = option.completionPricePerM ?? Number.POSITIVE_INFINITY;
+  const contextLength = option.contextLength ?? 0;
+
+  if (
+    /(?:flash|haiku|mini|nano|instant|lite|turbo)/.test(id) ||
+    (promptPrice <= 0.45 && completionPrice <= 1.8)
+  ) {
+    return "fast";
+  }
+
+  if (
+    /(?:gpt-5|gpt-4\.1|o3|opus|sonnet|gemini-2\.5-pro|grok-4|command-a)/.test(id) ||
+    promptPrice >= 8 ||
+    completionPrice >= 24 ||
+    contextLength >= 200_000
+  ) {
+    return "premium";
+  }
+
+  if (
+    /(?:free|cheap|economy|air|flash-lite)/.test(id) ||
+    (promptPrice <= 1.5 && completionPrice <= 6)
+  ) {
+    return "cheap";
+  }
+
+  return null;
+}
+
+function describeModelGuidance(option: OpenRouterModelOption): {
+  badge: string;
+  note: string;
+} {
+  const preset = resolveModelPreset(option);
+  const contextLength = option.contextLength ?? 0;
+
+  if (preset === "premium") {
+    return {
+      badge: "Premium kalite",
+      note:
+        contextLength >= 150_000
+          ? "Uzun senaryolar ve daha tutarli planlama icin guclu aday."
+          : "Daha iyi reasoning ve daha temiz pass-1 JSON icin onerilir.",
+    };
+  }
+
+  if (preset === "fast") {
+    return {
+      badge: "Fast",
+      note: "Hizli iterasyon, kaba plan denemeleri ve ucuz retry akislari icin uygun.",
+    };
+  }
+
+  if (preset === "cheap") {
+    return {
+      badge: "Cheap",
+      note: "Maliyet odakli denemeler icin uygun; uzun senaryoda chunk fallback daha olasi.",
+    };
+  }
+
+  return {
+    badge: "Balanced",
+    note: "Genel kullanim icin dengeli secim. Fiyat ve kaliteyi birlikte optimize eder.",
+  };
+}
+
 function compareProviderKeys(left: string, right: string): number {
   if (left === right) {
     return 0;
@@ -178,6 +253,8 @@ export function ScenarioStudio() {
   const [klingPreset, setKlingPreset] = useState<KlingPreset>("ultra-realism");
   const [selectedLlmModel, setSelectedLlmModel] = useState("openrouter/auto");
   const [selectedProvider, setSelectedProvider] = useState("openrouter");
+  const [selectedPreset, setSelectedPreset] = useState<ModelPresetFilter>("all");
+  const [favoriteModelIds, setFavoriteModelIds] = useState<string[]>([]);
   const [llmSearchQuery, setLlmSearchQuery] = useState("");
   const [availableLlmModels, setAvailableLlmModels] = useState<OpenRouterModelOption[]>([
     {
@@ -219,6 +296,11 @@ export function ScenarioStudio() {
     () => llmModelOptions.find((model) => model.id === selectedLlmModel) ?? null,
     [llmModelOptions, selectedLlmModel],
   );
+  const favoriteModelIdSet = useMemo(() => new Set(favoriteModelIds), [favoriteModelIds]);
+  const selectedModelGuidance = useMemo(
+    () => (selectedModelOption ? describeModelGuidance(selectedModelOption) : null),
+    [selectedModelOption],
+  );
 
   const providerOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -246,45 +328,97 @@ export function ScenarioStudio() {
     return llmModelOptions.filter((model) => model.provider === selectedProvider);
   }, [llmModelOptions, selectedProvider]);
 
+  const presetScopedLlmModels = useMemo(() => {
+    if (selectedPreset === "all") {
+      return providerScopedLlmModels;
+    }
+
+    if (selectedPreset === "favorites") {
+      return providerScopedLlmModels.filter((model) => favoriteModelIdSet.has(model.id));
+    }
+
+    return providerScopedLlmModels.filter((model) => resolveModelPreset(model) === selectedPreset);
+  }, [favoriteModelIdSet, providerScopedLlmModels, selectedPreset]);
+
   const filteredLlmModelOptions = useMemo(() => {
     const query = normalizeSearchValue(llmSearchQuery);
 
     if (!query) {
-      return providerScopedLlmModels;
+      return presetScopedLlmModels;
     }
 
-    return providerScopedLlmModels.filter((model) =>
+    return presetScopedLlmModels.filter((model) =>
       `${model.name} ${model.id} ${formatOpenRouterProvider(model.provider)}`
         .toLocaleLowerCase("tr-TR")
         .includes(query),
     );
-  }, [llmSearchQuery, providerScopedLlmModels]);
+  }, [llmSearchQuery, presetScopedLlmModels]);
 
   const visibleLlmModelOptions = useMemo(() => {
-    if (filteredLlmModelOptions.some((model) => model.id === selectedLlmModel)) {
-      return filteredLlmModelOptions;
-    }
+    const base = filteredLlmModelOptions.some((model) => model.id === selectedLlmModel)
+      ? filteredLlmModelOptions
+      : selectedModelOption &&
+          (selectedProvider === "all" || selectedModelOption.provider === selectedProvider)
+        ? [selectedModelOption, ...filteredLlmModelOptions]
+        : filteredLlmModelOptions;
 
-    if (!selectedModelOption) {
-      return filteredLlmModelOptions;
-    }
+    return base
+      .slice()
+      .sort((left, right) => {
+        const favoriteDelta =
+          Number(favoriteModelIdSet.has(right.id)) - Number(favoriteModelIdSet.has(left.id));
 
-    if (selectedProvider !== "all" && selectedModelOption.provider !== selectedProvider) {
-      return filteredLlmModelOptions;
-    }
+        if (favoriteDelta !== 0) {
+          return favoriteDelta;
+        }
 
-    return [selectedModelOption, ...filteredLlmModelOptions];
-  }, [filteredLlmModelOptions, selectedLlmModel, selectedModelOption, selectedProvider]);
+        const leftPreset = resolveModelPreset(left);
+        const rightPreset = resolveModelPreset(right);
+
+        if (selectedPreset !== "all" && selectedPreset !== "favorites") {
+          const selectedPresetDelta =
+            Number(rightPreset === selectedPreset) - Number(leftPreset === selectedPreset);
+
+          if (selectedPresetDelta !== 0) {
+            return selectedPresetDelta;
+          }
+        }
+
+        const leftCost = estimateModelUnitCost(left);
+        const rightCost = estimateModelUnitCost(right);
+
+        if (leftCost !== rightCost) {
+          return leftCost - rightCost;
+        }
+
+        return left.name.localeCompare(right.name, "tr-TR");
+      });
+  }, [
+    favoriteModelIdSet,
+    filteredLlmModelOptions,
+    selectedLlmModel,
+    selectedModelOption,
+    selectedPreset,
+    selectedProvider,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadLlmPreferences() {
-      const savedModel = (await getAppSetting<string>("SCENARIO_STUDIO_LLM_MODEL"))?.trim();
+      const [savedModel, savedFavorites] = await Promise.all([
+        getAppSetting<string>("SCENARIO_STUDIO_LLM_MODEL"),
+        getAppSetting<string[]>("SCENARIO_STUDIO_FAVORITE_LLM_MODELS"),
+      ]);
 
-      if (!cancelled && savedModel) {
-        setSelectedLlmModel(savedModel);
-        setSelectedProvider(inferOpenRouterProvider(savedModel));
+      if (!cancelled) {
+        if (savedModel?.trim()) {
+          const normalizedSavedModel = savedModel.trim();
+          setSelectedLlmModel(normalizedSavedModel);
+          setSelectedProvider(inferOpenRouterProvider(normalizedSavedModel));
+        }
+
+        setFavoriteModelIds(Array.isArray(savedFavorites) ? savedFavorites.filter(Boolean) : []);
       }
 
       setIsLoadingLlmModels(true);
@@ -521,6 +655,16 @@ export function ScenarioStudio() {
     }
   }
 
+  function handleToggleFavorite(modelId: string) {
+    setFavoriteModelIds((current) => {
+      const nextValues = current.includes(modelId)
+        ? current.filter((value) => value !== modelId)
+        : [modelId, ...current];
+      void setAppSetting("SCENARIO_STUDIO_FAVORITE_LLM_MODELS", nextValues);
+      return nextValues;
+    });
+  }
+
   function handleRestoreHistory(entry: ScenarioHistoryEntry) {
     scenario.reset();
     scenario.setScenarioText(entry.scenarioText);
@@ -585,6 +729,22 @@ export function ScenarioStudio() {
               </label>
 
               <label style={modelFilterFieldStyle}>
+                <span style={modelFilterLabelStyle}>Preset</span>
+                <select
+                  value={selectedPreset}
+                  onChange={(event) => setSelectedPreset(event.target.value as ModelPresetFilter)}
+                  style={scenarioSelectStyle}
+                  disabled={isLoadingLlmModels}
+                >
+                  <option value="all">All</option>
+                  <option value="favorites">Favorites</option>
+                  <option value="cheap">Cheap</option>
+                  <option value="fast">Fast</option>
+                  <option value="premium">Premium</option>
+                </select>
+              </label>
+
+              <label style={modelFilterFieldStyle}>
                 <span style={modelFilterLabelStyle}>Model ara</span>
                 <div style={modelSearchWrapStyle}>
                   <Search size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
@@ -608,7 +768,9 @@ export function ScenarioStudio() {
                 >
                   {visibleLlmModelOptions.map((model) => (
                     <option key={model.id} value={model.id}>
+                      {favoriteModelIdSet.has(model.id) ? "★ " : ""}
                       {model.name}
+                      {resolveModelPreset(model) ? ` - ${resolveModelPreset(model)?.toUpperCase()}` : ""}
                       {formatModelPricing(model) ? ` — ${formatModelPricing(model)}` : ""}
                     </option>
                   ))}
@@ -619,24 +781,49 @@ export function ScenarioStudio() {
             <div style={modelMetaRowStyle}>
               <span style={historyMetaBadgeStyle}>{providerOptions.length - 1} provider</span>
               <span style={historyMetaBadgeStyle}>{filteredLlmModelOptions.length} model gorunuyor</span>
+              <span style={historyMetaBadgeStyle}>{favoriteModelIds.length} favori</span>
               <span style={historyMetaBadgeStyle}>
                 Filtre: {selectedProvider === "all" ? "Tum providerlar" : formatOpenRouterProvider(selectedProvider)}
               </span>
+              <span style={historyMetaBadgeStyle}>Preset: {selectedPreset}</span>
             </div>
 
             {selectedModelOption ? (
               <div style={selectedModelCardStyle}>
-                <div style={{ display: "grid", gap: 4 }}>
-                  <span style={modelFilterLabelStyle}>Secili ajan modeli</span>
-                  <strong style={{ fontSize: 15, color: "var(--text-primary)" }}>{selectedModelOption.name}</strong>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: "var(--text-secondary)",
-                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                    }}
+                <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <span style={modelFilterLabelStyle}>Secili ajan modeli</span>
+                    <strong style={{ fontSize: 15, color: "var(--text-primary)" }}>{selectedModelOption.name}</strong>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                      }}
+                    >
+                      {selectedModelOption.id}
+                    </span>
+                  </div>
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    onClick={() => handleToggleFavorite(selectedModelOption.id)}
+                    style={{ minHeight: 34, paddingInline: 12 }}
                   >
-                    {selectedModelOption.id}
+                    <Star
+                      size={14}
+                      fill={favoriteModelIdSet.has(selectedModelOption.id) ? "currentColor" : "none"}
+                    />
+                    {favoriteModelIdSet.has(selectedModelOption.id) ? "Favoride" : "Favori"}
+                  </button>
+                </div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <span style={modelFilterLabelStyle}>Model rehberi</span>
+                  <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                    {selectedModelGuidance?.badge ?? "Balanced"}
+                  </strong>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    {selectedModelGuidance?.note}
                   </span>
                 </div>
                 <div style={modelMetaRowStyle}>
@@ -645,6 +832,11 @@ export function ScenarioStudio() {
                   <span style={historyMetaBadgeStyle}>
                     {formatModelPricing(selectedModelOption) || "Fiyat bilgisi yok"}
                   </span>
+                  {resolveModelPreset(selectedModelOption) ? (
+                    <span style={historyMetaBadgeStyle}>
+                      {resolveModelPreset(selectedModelOption)?.toUpperCase()}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -660,7 +852,7 @@ export function ScenarioStudio() {
               <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
                 {isLoadingLlmModels
                   ? "OpenRouter model listesi yukleniyor..."
-                  : "Provider bazinda daraltip model aratarak daha ucuz veya daha hizli bir ajan secimi yapabilirsin."}
+                  : "Provider, preset ve favori katmani ile modeli daha hizli daraltabilir; premium secimler uzun senaryoda daha tutarli olur."}
               </span>
               {llmModelError ? (
                 <div style={warningBannerStyle}>

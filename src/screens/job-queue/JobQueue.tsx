@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import {
   ArrowUpToLine,
   AudioLines,
+  Clapperboard,
   Film,
   Image as ImageIcon,
   ListOrdered,
@@ -20,6 +21,7 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   image_end: "END Kare",
   character_image: "Karakter Adayi",
   video: "Video",
+  lipsync: "Lipsync Master",
   upscale: "4K Yukseltme",
   coverage_image: "Coverage Gorsel",
   coverage_video: "Coverage Video",
@@ -213,6 +215,8 @@ function JobRow({ job }: { job: Job }) {
   const Icon =
     job.type === "video"
       ? Film
+      : job.type === "lipsync"
+        ? Clapperboard
       : job.type === "audio_dialogue"
         ? AudioLines
       : job.type === "upscale"

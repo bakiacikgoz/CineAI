@@ -4,6 +4,7 @@ let storeInstance: Store | null = null;
 
 export type ApiKeyName =
   | "FAL_API_KEY"
+  | "EVOLINK_API_KEY"
   | "TENSORPIX_API_KEY"
   | "OPENROUTER_API_KEY"
   | "ELEVENLABS_API_KEY";

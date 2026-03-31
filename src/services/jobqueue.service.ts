@@ -23,6 +23,7 @@ import {
   downloadVideoToLocal,
   generateImage,
   generateVideo,
+  getVideoModelMeta,
   resolveImageModel,
   resolveVideoModel,
   type ImageModelId,
@@ -1358,6 +1359,7 @@ export async function enqueueVideoJobs(
   }
 
   const model = resolveVideoModel(params.model ?? DEFAULT_VIDEO_MODEL);
+  const modelMeta = getVideoModelMeta(model);
   const aspectRatio = params.aspectRatio ?? DEFAULT_ASPECT_RATIO;
   const cfg = params.cfg ?? 0.45;
   const duration = clampKlingDuration(params.duration);
@@ -1380,8 +1382,17 @@ export async function enqueueVideoJobs(
       characterContext?.promptHint,
       Boolean(shot?.includeCharacterPrompt ?? false),
     );
-    const resolvedGenerateAudio =
-      params.generateAudio ?? analyzeKlingVideoPrompt(effectivePrompt).hasAudioDirection;
+    const promptAnalysis = analyzeKlingVideoPrompt(effectivePrompt);
+    const resolvedGenerateAudio = modelMeta.supportsAudio
+      ? (params.generateAudio ?? promptAnalysis.hasAudioDirection)
+      : false;
+
+    if (promptAnalysis.detectedMultiShot && !modelMeta.supportsMultiShot) {
+      throw new Error(
+        `${modelMeta.label} icin multi-shot gonderimi henuz desteklenmiyor. Tek shot prompt kullan veya fal.ai Kling modeline gec.`,
+      );
+    }
+
     const costPerVideo = calcVideoCost(model, duration, resolvedGenerateAudio);
     const jobId = uuidv4();
 
@@ -1486,6 +1497,7 @@ export async function enqueueVideoJobs(
 
         const relativePath = toRelativeProjectPath(project.folderPath, destinationPath);
         const filename = destinationPath.split(/[\\/]/).pop() ?? `${jobId}.mp4`;
+        const resolvedDuration = result.durationS ?? duration;
 
         if (shot?.id && persistToShotPath) {
           await updateShotPaths(shot.id, {
@@ -1503,7 +1515,7 @@ export async function enqueueVideoJobs(
           type: "video",
           filePath: relativePath,
           filename,
-          durationS: duration,
+          durationS: resolvedDuration,
           resolution: "HD",
           modelUsed: model,
           prompt: effectivePrompt,
@@ -1519,7 +1531,7 @@ export async function enqueueVideoJobs(
           model,
           type: "video",
           amountUsd: costPerVideo,
-          units: duration,
+          units: resolvedDuration,
         });
 
         queue.updateJob(jobId, {

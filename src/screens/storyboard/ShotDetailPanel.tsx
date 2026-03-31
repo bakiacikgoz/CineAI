@@ -41,7 +41,7 @@ import {
   MediaLightbox,
   type MediaLightboxItem,
 } from "@/components/media/MediaLightbox";
-import { getAppSetting } from "@/lib/store";
+import { getAppSetting, getAppSettings } from "@/lib/store";
 import { downloadMediaFile } from "@/lib/media-download";
 import {
   deleteAssetsBatch,
@@ -54,11 +54,17 @@ import {
   analyzeKlingVideoPrompt,
   clampKlingDuration,
   distributeKlingMultiShotDurations,
+  getVideoModelMeta,
+  getVideoQuality,
+  getStoryboardVideoQualityOptions,
   getKlingMultiPromptValidationMessage,
   KLING_V3_DURATION_VALUES,
   resolveImageModel,
+  resolveStoryboardVideoModel,
+  resolveStoryboardVideoModelForQuality,
   type KlingDuration,
   type KlingShotType,
+  type VideoModelId,
 } from "@/services/fal.service";
 import {
   enqueueAudioDialogueJob,
@@ -380,6 +386,8 @@ export function ShotDetailPanel({
   const [videoGenerateAudio, setVideoGenerateAudio] = useState(true);
   const [videoShotType, setVideoShotType] = useState<KlingShotType>("customize");
   const [videoDuration, setVideoDuration] = useState<KlingDuration>(clampKlingDuration(shot.durationS));
+  const [storyboardVideoModel, setStoryboardVideoModel] = useState<VideoModelId>("fal-ai/kling-video/v3/pro/image-to-video");
+  const [videoQuality, setVideoQuality] = useState<"720p" | "1080p">("1080p");
   const [dialogueAudioDetail, setDialogueAudioDetail] = useState<DialogueAudioShot | null>(null);
   const [loadingDialogueAudioDetail, setLoadingDialogueAudioDetail] = useState(false);
   const [queueingDialogueAudio, setQueueingDialogueAudio] = useState(false);
@@ -398,6 +406,12 @@ export function ShotDetailPanel({
     end: shot.promptEnd ?? "",
     video: shot.promptVideo ?? "",
   });
+  const videoQualityOptions = getStoryboardVideoQualityOptions();
+  const effectiveStoryboardVideoModel = resolveStoryboardVideoModelForQuality(
+    storyboardVideoModel,
+    videoQuality,
+  );
+  const effectiveStoryboardVideoMeta = getVideoModelMeta(effectiveStoryboardVideoModel);
 
   useEffect(() => {
     setActiveMediaView(initialView);
@@ -423,6 +437,45 @@ export function ShotDetailPanel({
     setVideoShotType("customize");
     setVideoDuration(clampKlingDuration(shot.durationS));
   }, [shot.durationS, shot.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadStoryboardVideoDefaults() {
+      try {
+        const { defaultVideoModel } = await getAppSettings();
+        const resolvedModel = resolveStoryboardVideoModel(defaultVideoModel);
+
+        if (cancelled) {
+          return;
+        }
+
+        setStoryboardVideoModel(resolvedModel);
+        setVideoQuality(getVideoQuality(resolvedModel) ?? "1080p");
+      } catch (error) {
+        console.error("Failed to load storyboard video model defaults", error);
+      }
+    }
+
+    void loadStoryboardVideoDefaults();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shot.id]);
+
+  useEffect(() => {
+    const inferredQuality = getVideoQuality(storyboardVideoModel);
+
+    if (inferredQuality && inferredQuality !== videoQuality) {
+      setVideoQuality(inferredQuality);
+      return;
+    }
+
+    if (videoQualityOptions.length > 0 && !videoQualityOptions.includes(videoQuality)) {
+      setVideoQuality(videoQualityOptions[0] ?? "1080p");
+    }
+  }, [storyboardVideoModel, videoQuality, videoQualityOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1414,7 +1467,7 @@ export function ShotDetailPanel({
 
       for (let index = 0; index < quantity; index += 1) {
         await enqueueVideoJobs({
-          model: "fal-ai/kling-video/v3/pro/image-to-video",
+          model: effectiveStoryboardVideoModel,
           prompt: promptDrafts.video.trim(),
           imageStartPath: selectedStartAbsolutePath,
           imageEndPath: selectedEndAbsolutePath,
@@ -1484,7 +1537,7 @@ export function ShotDetailPanel({
       }
 
       await enqueueVideoJobs({
-        model: "fal-ai/kling-video/v3/pro/image-to-video",
+        model: effectiveStoryboardVideoModel,
         prompt: promptDrafts.video.trim(),
         imageStartPath: selectedStartAbsolutePath,
         imageEndPath: selectedEndAbsolutePath,
@@ -2447,7 +2500,7 @@ export function ShotDetailPanel({
                       </div>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", borderBottom: "1px solid var(--surface-hover)" }}>
-                      {[{ l: "Gorsel model", v: imageModel }, { l: "Video model", v: "Kling v3 Pro" }, { l: "CFG", v: shot.cfg ? String(shot.cfg) : "--" }, { l: "Preset", v: shot.klingPreset ?? "Varsayilan" }].map((m, i) => (
+                      {[{ l: "Gorsel model", v: imageModel }, { l: "Video model", v: effectiveStoryboardVideoMeta.label }, { l: "CFG", v: shot.cfg ? String(shot.cfg) : "--" }, { l: "Preset", v: shot.klingPreset ?? "Varsayilan" }].map((m, i) => (
                         <div key={m.l} style={{ padding: "12px 16px", borderRight: i < 3 ? "1px solid var(--surface-hover)" : "none" }}>
                           <div style={{ fontSize: 10, fontWeight: 500, color: "var(--text-muted)", marginBottom: 3 }}>{m.l}</div>
                           <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.v}</div>
@@ -2733,17 +2786,53 @@ export function ShotDetailPanel({
 
                   {/* ── Video Ayarlari + 4K (collapsible) ── */}
                   <details style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
-                    <summary style={{ padding: "14px 20px", cursor: "pointer", background: "var(--gradient-header)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <summary style={{ padding: "14px 20px", cursor: "pointer", background: "var(--gradient-header)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                       Video ayarlari
-                      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)" }}>{resolvedVideoDuration}s · Ses {videoGenerateAudio ? "acik" : "kapali"}</span>
+                      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", lineHeight: 1.5, textAlign: "right" }}>{resolvedVideoDuration}s · {videoQuality} · Ses {videoGenerateAudio ? "acik" : "kapali"}</span>
                     </summary>
                     <div style={{ padding: "16px 20px", borderTop: "1px solid var(--surface-hover)", display: "grid", gap: 14 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Video kalitesi</div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5, wordBreak: "break-word" }}>{effectiveStoryboardVideoMeta.label}</div>
+                        </div>
+                        <div style={{ overflowX: "auto", paddingBottom: 2 }}>
+                          <div style={{ display: "inline-flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden", minWidth: "max-content" }}>
+                            {videoQualityOptions.map((quality) => (
+                              <button
+                                key={quality}
+                                type="button"
+                                onClick={() => {
+                                  setVideoQuality(quality);
+                                  setStoryboardVideoModel(
+                                  resolveStoryboardVideoModelForQuality(storyboardVideoModel, quality),
+                                );
+                              }}
+                                style={{
+                                  padding: "6px 12px",
+                                  border: "none",
+                                  fontSize: 11,
+                                  fontWeight: videoQuality === quality ? 600 : 400,
+                                  background: videoQuality === quality ? "var(--accent)" : "transparent",
+                                  color: videoQuality === quality ? "var(--on-accent)" : "var(--text-secondary)",
+                                  cursor: "pointer",
+                                  minWidth: 56,
+                                  flex: "0 0 auto",
+                                }}
+                              >
+                                {quality}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ height: 1, background: "var(--surface-hover)" }} />
+                      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
                         <div><div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Sure</div><div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Shot: {shot.durationS ?? "--"}s</div></div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <div style={{ display: "flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden" }}>
+                        <div style={{ overflowX: "auto", paddingBottom: 2 }}>
+                          <div style={{ display: "inline-flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden", minWidth: "max-content" }}>
                             {KLING_V3_DURATION_VALUES.map((v) => (
-                              <button key={v} type="button" onClick={() => setVideoDuration(v)} style={{ padding: "6px 10px", border: "none", fontSize: 11, fontWeight: resolvedVideoDuration === v ? 600 : 400, background: resolvedVideoDuration === v ? "var(--accent)" : "transparent", color: resolvedVideoDuration === v ? "var(--on-accent)" : "var(--text-secondary)", cursor: "pointer", minWidth: 34 }}>{v}s</button>
+                              <button key={v} type="button" onClick={() => setVideoDuration(v)} style={{ padding: "6px 10px", border: "none", fontSize: 11, fontWeight: resolvedVideoDuration === v ? 600 : 400, background: resolvedVideoDuration === v ? "var(--accent)" : "transparent", color: resolvedVideoDuration === v ? "var(--on-accent)" : "var(--text-secondary)", cursor: "pointer", minWidth: 34, flex: "0 0 auto" }}>{v}s</button>
                             ))}
                           </div>
                         </div>

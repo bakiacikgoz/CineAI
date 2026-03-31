@@ -14,8 +14,11 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { CollapsibleSection } from "@/components/ui";
 import {
   IMAGE_MODELS,
-  VIDEO_MODELS,
+  getVideoModelEntries,
+  getVideoProviderLabel,
   initFal,
+  resolveStoryboardVideoModel,
+  testEvoLinkConnection,
   testFalConnection,
   type ImageModelId,
   type VideoModelId,
@@ -56,6 +59,12 @@ const API_KEYS: Array<{
     accentColor: "#3b82f6",
   },
   {
+    key: "EVOLINK_API_KEY",
+    title: "EvoLink",
+    description: "Alternatif Kling video saglayicisi. Image ve text-to-video istekleri dogrudan EvoLink API uzerinden akar.",
+    accentColor: "#14b8a6",
+  },
+  {
     key: "TENSORPIX_API_KEY",
     title: "TensorPix",
     description: "Upscale ve enhancement isleri icin saklanir.",
@@ -82,6 +91,7 @@ type ConnectionState = {
 
 const INITIAL_CONNECTION_STATE: Record<ApiKeyName, ConnectionState> = {
   FAL_API_KEY: { status: "idle" },
+  EVOLINK_API_KEY: { status: "idle" },
   TENSORPIX_API_KEY: { status: "idle" },
   OPENROUTER_API_KEY: { status: "idle" },
   ELEVENLABS_API_KEY: { status: "idle" },
@@ -95,6 +105,7 @@ export function Settings() {
   const setParallelLimit = useQueueStore((state) => state.setParallelLimit);
   const [values, setValues] = useState<Record<ApiKeyName, string>>({
     FAL_API_KEY: "",
+    EVOLINK_API_KEY: "",
     TENSORPIX_API_KEY: "",
     OPENROUTER_API_KEY: "",
     ELEVENLABS_API_KEY: "",
@@ -113,6 +124,7 @@ export function Settings() {
   /* ── Visibility toggles for API key fields ── */
   const [visibleKeys, setVisibleKeys] = useState<Record<ApiKeyName, boolean>>({
     FAL_API_KEY: false,
+    EVOLINK_API_KEY: false,
     TENSORPIX_API_KEY: false,
     OPENROUTER_API_KEY: false,
     ELEVENLABS_API_KEY: false,
@@ -141,7 +153,7 @@ export function Settings() {
         if (!cancelled) {
           setValues(Object.fromEntries(entries) as Record<ApiKeyName, string>);
           setDefaultImageModel(appSettings.defaultImageModel as ImageModelId);
-          setDefaultVideoModel(appSettings.defaultVideoModel as VideoModelId);
+          setDefaultVideoModel(resolveStoryboardVideoModel(appSettings.defaultVideoModel));
           setDefaultUpscaleFactor(appSettings.defaultUpscaleFactor);
           setElevenLabsEstimatedUsdPer1kChars(
             String(appSettings.elevenLabsEstimatedUsdPer1kChars),
@@ -223,14 +235,25 @@ export function Settings() {
     }));
 
     try {
-      const detail =
-        key === "FAL_API_KEY"
-          ? `${(await testFalConnection(apiKey)).aliasCount} endpoint alias okunabildi.`
-          : key === "TENSORPIX_API_KEY"
-            ? `${(await testTensorPixConnection(apiKey)).modelCount} TensorPix modeli listelendi.`
-            : key === "OPENROUTER_API_KEY"
-              ? `${(await testOpenRouterConnection(apiKey)).modelCount} OpenRouter modeli listelendi.`
-              : `${(await testElevenLabsConnection(apiKey)).voiceCount} ElevenLabs voice listelendi.`;
+      let detail: string;
+
+      if (key === "FAL_API_KEY") {
+        detail = `${(await testFalConnection(apiKey)).aliasCount} endpoint alias okunabildi.`;
+      } else if (key === "EVOLINK_API_KEY") {
+        const result = await testEvoLinkConnection(apiKey);
+        const userCredits = result.remainingUserCredits.toFixed(2);
+        const tokenCredits =
+          result.remainingTokenCredits === null
+            ? "token kredisi yok"
+            : `token ${result.remainingTokenCredits.toFixed(2)}`;
+        detail = `Kalan user kredi ${userCredits}; ${tokenCredits}.`;
+      } else if (key === "TENSORPIX_API_KEY") {
+        detail = `${(await testTensorPixConnection(apiKey)).modelCount} TensorPix modeli listelendi.`;
+      } else if (key === "OPENROUTER_API_KEY") {
+        detail = `${(await testOpenRouterConnection(apiKey)).modelCount} OpenRouter modeli listelendi.`;
+      } else {
+        detail = `${(await testElevenLabsConnection(apiKey)).voiceCount} ElevenLabs voice listelendi.`;
+      }
 
       if (key === "TENSORPIX_API_KEY") {
         setTensorPixModels(await getTensorPixModels(apiKey));
@@ -314,7 +337,8 @@ export function Settings() {
           <div style={headerTitleStyle}>Ayarlar</div>
           <p style={headerDescStyle}>
             API anahtarlari Tauri Store uzerinden yerel olarak saklanir. fal.ai
-            istekleri browser yerine Tauri komutlari uzerinden akar.
+            istekleri Tauri proxy uzerinden, EvoLink video istekleri ise dogrudan
+            resmi API uzerinden akar.
           </p>
         </header>
 
@@ -500,13 +524,26 @@ export function Settings() {
               style={selectStyle}
               value={defaultVideoModel}
             >
-              {(Object.entries(VIDEO_MODELS) as [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]][]).map(
-                ([modelId, model]) => (
-                  <option key={modelId} value={modelId}>
-                    {model.label}
-                  </option>
-                ),
-              )}
+              {(["fal", "evolink"] as const).map((provider) => {
+                const entries = getVideoModelEntries({
+                  provider,
+                  storyboardCapable: true,
+                });
+
+                if (entries.length === 0) {
+                  return null;
+                }
+
+                return (
+                  <optgroup key={provider} label={getVideoProviderLabel(provider)}>
+                    {entries.map(([modelId, model]) => (
+                      <option key={modelId} value={modelId}>
+                        {model.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
             </select>
           </label>
 

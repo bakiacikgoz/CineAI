@@ -7,9 +7,11 @@ import {
 import {
   clampKlingDuration,
   resolveImageModel,
+  resolveStoryboardVideoModel,
   type ImageModelId,
   type VideoModelId,
 } from "@/services/fal.service";
+import { getAppSettings } from "@/lib/store";
 import {
   enqueueStoryboardFrameJob,
   enqueueVideoJobs,
@@ -209,9 +211,16 @@ async function queueVideoCandidates(
     return 0;
   }
 
+  const settings = options?.videoModel
+    ? null
+    : await getAppSettings();
+  const selectedVideoModel = resolveStoryboardVideoModel(
+    options?.videoModel ?? settings?.defaultVideoModel,
+  );
+
   for (let variant = 1; variant <= AUTONOMOUS_VARIANT_COUNT; variant += 1) {
     await enqueueVideoJobs({
-      model: options?.videoModel ?? "fal-ai/kling-video/v3/pro/image-to-video",
+      model: selectedVideoModel,
       prompt: shot.promptVideo,
       duration: clampKlingDuration(shot.durationS),
       aspectRatio: "16:9",

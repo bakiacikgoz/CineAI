@@ -1,11 +1,14 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { message } from "@tauri-apps/plugin-dialog";
 import { Sparkles } from "lucide-react";
 import { ModalShell, ToggleSwitch, SegmentGroup } from "@/components/ui";
 import { countPlannedBulkJobs, resolveBulkScope } from "@/lib/bulk-production";
 import {
   IMAGE_MODELS,
-  VIDEO_MODELS,
+  getVideoModelEntries,
+  getVideoQuality,
+  getStoryboardVideoQualityOptions,
+  resolveStoryboardVideoModelForQuality,
   type ImageModelId,
   type VideoModelId,
 } from "@/services/fal.service";
@@ -36,9 +39,25 @@ export function BulkProductionModal({
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [imageModel, setImageModel] = useState<ImageModelId | "shot-default">("shot-default");
   const [videoModel, setVideoModel] = useState<VideoModelId>("fal-ai/kling-video/v3/pro/image-to-video");
+  const [videoQuality, setVideoQuality] = useState<"720p" | "1080p">("1080p");
   const [filter, setFilter] = useState<BulkProductionOptions["filter"]>("all");
   const [queuing, setQueuing] = useState(false);
   const [result, setResult] = useState<{ jobCount: number; estimatedCost: number } | null>(null);
+  const videoQualityOptions = getStoryboardVideoQualityOptions();
+  const effectiveVideoModel = resolveStoryboardVideoModelForQuality(videoModel, videoQuality);
+
+  useEffect(() => {
+    const inferredQuality = getVideoQuality(videoModel);
+
+    if (inferredQuality && inferredQuality !== videoQuality) {
+      setVideoQuality(inferredQuality);
+      return;
+    }
+
+    if (videoQualityOptions.length > 0 && !videoQualityOptions.includes(videoQuality)) {
+      setVideoQuality(videoQualityOptions[0] ?? "1080p");
+    }
+  }, [videoModel, videoQuality, videoQualityOptions]);
   const scopePreview = resolveBulkScope(shots, {
     produceStartFrames: produceStart,
     produceEndFrames: produceEnd,
@@ -78,7 +97,7 @@ export function BulkProductionModal({
               scope.mainShots.map((shot) => shot.id),
               {
                 imageModel,
-                videoModel,
+                videoModel: effectiveVideoModel,
               },
             )),
             estimatedCost: 0,
@@ -89,7 +108,7 @@ export function BulkProductionModal({
             produceCoverageImages: produceCoverage,
             produceVideos,
             imageModel,
-            videoModel,
+            videoModel: effectiveVideoModel,
             filter,
             selectedShotIds: scope.selectedMainShotIds,
           });
@@ -261,18 +280,46 @@ export function BulkProductionModal({
               }}
             >
               <span>Video modeli</span>
+                  <select
+                    value={videoModel}
+                    onChange={(event) => {
+                      const nextModel = event.target.value as VideoModelId;
+                      setVideoModel(nextModel);
+                      setVideoQuality(getVideoQuality(nextModel) ?? videoQuality);
+                    }}
+                    style={selectStyle}
+                  >
+                {getVideoModelEntries({ storyboardCapable: true }).map(([modelId, meta]) => (
+                  <option key={modelId} value={modelId}>
+                    {meta.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label
+              style={{
+                display: "grid",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--text-secondary)",
+              }}
+            >
+              <span>Video kalitesi</span>
               <select
-                value={videoModel}
-                onChange={(event) => setVideoModel(event.target.value as VideoModelId)}
+                value={videoQuality}
+                onChange={(event) => {
+                  const nextQuality = event.target.value as "720p" | "1080p";
+                  setVideoQuality(nextQuality);
+                  setVideoModel(resolveStoryboardVideoModelForQuality(videoModel, nextQuality));
+                }}
                 style={selectStyle}
               >
-                {(Object.entries(VIDEO_MODELS) as [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]][]).map(
-                  ([modelId, meta]) => (
-                    <option key={modelId} value={modelId}>
-                      {meta.label}
-                    </option>
-                  ),
-                )}
+                {videoQualityOptions.map((quality) => (
+                  <option key={quality} value={quality}>
+                    {quality}
+                  </option>
+                ))}
               </select>
             </label>
           </div>

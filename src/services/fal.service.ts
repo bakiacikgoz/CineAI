@@ -3,6 +3,10 @@ import { writeFile } from "@tauri-apps/plugin-fs";
 import { extractAudioDirectionBlock } from "@/lib/audio-direction-parser";
 import { type LipSyncModelId, type LipSyncSyncMode } from "@/lib/lipsync";
 import { getApiKey } from "@/lib/store";
+import {
+  generateVideoOnEvoLink,
+  testEvoLinkConnection as testEvoLinkConnectionRequest,
+} from "@/services/evolink.service";
 
 export const IMAGE_MODELS = {
   "fal-ai/nano-banana-2": {
@@ -19,16 +23,197 @@ export const IMAGE_MODELS = {
 
 export type ImageModelId = keyof typeof IMAGE_MODELS;
 
+export const VIDEO_PROVIDER_LABELS = {
+  fal: "fal.ai",
+  evolink: "EvoLink",
+} as const;
+
+export type VideoProviderId = keyof typeof VIDEO_PROVIDER_LABELS;
+export type VideoInputMode = "image-to-video" | "text-to-video";
+
+type VideoModelMeta = {
+  label: string;
+  provider: VideoProviderId;
+  inputMode: VideoInputMode;
+  remoteModel: string;
+  quality?: "720p" | "1080p";
+  costPerSecond: number;
+  costPerSecondWithAudio: number;
+  minDurationS: number;
+  maxDurationS: number;
+  supportsAudio: boolean;
+  supportsAspectRatio: boolean;
+  supportsEndImage: boolean;
+  supportsMultiShot: boolean;
+  supportsNegativePrompt: boolean;
+  storyboardCapable: boolean;
+  generatorCapable: boolean;
+};
+
 export const VIDEO_MODELS = {
   "fal-ai/kling-video/v3/pro/image-to-video": {
-    label: "Kling 3.0 Pro",
+    label: "fal.ai · Kling 3.0 Pro",
+    provider: "fal",
+    inputMode: "image-to-video",
+    remoteModel: "fal-ai/kling-video/v3/pro/image-to-video",
+    quality: "1080p",
     costPerSecond: 0.112,
     costPerSecondWithAudio: 0.168,
+    minDurationS: 3,
     maxDurationS: 15,
     supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
     supportsMultiShot: true,
+    supportsNegativePrompt: true,
+    storyboardCapable: true,
+    generatorCapable: true,
   },
-} as const;
+  "evolink/kling-v3/std/image-to-video": {
+    label: "EvoLink · Kling 3.0 Std (Image)",
+    provider: "evolink",
+    inputMode: "image-to-video",
+    remoteModel: "kling-v3-image-to-video",
+    quality: "720p",
+    costPerSecond: 0.075,
+    costPerSecondWithAudio: 0.1125,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: false,
+    supportsEndImage: true,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "evolink/kling-v3/pro/image-to-video": {
+    label: "EvoLink · Kling 3.0 Pro (Image)",
+    provider: "evolink",
+    inputMode: "image-to-video",
+    remoteModel: "kling-v3-image-to-video",
+    quality: "1080p",
+    costPerSecond: 0.1,
+    costPerSecondWithAudio: 0.15,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: false,
+    supportsEndImage: true,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "evolink/kling-o3/std/image-to-video": {
+    label: "EvoLink · Kling O3 Std (Image)",
+    provider: "evolink",
+    inputMode: "image-to-video",
+    remoteModel: "kling-o3-image-to-video",
+    quality: "720p",
+    costPerSecond: 0.075,
+    costPerSecondWithAudio: 0.1125,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "evolink/kling-o3/pro/image-to-video": {
+    label: "EvoLink · Kling O3 Pro (Image)",
+    provider: "evolink",
+    inputMode: "image-to-video",
+    remoteModel: "kling-o3-image-to-video",
+    quality: "1080p",
+    costPerSecond: 0.1,
+    costPerSecondWithAudio: 0.15,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "evolink/kling-v3/std/text-to-video": {
+    label: "EvoLink · Kling 3.0 Std (Text)",
+    provider: "evolink",
+    inputMode: "text-to-video",
+    remoteModel: "kling-v3-text-to-video",
+    quality: "720p",
+    costPerSecond: 0.075,
+    costPerSecondWithAudio: 0.1125,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: false,
+    supportsMultiShot: false,
+    supportsNegativePrompt: true,
+    storyboardCapable: false,
+    generatorCapable: true,
+  },
+  "evolink/kling-v3/pro/text-to-video": {
+    label: "EvoLink · Kling 3.0 Pro (Text)",
+    provider: "evolink",
+    inputMode: "text-to-video",
+    remoteModel: "kling-v3-text-to-video",
+    quality: "1080p",
+    costPerSecond: 0.1,
+    costPerSecondWithAudio: 0.15,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: false,
+    supportsMultiShot: false,
+    supportsNegativePrompt: true,
+    storyboardCapable: false,
+    generatorCapable: true,
+  },
+  "evolink/kling-o3/std/text-to-video": {
+    label: "EvoLink · Kling O3 Std (Text)",
+    provider: "evolink",
+    inputMode: "text-to-video",
+    remoteModel: "kling-o3-text-to-video",
+    quality: "720p",
+    costPerSecond: 0.075,
+    costPerSecondWithAudio: 0.1125,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: false,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: false,
+    generatorCapable: true,
+  },
+  "evolink/kling-o3/pro/text-to-video": {
+    label: "EvoLink · Kling O3 Pro (Text)",
+    provider: "evolink",
+    inputMode: "text-to-video",
+    remoteModel: "kling-o3-text-to-video",
+    quality: "1080p",
+    costPerSecond: 0.1,
+    costPerSecondWithAudio: 0.15,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: false,
+    supportsMultiShot: false,
+    supportsNegativePrompt: false,
+    storyboardCapable: false,
+    generatorCapable: true,
+  },
+} as const satisfies Record<string, VideoModelMeta>;
 
 export type VideoModelId = keyof typeof VIDEO_MODELS;
 export const LIPSYNC_MODELS = {
@@ -122,7 +307,7 @@ export interface GenerateVideoParams {
   jobId: string;
   model: VideoModelId;
   prompt: string;
-  imageStartPath: string;
+  imageStartPath?: string;
   imageEndPath?: string;
   duration: KlingDuration;
   aspectRatio: VideoAspectRatio;
@@ -137,6 +322,7 @@ export interface GenerateVideoParams {
 export interface GenerateVideoResult {
   url: string;
   requestId?: string;
+  durationS?: number;
 }
 
 export interface GenerateLipSyncVideoParams {
@@ -173,6 +359,165 @@ type FalQueueResultResponse = {
   requestId?: string;
   data?: unknown;
 };
+
+export function getVideoProviderLabel(provider: VideoProviderId): string {
+  return VIDEO_PROVIDER_LABELS[provider];
+}
+
+export function resolveVideoModel(model?: string | null): VideoModelId {
+  return model && model in VIDEO_MODELS
+    ? (model as VideoModelId)
+    : "fal-ai/kling-video/v3/pro/image-to-video";
+}
+
+export function getVideoModelMeta(
+  model?: string | null,
+): (typeof VIDEO_MODELS)[VideoModelId] {
+  return VIDEO_MODELS[resolveVideoModel(model)];
+}
+
+export function resolveStoryboardVideoModel(model?: string | null): VideoModelId {
+  const resolved = resolveVideoModel(model);
+  return VIDEO_MODELS[resolved].storyboardCapable
+    ? resolved
+    : "fal-ai/kling-video/v3/pro/image-to-video";
+}
+
+export function getVideoQuality(
+  model?: string | null,
+): "720p" | "1080p" | null {
+  return getVideoModelMeta(model).quality ?? null;
+}
+
+export function getVideoQualityOptions(
+  model?: string | null,
+): Array<"720p" | "1080p"> {
+  const resolved = resolveVideoModel(model);
+  const meta = VIDEO_MODELS[resolved];
+  const options = (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >)
+    .filter(([, candidate]) =>
+      candidate.provider === meta.provider &&
+      candidate.remoteModel === meta.remoteModel &&
+      candidate.inputMode === meta.inputMode &&
+      candidate.storyboardCapable === meta.storyboardCapable,
+    )
+    .map(([, candidate]) => candidate.quality)
+    .filter((quality): quality is "720p" | "1080p" => Boolean(quality));
+
+  return Array.from(new Set(options)).sort((left, right) =>
+    left === right ? 0 : left === "720p" ? -1 : 1,
+  );
+}
+
+export function getStoryboardVideoQualityOptions(): Array<"720p" | "1080p"> {
+  const options = (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >)
+    .filter(([, meta]) => meta.storyboardCapable && meta.inputMode === "image-to-video")
+    .map(([, meta]) => meta.quality)
+    .filter((quality): quality is "720p" | "1080p" => Boolean(quality));
+
+  return Array.from(new Set(options)).sort((left, right) =>
+    left === right ? 0 : left === "720p" ? -1 : 1,
+  );
+}
+
+export function resolveVideoModelWithQuality(
+  model: string | null | undefined,
+  quality?: "720p" | "1080p" | null,
+): VideoModelId {
+  const resolved = resolveVideoModel(model);
+  const meta = VIDEO_MODELS[resolved];
+
+  if (!quality) {
+    return resolved;
+  }
+
+  const candidate = (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >).find(([, candidateMeta]) =>
+    candidateMeta.provider === meta.provider &&
+    candidateMeta.remoteModel === meta.remoteModel &&
+    candidateMeta.inputMode === meta.inputMode &&
+    candidateMeta.storyboardCapable === meta.storyboardCapable &&
+    candidateMeta.quality === quality,
+  );
+
+  return candidate?.[0] ?? resolved;
+}
+
+export function resolveStoryboardVideoModelForQuality(
+  model: string | null | undefined,
+  quality?: "720p" | "1080p" | null,
+): VideoModelId {
+  const baseModel = resolveStoryboardVideoModel(model);
+  const exactMatch = resolveVideoModelWithQuality(baseModel, quality);
+
+  if (!quality || getVideoQuality(exactMatch) === quality) {
+    return exactMatch;
+  }
+
+  const fallback = (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >).find(([, meta]) =>
+    meta.storyboardCapable &&
+    meta.inputMode === "image-to-video" &&
+    meta.quality === quality,
+  );
+
+  return fallback?.[0] ?? baseModel;
+}
+
+export function resolveVideoProvider(model?: string | null): VideoProviderId {
+  return getVideoModelMeta(model).provider;
+}
+
+export function getVideoModelEntries(options?: {
+  provider?: VideoProviderId;
+  storyboardCapable?: boolean;
+  generatorCapable?: boolean;
+}): Array<[VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]> {
+  return (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >).filter(([, meta]) => {
+    if (options?.provider && meta.provider !== options.provider) {
+      return false;
+    }
+
+    if (options?.storyboardCapable && !meta.storyboardCapable) {
+      return false;
+    }
+
+    if (options?.generatorCapable && !meta.generatorCapable) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+export function selectVideoModelForProvider(params: {
+  provider: VideoProviderId;
+  currentModel?: string | null;
+  generatorCapable?: boolean;
+  storyboardCapable?: boolean;
+}): VideoModelId {
+  const currentMeta = params.currentModel ? getVideoModelMeta(params.currentModel) : null;
+  const candidate = getVideoModelEntries({
+    provider: params.provider,
+    generatorCapable: params.generatorCapable,
+    storyboardCapable: params.storyboardCapable,
+  }).find(([, meta]) => meta.inputMode === currentMeta?.inputMode)
+    ?? getVideoModelEntries({
+      provider: params.provider,
+      generatorCapable: params.generatorCapable,
+      storyboardCapable: params.storyboardCapable,
+    })[0];
+
+  return candidate?.[0] ?? "fal-ai/kling-video/v3/pro/image-to-video";
+}
 
 function normalizeAspectRatio(aspectRatio: string): "auto" | "21:9" | "16:9" | "3:2" | "4:3" | "5:4" | "1:1" | "4:5" | "3:4" | "2:3" | "9:16" {
   const supportedAspectRatios = new Set([
@@ -512,6 +857,15 @@ export async function testFalConnection(
   return invokeFalCommand<FalAliasSummary>("fal_test_connection", { apiKey });
 }
 
+export async function testEvoLinkConnection(
+  apiKeyOverride?: string,
+): Promise<{
+  remainingUserCredits: number;
+  remainingTokenCredits: number | null;
+}> {
+  return testEvoLinkConnectionRequest(apiKeyOverride);
+}
+
 export async function generateImage(
   params: GenerateImageParams,
 ): Promise<GenerateImageResult> {
@@ -620,7 +974,7 @@ export async function generateImage(
   };
 }
 
-export async function generateVideo(
+async function generateVideoOnFal(
   params: GenerateVideoParams,
 ): Promise<GenerateVideoResult> {
   const {
@@ -633,6 +987,10 @@ export async function generateVideo(
     abortSignal,
     onProgress,
   } = params;
+
+  if (!imageStartPath) {
+    throw new Error("fal.ai image-to-video icin START gorseli gerekli.");
+  }
 
   const apiKey = await resolveFalApiKey();
 
@@ -732,6 +1090,66 @@ export async function generateVideo(
         detectedMultiShot: promptAnalysis.detectedMultiShot,
         shotCount: promptAnalysis.shotCount,
         shotType: params.shotType,
+      },
+      error,
+    });
+
+    throw new Error(summarizeFalApiError(error));
+  }
+}
+
+export async function generateVideo(
+  params: GenerateVideoParams,
+): Promise<GenerateVideoResult> {
+  const meta = getVideoModelMeta(params.model);
+  const promptAnalysis = analyzeKlingVideoPrompt(params.prompt);
+
+  if (promptAnalysis.detectedMultiShot && !meta.supportsMultiShot) {
+    throw new Error(
+      `${meta.label} icin multi-shot gonderimi henuz uygulanmadi. Tek shot prompt kullan veya fal.ai Kling modeline gec.`,
+    );
+  }
+
+  if (meta.provider === "fal") {
+    return generateVideoOnFal(params);
+  }
+
+  try {
+    return await generateVideoOnEvoLink({
+      remoteModel: meta.remoteModel,
+      inputMode: meta.inputMode,
+      prompt: promptAnalysis.prompt || params.prompt,
+      duration: params.duration,
+      aspectRatio: params.aspectRatio,
+      quality: meta.quality ?? "720p",
+      generateAudio: meta.supportsAudio
+        ? (params.generateAudio ?? promptAnalysis.hasAudioDirection)
+        : false,
+      negativePrompt: dedupePromptList([
+        DEFAULT_KLING_NEGATIVE_PROMPT,
+        params.negativePrompt,
+        promptAnalysis.negativePrompt,
+      ]),
+      imageStartPath: params.imageStartPath,
+      imageEndPath: meta.supportsEndImage ? params.imageEndPath : undefined,
+      abortSignal: params.abortSignal,
+      onProgress: params.onProgress,
+      supportsAudio: meta.supportsAudio,
+      supportsAspectRatio: meta.supportsAspectRatio,
+      supportsNegativePrompt: meta.supportsNegativePrompt,
+    });
+  } catch (error) {
+    console.error("EvoLink video request failed", {
+      model: params.model,
+      requestContext: {
+        duration: params.duration,
+        aspectRatio: params.aspectRatio,
+        generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
+        hasStartImage: Boolean(params.imageStartPath),
+        hasEndImage: Boolean(params.imageEndPath),
+        provider: meta.provider,
+        inputMode: meta.inputMode,
+        quality: meta.quality,
       },
       error,
     });
@@ -845,12 +1263,6 @@ export function resolveImageModel(model?: string | null): ImageModelId {
   return model && model in IMAGE_MODELS ? (model as ImageModelId) : "fal-ai/nano-banana-2";
 }
 
-export function resolveVideoModel(model?: string | null): VideoModelId {
-  return model && model in VIDEO_MODELS
-    ? (model as VideoModelId)
-    : "fal-ai/kling-video/v3/pro/image-to-video";
-}
-
 export function calcImageCost(
   model: ImageModelId | string | null | undefined,
   quantity: number,
@@ -872,7 +1284,7 @@ export function calcVideoCost(
   generateAudio = false,
 ): number {
   const resolvedModel = VIDEO_MODELS[resolveVideoModel(model)];
-  const rate = generateAudio
+  const rate = generateAudio && resolvedModel.supportsAudio
     ? resolvedModel.costPerSecondWithAudio
     : resolvedModel.costPerSecond;
 

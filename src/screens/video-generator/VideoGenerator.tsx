@@ -32,13 +32,17 @@ import {
   analyzeKlingVideoPrompt,
   clampKlingDuration,
   distributeKlingMultiShotDurations,
+  getVideoModelEntries,
+  getVideoModelMeta,
+  getVideoProviderLabel,
   getKlingMultiPromptValidationMessage,
   KLING_V3_DURATION_VALUES,
-  VIDEO_MODELS,
+  selectVideoModelForProvider,
   type KlingDuration,
   type KlingShotType,
   type VideoAspectRatio,
   type VideoModelId,
+  type VideoProviderId,
 } from "@/services/fal.service";
 import {
   deleteAssetsBatch,
@@ -140,6 +144,22 @@ export function VideoGenerator() {
   const [inboundNotice, setInboundNotice] = useState<string | null>(null);
   const [lightboxItem, setLightboxItem] = useState<MediaLightboxItem | null>(null);
   const promptAnalysis = useMemo(() => analyzeKlingVideoPrompt(prompt), [prompt]);
+  const generatorModelEntries = useMemo(
+    () => getVideoModelEntries({ generatorCapable: true }),
+    [],
+  );
+  const selectedModelMeta = useMemo(() => getVideoModelMeta(model), [model]);
+  const providerOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(generatorModelEntries.map(([, meta]) => meta.provider)),
+      ) as VideoProviderId[],
+    [generatorModelEntries],
+  );
+  const scopedGeneratorModelEntries = useMemo(
+    () => getVideoModelEntries({ provider: selectedModelMeta.provider, generatorCapable: true }),
+    [selectedModelMeta.provider],
+  );
 
   function applyVideoGeneratorState(nextState: VideoGeneratorScreenState) {
     setMode(nextState.mode);
@@ -150,8 +170,8 @@ export function VideoGenerator() {
     setLocalEndPath(nextState.localEndPath);
     setPrompt(nextState.prompt);
     setModel(
-      nextState.model in VIDEO_MODELS
-        ? (nextState.model as VideoModelId)
+      generatorModelEntries.some(([modelId]) => modelId === nextState.model)
+        ? nextState.model
         : DEFAULT_VIDEO_GENERATOR_STATE.model,
     );
     setDuration(clampKlingDuration(nextState.duration));
@@ -201,7 +221,7 @@ export function VideoGenerator() {
       applyVideoGeneratorState({
         ...DEFAULT_VIDEO_GENERATOR_STATE,
         model:
-          resolvedDefaults.model in VIDEO_MODELS
+          generatorModelEntries.some(([modelId]) => modelId === resolvedDefaults.model)
             ? (resolvedDefaults.model as VideoModelId)
             : DEFAULT_VIDEO_GENERATOR_STATE.model,
         aspectRatio: resolvedDefaults.aspectRatio,
@@ -218,7 +238,7 @@ export function VideoGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectId]);
+  }, [activeProjectId, generatorModelEntries]);
 
   useEffect(() => {
     if (!activeProject) {
@@ -349,7 +369,7 @@ export function VideoGenerator() {
         inboundPreset,
       });
 
-      if (!cancelled && resolvedDefaults.model in VIDEO_MODELS) {
+      if (!cancelled && generatorModelEntries.some(([modelId]) => modelId === resolvedDefaults.model)) {
         setModel(resolvedDefaults.model as VideoModelId);
         setAspectRatio(resolvedDefaults.aspectRatio);
         setCfg(resolvedDefaults.cfg);
@@ -401,7 +421,7 @@ export function VideoGenerator() {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectId, location.pathname, location.state, navigate, selectedShot]);
+  }, [activeProjectId, generatorModelEntries, location.pathname, location.state, navigate, selectedShot]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -542,6 +562,16 @@ export function VideoGenerator() {
     }
   }
 
+  function handleSelectProvider(provider: VideoProviderId) {
+    setModel(
+      selectVideoModelForProvider({
+        provider,
+        currentModel: model,
+        generatorCapable: true,
+      }),
+    );
+  }
+
   async function handleDownloadMedia(path: string, fileName: string, title: string) {
     try {
       await downloadMediaFile({
@@ -565,8 +595,8 @@ export function VideoGenerator() {
     const startPath = selectedStartSource?.absolutePath;
     const endPath = selectedEndSource?.absolutePath;
 
-    if (!startPath) {
-      await message("Video uretimi icin bir START gorseli secilmeli.", {
+    if (selectedModelMeta.inputMode === "image-to-video" && !startPath) {
+      await message("Secili model icin bir START gorseli secilmeli.", {
         title: "Video Generator",
         kind: "warning",
       });
@@ -574,6 +604,17 @@ export function VideoGenerator() {
     }
 
     if (promptAnalysis.detectedMultiShot) {
+      if (!selectedModelMeta.supportsMultiShot) {
+        await message(
+          `${selectedModelMeta.label} icin multi-shot gonderimi henuz desteklenmiyor. Tek shot prompt kullan veya fal.ai Kling modeline gec.`,
+          {
+            title: "Video Generator",
+            kind: "warning",
+          },
+        );
+        return;
+      }
+
       try {
         distributeKlingMultiShotDurations(duration, promptAnalysis.shotCount);
       } catch (error) {
@@ -604,15 +645,19 @@ export function VideoGenerator() {
       await enqueueVideoJobs({
         model,
         prompt: prompt.trim(),
-        imageStartPath: startPath,
-        imageEndPath: endPath ?? undefined,
+        imageStartPath:
+          selectedModelMeta.inputMode === "image-to-video" ? startPath : undefined,
+        imageEndPath: selectedModelMeta.supportsEndImage ? (endPath ?? undefined) : undefined,
         resolveStartDependencies: false,
         resolveEndDependencies: false,
         duration,
         aspectRatio,
         cfg,
-        generateAudio,
-        shotType: promptAnalysis.detectedMultiShot ? shotType : undefined,
+        generateAudio: selectedModelMeta.supportsAudio ? generateAudio : false,
+        shotType:
+          promptAnalysis.detectedMultiShot && selectedModelMeta.supportsMultiShot
+            ? shotType
+            : undefined,
         quantity: 1,
         shotId: mode === "shot-linked" ? selectedShot?.id : undefined,
       });
@@ -726,86 +771,123 @@ export function VideoGenerator() {
             </label>
           ) : null}
 
-          <label style={fieldStyle}>
-            <span style={fieldLabelStyle}>
-              START gorsel
-              {mode === "shot-linked" && selectedShot?.imageStartPath && startAssetId
-                ? " (shot'tan yuklendi)"
-                : ""}
-            </span>
-            <select
-              className="studio-field"
-              onChange={(event) => {
-                setStartAssetId(event.target.value);
-                setLocalStartPath(null);
-              }}
-              style={selectStyle}
-              value={startAssetId}
-            >
-              <option value="">Bir gorsel sec</option>
-              {imageAssets.map((asset) => (
-                <option key={asset.id} value={asset.id}>
-                  {asset.filename}
-                </option>
-              ))}
-            </select>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn-secondary"
-                onClick={() => void handlePickLocalSource("start")}
-                type="button"
-              >
-                Dosyadan sec
-              </button>
-              {localStartPath ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <span style={fieldLabelStyle}>Platform</span>
+            <div style={{ display: "flex", gap: 8 }}>
+              {providerOptions.map((provider) => (
                 <button
-                  className="btn-secondary"
-                  onClick={() => handleClearLocalSource("start")}
+                  key={provider}
+                  className={selectedModelMeta.provider === provider ? "btn-primary" : "btn-secondary"}
+                  onClick={() => handleSelectProvider(provider)}
+                  style={{ flex: 1 }}
                   type="button"
                 >
-                  Yerel secimi kaldir
+                  {getVideoProviderLabel(provider)}
                 </button>
-              ) : null}
+              ))}
             </div>
-          </label>
+          </div>
 
-          <label style={fieldStyle}>
-            <span style={fieldLabelStyle}>END gorsel (opsiyonel)</span>
-            <select
-              className="studio-field"
-              onChange={(event) => {
-                setEndAssetId(event.target.value);
-                setLocalEndPath(null);
-              }}
-              style={selectStyle}
-              value={endAssetId}
-            >
-              <option value="">BOS</option>
-              {imageAssets.map((asset) => (
-                <option key={asset.id} value={asset.id}>
-                  {asset.filename}
-                </option>
-              ))}
-            </select>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn-secondary"
-                onClick={() => void handlePickLocalSource("end")}
-                type="button"
-              >
-                Dosyadan sec
-              </button>
-              {localEndPath ? (
-                <button
-                  className="btn-secondary"
-                  onClick={() => handleClearLocalSource("end")}
-                  type="button"
+          {selectedModelMeta.inputMode === "image-to-video" ? (
+            <>
+              <label style={fieldStyle}>
+                <span style={fieldLabelStyle}>
+                  START gorsel
+                  {mode === "shot-linked" && selectedShot?.imageStartPath && startAssetId
+                    ? " (shot'tan yuklendi)"
+                    : ""}
+                </span>
+                <select
+                  className="studio-field"
+                  onChange={(event) => {
+                    setStartAssetId(event.target.value);
+                    setLocalStartPath(null);
+                  }}
+                  style={selectStyle}
+                  value={startAssetId}
                 >
-                  Yerel secimi kaldir
-                </button>
+                  <option value="">Bir gorsel sec</option>
+                  {imageAssets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.filename}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => void handlePickLocalSource("start")}
+                    type="button"
+                  >
+                    Dosyadan sec
+                  </button>
+                  {localStartPath ? (
+                    <button
+                      className="btn-secondary"
+                      onClick={() => handleClearLocalSource("start")}
+                      type="button"
+                    >
+                      Yerel secimi kaldir
+                    </button>
+                  ) : null}
+                </div>
+              </label>
+
+              {selectedModelMeta.supportsEndImage ? (
+                <label style={fieldStyle}>
+                  <span style={fieldLabelStyle}>END gorsel (opsiyonel)</span>
+                  <select
+                    className="studio-field"
+                    onChange={(event) => {
+                      setEndAssetId(event.target.value);
+                      setLocalEndPath(null);
+                    }}
+                    style={selectStyle}
+                    value={endAssetId}
+                  >
+                    <option value="">BOS</option>
+                    {imageAssets.map((asset) => (
+                      <option key={asset.id} value={asset.id}>
+                        {asset.filename}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => void handlePickLocalSource("end")}
+                      type="button"
+                    >
+                      Dosyadan sec
+                    </button>
+                    {localEndPath ? (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => handleClearLocalSource("end")}
+                        type="button"
+                      >
+                        Yerel secimi kaldir
+                      </button>
+                    ) : null}
+                  </div>
+                </label>
               ) : null}
+            </>
+          ) : (
+            <div
+              style={{
+                padding: "12px 14px",
+                borderRadius: 14,
+                border: "1px solid var(--glass-border)",
+                background: "rgba(20, 184, 166, 0.06)",
+                color: "var(--text-secondary)",
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            >
+              Secili model text-to-video calisir. START veya END gorseli zorunlu degil.
             </div>
-          </label>
+          )}
 
           <label style={fieldStyle}>
             <span style={fieldLabelStyle}>Prompt</span>
@@ -826,17 +908,19 @@ export function VideoGenerator() {
               style={selectStyle}
               value={model}
             >
-              {(Object.entries(VIDEO_MODELS) as [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]][]).map(
-                ([modelId, info]) => (
-                  <option key={modelId} value={modelId}>
-                    {info.label}
-                  </option>
-                ),
-              )}
+              {scopedGeneratorModelEntries.map(([modelId, info]) => (
+                <option key={modelId} value={modelId}>
+                  {info.label}
+                </option>
+              ))}
             </select>
           </label>
 
-          <CollapsibleSection title="Video ayarlari" subtitle={`${duration}s · Ses ${generateAudio ? "acik" : "kapali"}`} defaultOpen>
+          <CollapsibleSection
+            title="Video ayarlari"
+            subtitle={`${duration}s · Ses ${selectedModelMeta.supportsAudio && generateAudio ? "acik" : "kapali"}`}
+            defaultOpen
+          >
             <div style={{ display: "grid", gap: 12 }}>
               <div style={{ display: "grid", gap: 6 }}>
                 <span style={fieldLabelStyle}>Sure</span>
@@ -856,13 +940,17 @@ export function VideoGenerator() {
             </div>
 
             <ToggleSwitch
-              label="Yerel ses uretimi"
-              description="Kling'e generate_audio=true gonderilir"
-              checked={generateAudio}
-              onChange={setGenerateAudio}
+              label="Ses efektleri"
+              description={
+                selectedModelMeta.supportsAudio
+                  ? "Desteklenen modellerde ses uretimi acilir."
+                  : "Secili model ses parametresi kabul etmiyor."
+              }
+              checked={selectedModelMeta.supportsAudio ? generateAudio : false}
+              onChange={selectedModelMeta.supportsAudio ? setGenerateAudio : () => undefined}
             />
 
-            {promptAnalysis.detectedMultiShot ? (
+            {promptAnalysis.detectedMultiShot && selectedModelMeta.supportsMultiShot ? (
               <div
                 style={{
                   display: "grid",
@@ -895,6 +983,28 @@ export function VideoGenerator() {
                   ))}
                 </div>
               </div>
+            ) : promptAnalysis.detectedMultiShot ? (
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  padding: "12px 14px",
+                  borderRadius: 14,
+                  border: "1px solid rgba(245, 158, 11, 0.25)",
+                  background: "rgba(245, 158, 11, 0.08)",
+                  color: "var(--text-secondary)",
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                }}
+              >
+                <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+                  Multi-shot algilandi
+                </span>
+                <span>
+                  {selectedModelMeta.label} icin bu uygulamada multi-shot gonderimi yok.
+                  Tek shot prompt kullan veya fal.ai Kling modeline gec.
+                </span>
+              </div>
             ) : null}
             </div>
           </CollapsibleSection>
@@ -918,13 +1028,19 @@ export function VideoGenerator() {
                       key={value}
                       className={aspectRatio === value ? "btn-primary" : "btn-secondary"}
                       onClick={() => setAspectRatio(value)}
-                      style={{ flex: 1 }}
+                      disabled={!selectedModelMeta.supportsAspectRatio}
+                      style={{ flex: 1, opacity: selectedModelMeta.supportsAspectRatio ? 1 : 0.55 }}
                       type="button"
                     >
                       {value}
                     </button>
                   ))}
                 </div>
+                {!selectedModelMeta.supportsAspectRatio ? (
+                  <span style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    Secili model aspect ratio parametresi yerine kaynak gorselin oranini kullanir.
+                  </span>
+                ) : null}
               </div>
             </div>
           </CollapsibleSection>

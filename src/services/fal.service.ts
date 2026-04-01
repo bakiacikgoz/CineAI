@@ -429,6 +429,8 @@ export interface GenerateLipSyncVideoResult {
 
 const DEFAULT_KLING_NEGATIVE_PROMPT = "blur, distort, and low quality";
 const CRYSTAL_UPSCALER_MODEL = "clarityai/crystal-upscaler";
+const KLING_MULTI_PROMPT_CHAR_LIMIT = 512;
+const MIN_SHARED_KLING_CONTEXT_LENGTH = 24;
 
 type FalAliasSummary = {
   aliasCount: number;
@@ -857,14 +859,79 @@ function normalizeKlingPromptSegment(value: string): string {
     .trim();
 }
 
+function truncateKlingPromptSegment(value: string, maxLength: number): string {
+  const normalized = normalizeKlingPromptSegment(value);
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  if (maxLength <= 1) {
+    return normalized.slice(0, maxLength);
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function compactKlingPromptSegment(value: string, maxLength: number): string {
+  const normalized = normalizeKlingPromptSegment(value);
+
+  if (!normalized || normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const chunks = normalized.match(/[^.!?;,]+[.!?;,]?/g)
+    ?.map((chunk) => chunk.trim())
+    .filter(Boolean) ?? [normalized];
+  let compacted = "";
+
+  for (const chunk of chunks) {
+    const candidate = normalizeKlingPromptSegment([compacted, chunk].filter(Boolean).join(" "));
+
+    if (candidate.length <= maxLength) {
+      compacted = candidate;
+      continue;
+    }
+
+    break;
+  }
+
+  return compacted || truncateKlingPromptSegment(normalized, maxLength);
+}
+
 function buildKlingMultiPromptPrompt(
   sharedPrefix: string,
   shotPrompt: string,
   sharedSuffix: string,
 ): string {
-  return normalizeKlingPromptSegment(
-    [sharedPrefix, shotPrompt, sharedSuffix].filter(Boolean).join("\n\n"),
+  const compactedShotPrompt = compactKlingPromptSegment(
+    shotPrompt,
+    KLING_MULTI_PROMPT_CHAR_LIMIT,
   );
+  let prompt = compactedShotPrompt;
+  const reservedForSuffix = sharedSuffix ? MIN_SHARED_KLING_CONTEXT_LENGTH + 1 : 0;
+  const availablePrefixLength =
+    KLING_MULTI_PROMPT_CHAR_LIMIT - prompt.length - reservedForSuffix - 1;
+
+  if (sharedPrefix && availablePrefixLength >= MIN_SHARED_KLING_CONTEXT_LENGTH) {
+    const compactedPrefix = compactKlingPromptSegment(sharedPrefix, availablePrefixLength);
+
+    if (compactedPrefix) {
+      prompt = normalizeKlingPromptSegment([compactedPrefix, prompt].join(" "));
+    }
+  }
+
+  const availableSuffixLength = KLING_MULTI_PROMPT_CHAR_LIMIT - prompt.length - 1;
+
+  if (sharedSuffix && availableSuffixLength >= MIN_SHARED_KLING_CONTEXT_LENGTH) {
+    const compactedSuffix = compactKlingPromptSegment(sharedSuffix, availableSuffixLength);
+
+    if (compactedSuffix) {
+      prompt = normalizeKlingPromptSegment([prompt, compactedSuffix].join(" "));
+    }
+  }
+
+  return compactKlingPromptSegment(prompt, KLING_MULTI_PROMPT_CHAR_LIMIT);
 }
 
 function stripKlingShotHeader(shotPrompt: string): string {
@@ -902,6 +969,10 @@ export function summarizeFalApiError(error: unknown): string {
 
   if (isQuotaRelatedErrorMessage(rawMessage)) {
     return `EvoLink kredisi yetersiz. ${rawMessage}`;
+  }
+
+  if (rawMessage.includes("Prompt must not exceed 512 characters")) {
+    return `Fal Kling multi-shot limiti asildi. Her shot promptu en fazla 512 karakter olabilir. Ortak ortam aciklamasini ve shot bloklarini kisaltin. ${rawMessage}`;
   }
 
   return rawMessage;
@@ -1210,6 +1281,15 @@ export function getKlingMultiPromptValidationMessage(
 
   if (emptyIndex >= 0) {
     return `Shot ${emptyIndex + 1} promptu bos. Kling multi-shot icin her shot acik bir prompt icermeli.`;
+  }
+
+  const tooLongIndex = promptAnalysis.multiPrompt.findIndex(
+    (element) => element.prompt.length > KLING_MULTI_PROMPT_CHAR_LIMIT,
+  );
+
+  if (tooLongIndex >= 0) {
+    const length = promptAnalysis.multiPrompt[tooLongIndex]?.prompt.length ?? 0;
+    return `Shot ${tooLongIndex + 1} promptu ${length} karakter. Kling multi-shot modda her shot en fazla 512 karakter olabilir. Shot bloklarini kisaltin.`;
   }
 
   return null;

@@ -152,7 +152,34 @@ describe("buildFalVideoRequestInput", () => {
     expect(input.prompt).toBeUndefined();
     expect(Array.isArray(input.multi_prompt)).toBe(true);
     expect(input.multi_prompt).toHaveLength(2);
-    expect((input.multi_prompt as Array<{ prompt: string }>)[0]?.prompt.length).toBeGreaterThan(512);
+    expect((input.multi_prompt as Array<{ prompt: string }>)[0]?.prompt.length).toBeLessThanOrEqual(512);
+    expect((input.multi_prompt as Array<{ prompt: string }>)[0]?.prompt).toContain(
+      "A deliberate cinematic action beat",
+    );
+  });
+
+  it("compacts shared context so each multi-shot prompt fits fal limits", () => {
+    const input = buildFalVideoRequestInput({
+      model: "fal-ai/kling-video/v3/pro/image-to-video",
+      prompt: [
+        "Photorealistic traditional Turkish kahvehane, summer night. PRECISELY match reference environment: pale blue-green plaster walls, dark wooden window frames, old family photographs, old B&W photos, brass tea trays, industrial samovar. TV mounted high on upper-left wall near ceiling. Same environment throughout, stable background, consistent lighting.",
+        "Shot 1: Wide master. Two men sit at the center table under tungsten practicals while the camera slowly drifts forward and the room feels quiet, observational, and grounded.",
+        "Shot 2: Medium push-in on the older man as he raises the tea glass, glances toward the television, then turns back to the table with restrained concern and natural breathing motion.",
+      ].join("\n\n"),
+      startImageUrl: "https://cdn.example.com/start.png",
+      duration: 8,
+      aspectRatio: "16:9",
+      cfg: 0.45,
+      generateAudio: true,
+      shotType: "customize",
+    });
+
+    const prompts = input.multi_prompt as Array<{ prompt: string }>;
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts.every((element) => element.prompt.length <= 512)).toBe(true);
+    expect(prompts[0]?.prompt).toContain("Photorealistic traditional Turkish kahvehane");
+    expect(prompts[1]?.prompt).toContain("Medium push-in on the older man");
   });
 });
 
@@ -177,5 +204,16 @@ describe("summarizeFalApiError", () => {
 
     expect(summary).toContain("EvoLink kredisi yetersiz.");
     expect(summary).toContain("available 10.0000 credits");
+  });
+
+  it("surfaces fal multi-shot prompt length failures with a friendlier summary", () => {
+    const summary = summarizeFalApiError(
+      new Error(
+        'Fal queue sonuc istegi basarisiz oldu (422 Unprocessable Entity): {"detail":[{"type":"value_error","loc":["body","multi_prompt",0,"prompt"],"msg":"Value error, Prompt must not exceed 512 characters."}]}',
+      ),
+    );
+
+    expect(summary).toContain("Fal Kling multi-shot limiti asildi.");
+    expect(summary).toContain("512 karakter");
   });
 });

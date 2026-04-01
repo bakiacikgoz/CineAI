@@ -19,6 +19,7 @@ import { useQueueStore, type Job } from "@/store/queue.store";
 const JOB_TYPE_LABELS: Record<string, string> = {
   image_start: "START Kare",
   image_end: "END Kare",
+  image_upscale: "Crystal Yukseltme",
   character_image: "Karakter Adayi",
   video: "Video",
   lipsync: "Lipsync Master",
@@ -219,7 +220,7 @@ function JobRow({ job }: { job: Job }) {
         ? Clapperboard
       : job.type === "audio_dialogue"
         ? AudioLines
-      : job.type === "upscale"
+      : job.type === "upscale" || job.type === "image_upscale"
         ? ArrowUpToLine
         : ImageIcon;
 

@@ -5,7 +5,11 @@ import { v4 as uuidv4 } from "uuid";
 import { getCoveragePrompt, resolveBulkScope } from "@/lib/bulk-production";
 import { composeShotCharacterPrompt } from "@/lib/character-studio";
 import { getBulkVideoJobType } from "@/lib/job-queue-types";
-import { saveAsset } from "@/services/asset.service";
+import {
+  deleteAssetRecord,
+  getAssetById,
+  saveAsset,
+} from "@/services/asset.service";
 import {
   generateShotDialogueAudio,
   getDialogueAudioShotById,
@@ -21,11 +25,13 @@ import {
   calcVideoCost,
   downloadImageToLocal,
   downloadVideoToLocal,
+  generateCrystalUpscaledImage,
   generateImage,
   generateVideo,
   getVideoModelMeta,
   resolveImageModel,
   resolveVideoModel,
+  type CrystalUpscaleFactor,
   type ImageModelId,
   type KlingDuration,
   type KlingShotType,
@@ -60,6 +66,10 @@ type JobExecutor = (abortSignal: AbortSignal) => Promise<void>;
 type RegisteredTask = {
   execute: JobExecutor;
 };
+
+type PersistedJobRetryReviver = (job: Job) => Promise<boolean>;
+
+let persistedJobRetryReviver: PersistedJobRetryReviver | null = null;
 
 type StoryboardFrameMode = "start" | "end" | "coverage";
 
@@ -130,11 +140,31 @@ class JobRunner {
     this.pump();
   }
 
-  retry(jobId: string) {
+  async retry(jobId: string) {
     const store = useQueueStore.getState();
     const job = store.jobs.find((item) => item.id === jobId);
 
-    if (!job || job.status !== "error" || !this.tasks.has(jobId)) {
+    if (!job || job.status !== "error") {
+      return;
+    }
+
+    if (!this.tasks.has(jobId)) {
+      try {
+        const revived = await persistedJobRetryReviver?.(job);
+
+        if (revived) {
+          store.removeJob(jobId);
+        }
+      } catch (error) {
+        store.updateJob(jobId, {
+          errorMsg:
+            error instanceof Error
+              ? error.message
+              : "Is yeniden kuyruga alinamadi.",
+          completedAt: Date.now(),
+        });
+      }
+
       return;
     }
 
@@ -353,6 +383,7 @@ export interface EnqueueVideoJobParams {
   prompt: string;
   imageStartPath?: string;
   imageEndPath?: string;
+  characterReferenceImagePaths?: string[];
   resolveStartDependencies?: boolean;
   resolveEndDependencies?: boolean;
   duration: KlingDuration;
@@ -379,6 +410,21 @@ export interface EnqueueUpscaleJobParams {
   filterId?: number;
   priority?: number;
   outputSuffix?: string;
+}
+
+export type ImageUpscaleOutputMode = "variant" | "autonomous_replace";
+
+export interface EnqueueImageUpscaleJobParams {
+  shotId?: string;
+  assetId?: string;
+  sourcePath?: string;
+  sourceRelativePath?: string;
+  stage: "start" | "end";
+  outputMode?: ImageUpscaleOutputMode;
+  priority?: number;
+  outputSuffix?: string;
+  scaleFactor?: CrystalUpscaleFactor;
+  assetTags?: string[];
 }
 
 export interface EnqueueAudioDialogueJobParams {
@@ -479,6 +525,35 @@ function findQueuedJob(shotId: string, type: JobType): Job | undefined {
     );
 }
 
+function findQueuedImageUpscaleJob(params: {
+  assetId?: string;
+  shotId?: string;
+  stage: "start" | "end";
+}): Job | undefined {
+  return useQueueStore
+    .getState()
+    .jobs.slice()
+    .reverse()
+    .find((job) => {
+      if (
+        job.type !== "image_upscale" ||
+        (job.status !== "queued" && job.status !== "active")
+      ) {
+        return false;
+      }
+
+      const jobStage =
+        job.params && typeof job.params.stage === "string"
+          ? job.params.stage
+          : null;
+
+      return (
+        (params.assetId && job.assetId === params.assetId) ||
+        (params.shotId && job.shotId === params.shotId && jobStage === params.stage)
+      );
+    });
+}
+
 async function buildStoryboardImagePath(
   projectFolderPath: string,
   shot: ShotRow,
@@ -525,6 +600,26 @@ async function buildStoryboard4kVideoPath(
     `act-${padSegment(shot.act)}`,
     `scene-${padSegment(shot.scene)}`,
     `${shot.shotNumber.toLowerCase()}_video_4k${fileSuffix}.mp4`,
+  );
+}
+
+async function buildImageUpscalePath(
+  projectFolderPath: string,
+  shot: ShotRow | null,
+  stage: "start" | "end",
+  fallbackFileStem: string,
+  outputSuffix?: string,
+): Promise<string> {
+  if (shot) {
+    return buildStoryboardImagePath(projectFolderPath, shot, stage, outputSuffix);
+  }
+
+  const fileSuffix = outputSuffix ? `_${outputSuffix}` : "";
+  return join(
+    projectFolderPath,
+    "assets",
+    "images",
+    `${fallbackFileStem}_${stage}_crystal${fileSuffix}.png`,
   );
 }
 
@@ -1377,6 +1472,14 @@ export async function enqueueVideoJobs(
           characterLookId: shot.characterLookId,
         })
       : null;
+    const characterElementId = characterContext?.character.klingElementId?.trim() || null;
+    const elementIds = characterElementId ? [characterElementId] : [];
+    const characterReferenceImagePaths = Array.from(
+      new Set([
+        ...(params.characterReferenceImagePaths ?? []),
+        ...(characterContext?.referencePaths ?? []),
+      ]),
+    );
     const effectivePrompt = composeShotCharacterPrompt(
       params.prompt.trim(),
       characterContext?.promptHint,
@@ -1421,6 +1524,8 @@ export async function enqueueVideoJobs(
         persistToShotPath,
         completeStatus,
         basePrompt: params.prompt.trim(),
+        elementIds,
+        characterReferenceImagePaths,
       },
       progress: 0,
       costUsd: costPerVideo,
@@ -1473,6 +1578,8 @@ export async function enqueueVideoJobs(
           prompt: effectivePrompt,
           imageStartPath: startPath,
           imageEndPath: endPath,
+          elementIds,
+          characterReferenceImagePaths,
           duration,
           aspectRatio,
           cfg,
@@ -1678,6 +1785,227 @@ export async function enqueueUpscaleJobs(
   });
 
   return [jobId];
+}
+
+async function resolveImageUpscaleSource(
+  projectFolderPath: string,
+  shot: ShotRow | null,
+  params: EnqueueImageUpscaleJobParams,
+): Promise<{
+  sourceAsset: Awaited<ReturnType<typeof getAssetById>>;
+  sourceRelativePath: string;
+  sourceAbsolutePath: string;
+}> {
+  const sourceAsset = params.assetId ? await getAssetById(params.assetId) : null;
+  let sourceRelativePath =
+    params.sourceRelativePath ??
+    sourceAsset?.file_path ??
+    (params.stage === "start" ? shot?.imageStartPath : shot?.imageEndPath) ??
+    null;
+  let sourceAbsolutePath = params.sourcePath ?? null;
+
+  if (!sourceAbsolutePath && sourceRelativePath) {
+    sourceAbsolutePath = await resolveProjectFilePath(projectFolderPath, sourceRelativePath);
+  }
+
+  if (!sourceRelativePath && sourceAbsolutePath) {
+    sourceRelativePath = toRelativeProjectPath(projectFolderPath, sourceAbsolutePath);
+  }
+
+  if (!sourceRelativePath || !sourceAbsolutePath) {
+    throw new Error("Crystal upscale icin kaynak gorsel bulunamadi.");
+  }
+
+  if (!(await exists(sourceAbsolutePath))) {
+    throw new Error("Crystal upscale kaynak gorseli bulunamadi.");
+  }
+
+  return {
+    sourceAsset,
+    sourceRelativePath,
+    sourceAbsolutePath,
+  };
+}
+
+function resolveImageUpscaleFallbackDimension(
+  resultDimension: number,
+  sourceDimension: number | null | undefined,
+  scaleFactor: CrystalUpscaleFactor,
+): number {
+  if (resultDimension > 0) {
+    return resultDimension;
+  }
+
+  if (!sourceDimension || sourceDimension <= 0) {
+    return 0;
+  }
+
+  return sourceDimension * scaleFactor;
+}
+
+export async function enqueueImageUpscaleJob(
+  params: EnqueueImageUpscaleJobParams,
+): Promise<string> {
+  const project = useProjectStore.getState().activeProject;
+
+  if (!project) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const shot = params.shotId ? await getShotById(params.shotId) : null;
+  const existing = findQueuedImageUpscaleJob({
+    assetId: params.assetId,
+    shotId: shot?.id,
+    stage: params.stage,
+  });
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const outputMode = params.outputMode ?? "variant";
+  const scaleFactor = params.scaleFactor ?? 2;
+  const source = await resolveImageUpscaleSource(project.folderPath, shot, params);
+
+  if (outputMode === "autonomous_replace" && !source.sourceAsset) {
+    throw new Error("Otonom aday replace icin kaynak asset bulunamadi.");
+  }
+
+  const jobId = uuidv4();
+  const job: Job = {
+    id: jobId,
+    projectId: project.id,
+    type: "image_upscale",
+    status: "queued",
+    priority: params.priority ?? 118,
+    shotId: shot?.id,
+    assetId: params.assetId,
+    model: "clarityai/crystal-upscaler",
+    prompt: "Crystal image upscale",
+    params: {
+      stage: params.stage,
+      outputMode,
+      scaleFactor,
+      sourceRelativePath: source.sourceRelativePath,
+      outputSuffix: params.outputSuffix ?? null,
+      assetTags: params.assetTags ?? null,
+    },
+    progress: 0,
+    queuedAt: Date.now(),
+  };
+
+  jobRunner.enqueue(job, async (abortSignal) => {
+    const queue = useQueueStore.getState();
+    const updateProgress = (progress: number) => {
+      queue.updateJob(jobId, { progress });
+    };
+
+    const sourceAsset = source.sourceAsset;
+
+    try {
+      const result = await generateCrystalUpscaledImage({
+        sourcePath: source.sourceAbsolutePath,
+        scaleFactor,
+        abortSignal,
+        onProgress: updateProgress,
+      });
+
+      queue.updateJob(jobId, {
+        falJobId: result.requestId,
+        progress: 84,
+        errorMsg: undefined,
+      });
+
+      const destinationPath = await buildImageUpscalePath(
+        project.folderPath,
+        shot,
+        params.stage,
+        jobId.slice(0, 8),
+        params.outputSuffix,
+      );
+      await ensureFileDirectory(destinationPath);
+      await downloadImageToLocal(result.url, destinationPath, abortSignal);
+
+      const relativePath = toRelativeProjectPath(project.folderPath, destinationPath);
+      const filename = destinationPath.split(/[\\/]/).pop() ?? `${jobId}.png`;
+      const resolvedWidth = resolveImageUpscaleFallbackDimension(
+        result.width,
+        sourceAsset?.width,
+        scaleFactor,
+      );
+      const resolvedHeight = resolveImageUpscaleFallbackDimension(
+        result.height,
+        sourceAsset?.height,
+        scaleFactor,
+      );
+      const nextTags =
+        outputMode === "autonomous_replace" && sourceAsset
+          ? sourceAsset.tagsList
+          : Array.from(
+              new Set([
+                `stage:${params.stage}`,
+                ...(params.assetTags ?? []),
+                "upscaled",
+                "clarity-upscale",
+              ]),
+            );
+      const prompt =
+        sourceAsset?.prompt ??
+        (params.stage === "start" ? shot?.promptStart : shot?.promptEnd) ??
+        "Crystal image upscale";
+
+      const assetId = await saveAsset({
+        projectId: project.id,
+        type: "image",
+        filePath: relativePath,
+        filename,
+        width: resolvedWidth,
+        height: resolvedHeight,
+        modelUsed: "clarityai/crystal-upscaler",
+        prompt,
+        shotId: sourceAsset?.shot_id ?? shot?.id ?? undefined,
+        falJobId: result.requestId ?? jobId,
+        metadata: {
+          source: "image-upscale",
+          sourceAssetId: sourceAsset?.id ?? null,
+          sourcePath: source.sourceRelativePath,
+          sourceStage: params.stage,
+          providerModel: "clarityai/crystal-upscaler",
+          scaleFactor,
+        },
+        tags: nextTags,
+      });
+
+      if (outputMode === "autonomous_replace" && sourceAsset) {
+        const selectedPath = params.stage === "start" ? shot?.imageStartPath : shot?.imageEndPath;
+        const isSelectedAsset =
+          sourceAsset.tagsList.includes("selected") ||
+          normalizeStoredPath(selectedPath ?? "") === normalizeStoredPath(sourceAsset.file_path);
+
+        if (shot?.id && isSelectedAsset) {
+          await updateShotPaths(
+            shot.id,
+            params.stage === "start"
+              ? { imageStartPath: relativePath }
+              : { imageEndPath: relativePath },
+          );
+        }
+
+        await deleteAssetRecord(sourceAsset.id);
+      }
+
+      queue.updateJob(jobId, {
+        assetId,
+        falJobId: result.requestId ?? jobId,
+        resultPath: destinationPath,
+        costUsd: 0,
+      });
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  return jobId;
 }
 
 export async function enqueueAudioDialogueJob(
@@ -2140,7 +2468,7 @@ export async function enqueueBulkProduction(
 }
 
 export async function retryJob(jobId: string): Promise<void> {
-  jobRunner.retry(jobId);
+  await jobRunner.retry(jobId);
 }
 
 export function cancelJob(jobId: string): void {
@@ -2149,4 +2477,10 @@ export function cancelJob(jobId: string): void {
 
 export function resumeJobQueue(): void {
   jobRunner.resume();
+}
+
+export function registerPersistedJobRetryReviver(
+  reviver: PersistedJobRetryReviver | null,
+): void {
+  persistedJobRetryReviver = reviver;
 }

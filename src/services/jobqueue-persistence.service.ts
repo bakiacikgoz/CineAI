@@ -11,11 +11,13 @@ import {
 } from "@/services/fal.service";
 import {
   enqueueAudioDialogueJob,
+  enqueueImageUpscaleJob,
   enqueueImageJobs,
   enqueueLipSyncJob,
   enqueueStoryboardFrameJob,
   enqueueUpscaleJobs,
   enqueueVideoJobs,
+  registerPersistedJobRetryReviver,
 } from "@/services/jobqueue.service";
 import {
   getShots,
@@ -62,6 +64,9 @@ let pendingSyncSnapshot: {
   jobs: Job[];
   key: string;
 } | null = null;
+
+const INTERRUPTED_JOB_ERROR_MESSAGE =
+  "Uygulama kapandigi veya yeniden yuklendigi icin is kesildi. Tekrar deneyin.";
 
 function coerceVideoModel(model: string | undefined): VideoModelId | undefined {
   return model && model in VIDEO_MODELS ? (model as VideoModelId) : undefined;
@@ -174,6 +179,38 @@ function hasActiveShotJob(
 ): boolean {
   const activeTypes = jobsByShotId.get(shotId);
   return jobTypes.some((jobType) => activeTypes?.has(jobType));
+}
+
+export function buildImageUpscaleRequeueParams(job: Job):
+  | Parameters<typeof enqueueImageUpscaleJob>[0]
+  | null {
+  if (job.type !== "image_upscale") {
+    return null;
+  }
+
+  const params = job.params ?? {};
+  const stage = params.stage === "start" || params.stage === "end" ? params.stage : null;
+
+  if (!stage) {
+    return null;
+  }
+
+  return {
+    shotId: job.shotId,
+    assetId: job.assetId,
+    sourceRelativePath:
+      typeof params.sourceRelativePath === "string" ? params.sourceRelativePath : undefined,
+    sourcePath: typeof params.sourcePath === "string" ? params.sourcePath : undefined,
+    stage,
+    outputMode:
+      params.outputMode === "autonomous_replace" ? "autonomous_replace" : "variant",
+    priority: job.priority,
+    outputSuffix: typeof params.outputSuffix === "string" ? params.outputSuffix : undefined,
+    scaleFactor: params.scaleFactor === 4 ? 4 : 2,
+    assetTags: Array.isArray(params.assetTags)
+      ? (params.assetTags as string[])
+      : undefined,
+  };
 }
 
 async function reconcileOrphanedGeneratingShotStatuses(
@@ -460,6 +497,18 @@ function scheduleSync(projectId?: string, jobs?: Job[], projectFolderPath?: stri
 
 async function requeuePersistedJob(job: Job): Promise<void> {
   const params = job.params ?? {};
+
+  if (job.type === "image_upscale") {
+    const imageUpscaleParams = buildImageUpscaleRequeueParams(job);
+
+    if (!imageUpscaleParams) {
+      return;
+    }
+
+    await enqueueImageUpscaleJob(imageUpscaleParams);
+    return;
+  }
+
   const basePrompt =
     typeof params.basePrompt === "string" && params.basePrompt.trim()
       ? params.basePrompt
@@ -611,6 +660,17 @@ async function requeuePersistedJob(job: Job): Promise<void> {
   });
 }
 
+async function revivePersistedErrorJob(job: Job): Promise<boolean> {
+  const activeProjectId = useProjectStore.getState().activeProject?.id ?? null;
+
+  if (job.status !== "error" || !activeProjectId || job.projectId !== activeProjectId) {
+    return false;
+  }
+
+  await requeuePersistedJob(job);
+  return true;
+}
+
 async function hydrateForProject(projectId: string): Promise<void> {
   isHydrating = true;
 
@@ -627,7 +687,7 @@ async function hydrateForProject(projectId: string): Promise<void> {
       .map((job) => ({
         ...job,
         status: "error" as const,
-        errorMsg: "Interrupted while the app was closed.",
+        errorMsg: INTERRUPTED_JOB_ERROR_MESSAGE,
         completedAt: Date.now(),
       }));
     const queuedJobs = persistedJobs.filter((job) => job.status === "queued");
@@ -679,6 +739,7 @@ export function initializeJobQueuePersistence(): void {
   }
 
   initialized = true;
+  registerPersistedJobRetryReviver(revivePersistedErrorJob);
   lastProjectId = useProjectStore.getState().activeProject?.id ?? null;
   lastProjectFolderPath = useProjectStore.getState().activeProject?.folderPath ?? null;
 

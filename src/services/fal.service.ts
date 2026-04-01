@@ -29,13 +29,17 @@ export const VIDEO_PROVIDER_LABELS = {
 } as const;
 
 export type VideoProviderId = keyof typeof VIDEO_PROVIDER_LABELS;
-export type VideoInputMode = "image-to-video" | "text-to-video";
+export type VideoInputMode =
+  | "image-to-video"
+  | "reference-to-video"
+  | "text-to-video";
 
 type VideoModelMeta = {
   label: string;
   provider: VideoProviderId;
   inputMode: VideoInputMode;
   remoteModel: string;
+  variantGroup?: string;
   quality?: "720p" | "1080p";
   costPerSecond: number;
   costPerSecondWithAudio: number;
@@ -50,15 +54,75 @@ type VideoModelMeta = {
   generatorCapable: boolean;
 };
 
+const MAX_EVOLINK_ELEMENT_COUNT = 3;
+
 export const VIDEO_MODELS = {
   "fal-ai/kling-video/v3/pro/image-to-video": {
     label: "fal.ai · Kling 3.0 Pro",
     provider: "fal",
     inputMode: "image-to-video",
     remoteModel: "fal-ai/kling-video/v3/pro/image-to-video",
+    variantGroup: "fal-ai/kling-video/v3/image-to-video",
     quality: "1080p",
     costPerSecond: 0.112,
     costPerSecondWithAudio: 0.168,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
+    supportsMultiShot: true,
+    supportsNegativePrompt: true,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "fal-ai/kling-video/v3/standard/image-to-video": {
+    label: "fal.ai Â· Kling 3.0 Std",
+    provider: "fal",
+    inputMode: "image-to-video",
+    remoteModel: "fal-ai/kling-video/v3/standard/image-to-video",
+    variantGroup: "fal-ai/kling-video/v3/image-to-video",
+    quality: "720p",
+    costPerSecond: 0.084,
+    costPerSecondWithAudio: 0.126,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
+    supportsMultiShot: true,
+    supportsNegativePrompt: true,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "fal-ai/kling-video/o3/standard/reference-to-video": {
+    label: "fal.ai - Kling O3 Std (Reference)",
+    provider: "fal",
+    inputMode: "reference-to-video",
+    remoteModel: "fal-ai/kling-video/o3/standard/reference-to-video",
+    variantGroup: "fal-ai/kling-video/o3/reference-to-video",
+    quality: "720p",
+    costPerSecond: 0.084,
+    costPerSecondWithAudio: 0.112,
+    minDurationS: 3,
+    maxDurationS: 15,
+    supportsAudio: true,
+    supportsAspectRatio: true,
+    supportsEndImage: true,
+    supportsMultiShot: true,
+    supportsNegativePrompt: true,
+    storyboardCapable: true,
+    generatorCapable: true,
+  },
+  "fal-ai/kling-video/o3/pro/reference-to-video": {
+    label: "fal.ai - Kling O3 Pro (Reference)",
+    provider: "fal",
+    inputMode: "reference-to-video",
+    remoteModel: "fal-ai/kling-video/o3/pro/reference-to-video",
+    variantGroup: "fal-ai/kling-video/o3/reference-to-video",
+    quality: "1080p",
+    costPerSecond: 0.112,
+    costPerSecondWithAudio: 0.14,
     minDurationS: 3,
     maxDurationS: 15,
     supportsAudio: true,
@@ -303,12 +367,30 @@ export interface GenerateImageResult {
   requestId?: string;
 }
 
+export type CrystalUpscaleFactor = 2 | 4;
+
+export interface GenerateCrystalUpscaledImageParams {
+  sourcePath: string;
+  scaleFactor?: CrystalUpscaleFactor;
+  abortSignal?: AbortSignal;
+  onProgress?: (pct: number) => void;
+}
+
+export interface GenerateCrystalUpscaledImageResult {
+  url: string;
+  width: number;
+  height: number;
+  requestId?: string;
+}
+
 export interface GenerateVideoParams {
   jobId: string;
   model: VideoModelId;
   prompt: string;
   imageStartPath?: string;
   imageEndPath?: string;
+  elementIds?: string[];
+  characterReferenceImagePaths?: string[];
   duration: KlingDuration;
   aspectRatio: VideoAspectRatio;
   cfg: number;
@@ -323,6 +405,11 @@ export interface GenerateVideoResult {
   url: string;
   requestId?: string;
   durationS?: number;
+}
+
+export interface FalKlingElementInput {
+  frontal_image_url: string;
+  reference_image_urls?: string[];
 }
 
 export interface GenerateLipSyncVideoParams {
@@ -341,6 +428,7 @@ export interface GenerateLipSyncVideoResult {
 }
 
 const DEFAULT_KLING_NEGATIVE_PROMPT = "blur, distort, and low quality";
+const CRYSTAL_UPSCALER_MODEL = "clarityai/crystal-upscaler";
 
 type FalAliasSummary = {
   aliasCount: number;
@@ -376,6 +464,18 @@ export function getVideoModelMeta(
   return VIDEO_MODELS[resolveVideoModel(model)];
 }
 
+function getVideoVariantGroup(meta: VideoModelMeta): string {
+  return (
+    meta.variantGroup ??
+    [
+      meta.provider,
+      meta.remoteModel,
+      meta.inputMode,
+      meta.storyboardCapable ? "storyboard" : "generator",
+    ].join(":")
+  );
+}
+
 export function resolveStoryboardVideoModel(model?: string | null): VideoModelId {
   const resolved = resolveVideoModel(model);
   return VIDEO_MODELS[resolved].storyboardCapable
@@ -394,12 +494,13 @@ export function getVideoQualityOptions(
 ): Array<"720p" | "1080p"> {
   const resolved = resolveVideoModel(model);
   const meta = VIDEO_MODELS[resolved];
+  const variantGroup = getVideoVariantGroup(meta);
   const options = (Object.entries(VIDEO_MODELS) as Array<
     [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
   >)
     .filter(([, candidate]) =>
       candidate.provider === meta.provider &&
-      candidate.remoteModel === meta.remoteModel &&
+      getVideoVariantGroup(candidate) === variantGroup &&
       candidate.inputMode === meta.inputMode &&
       candidate.storyboardCapable === meta.storyboardCapable,
     )
@@ -415,7 +516,7 @@ export function getStoryboardVideoQualityOptions(): Array<"720p" | "1080p"> {
   const options = (Object.entries(VIDEO_MODELS) as Array<
     [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
   >)
-    .filter(([, meta]) => meta.storyboardCapable && meta.inputMode === "image-to-video")
+    .filter(([, meta]) => meta.storyboardCapable)
     .map(([, meta]) => meta.quality)
     .filter((quality): quality is "720p" | "1080p" => Boolean(quality));
 
@@ -430,6 +531,7 @@ export function resolveVideoModelWithQuality(
 ): VideoModelId {
   const resolved = resolveVideoModel(model);
   const meta = VIDEO_MODELS[resolved];
+  const variantGroup = getVideoVariantGroup(meta);
 
   if (!quality) {
     return resolved;
@@ -439,7 +541,7 @@ export function resolveVideoModelWithQuality(
     [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
   >).find(([, candidateMeta]) =>
     candidateMeta.provider === meta.provider &&
-    candidateMeta.remoteModel === meta.remoteModel &&
+    getVideoVariantGroup(candidateMeta) === variantGroup &&
     candidateMeta.inputMode === meta.inputMode &&
     candidateMeta.storyboardCapable === meta.storyboardCapable &&
     candidateMeta.quality === quality,
@@ -453,6 +555,7 @@ export function resolveStoryboardVideoModelForQuality(
   quality?: "720p" | "1080p" | null,
 ): VideoModelId {
   const baseModel = resolveStoryboardVideoModel(model);
+  const baseMeta = VIDEO_MODELS[baseModel];
   const exactMatch = resolveVideoModelWithQuality(baseModel, quality);
 
   if (!quality || getVideoQuality(exactMatch) === quality) {
@@ -460,6 +563,12 @@ export function resolveStoryboardVideoModelForQuality(
   }
 
   const fallback = (Object.entries(VIDEO_MODELS) as Array<
+    [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
+  >).find(([, meta]) =>
+    meta.storyboardCapable &&
+    meta.inputMode === baseMeta.inputMode &&
+    meta.quality === quality,
+  ) ?? (Object.entries(VIDEO_MODELS) as Array<
     [VideoModelId, (typeof VIDEO_MODELS)[VideoModelId]]
   >).find(([, meta]) =>
     meta.storyboardCapable &&
@@ -543,6 +652,174 @@ function normalizeMultilineText(value: string): string {
   return value.replace(/\r\n/g, "\n").trim();
 }
 
+function normalizeEvoLinkElementIds(elementIds?: string[]): string[] {
+  return Array.from(
+    new Set(
+      (elementIds ?? [])
+        .map((elementId) => elementId.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, MAX_EVOLINK_ELEMENT_COUNT);
+}
+
+function normalizeFalCharacterReferencePaths(referenceImagePaths?: string[]): string[] {
+  return Array.from(
+    new Set(
+      (referenceImagePaths ?? [])
+        .map((referencePath) => referencePath.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function supportsEvoLinkElementList(meta: VideoModelMeta): boolean {
+  return meta.provider === "evolink" && meta.remoteModel.startsWith("kling-o3");
+}
+
+function supportsFalReferenceElements(meta: VideoModelMeta): boolean {
+  return meta.provider === "fal" && meta.inputMode === "reference-to-video";
+}
+
+export function injectEvoLinkElementReferences(
+  prompt: string,
+  elementCount: number,
+): string {
+  const normalizedPrompt = normalizeMultilineText(prompt);
+
+  if (!Number.isInteger(elementCount) || elementCount < 1) {
+    return normalizedPrompt;
+  }
+
+  const tokens = Array.from(
+    { length: Math.min(elementCount, MAX_EVOLINK_ELEMENT_COUNT) },
+    (_, index) => `<<<element_${index + 1}>>>`,
+  );
+  const hasAllReferences = tokens.every((token) => normalizedPrompt.includes(token));
+
+  if (hasAllReferences) {
+    return normalizedPrompt;
+  }
+
+  const anchorLine =
+    tokens.length === 1
+      ? `Use ${tokens[0]} as the primary character identity anchor and preserve this exact character throughout the shot.`
+      : `Use ${tokens.join(", ")} as the character identity anchors and preserve them consistently throughout the shot.`;
+
+  return [anchorLine, normalizedPrompt].filter(Boolean).join("\n\n").trim();
+}
+
+export function injectFalElementReferences(
+  prompt: string,
+  elementCount: number,
+): string {
+  const normalizedPrompt = normalizeMultilineText(prompt);
+
+  if (!Number.isInteger(elementCount) || elementCount < 1) {
+    return normalizedPrompt;
+  }
+
+  const tokens = Array.from({ length: elementCount }, (_, index) => `@Element${index + 1}`);
+  const hasAllReferences = tokens.every((token) => normalizedPrompt.includes(token));
+
+  if (hasAllReferences) {
+    return normalizedPrompt;
+  }
+
+  const anchorLine =
+    tokens.length === 1
+      ? `Use ${tokens[0]} as the primary character identity anchor and preserve this exact character throughout the shot.`
+      : `Use ${tokens.join(", ")} as the character identity anchors and preserve them consistently throughout the shot.`;
+
+  return [anchorLine, normalizedPrompt].filter(Boolean).join("\n\n").trim();
+}
+
+export function buildFalCharacterElements(
+  referenceImageUrls?: string[],
+): FalKlingElementInput[] {
+  const normalizedUrls = Array.from(
+    new Set((referenceImageUrls ?? []).map((url) => url.trim()).filter(Boolean)),
+  );
+  const [frontalImageUrl, ...referenceImageUrlsRest] = normalizedUrls;
+
+  if (!frontalImageUrl) {
+    return [];
+  }
+
+  const referenceImageUrlsForFal =
+    referenceImageUrlsRest.length > 0 ? referenceImageUrlsRest : [frontalImageUrl];
+
+  return [
+    {
+      frontal_image_url: frontalImageUrl,
+      reference_image_urls: referenceImageUrlsForFal,
+    },
+  ];
+}
+
+export function buildFalVideoRequestInput(params: {
+  model: VideoModelId;
+  prompt: string;
+  startImageUrl: string;
+  endImageUrl?: string;
+  characterReferenceImageUrls?: string[];
+  duration: KlingDuration;
+  aspectRatio: VideoAspectRatio;
+  cfg: number;
+  generateAudio: boolean;
+  negativePrompt?: string;
+  shotType?: KlingShotType;
+}): Record<string, unknown> {
+  const meta = getVideoModelMeta(params.model);
+  const promptAnalysis = analyzeKlingVideoPrompt(params.prompt);
+  const multiPrompt = promptAnalysis.multiPrompt;
+  const usesMultiPrompt = Array.isArray(multiPrompt) && multiPrompt.length > 1;
+  const input: Record<string, unknown> = {
+    start_image_url: params.startImageUrl,
+    duration: params.duration,
+    aspect_ratio: params.aspectRatio,
+    cfg_scale: params.cfg,
+    generate_audio: params.generateAudio,
+  };
+
+  const negativePrompt = dedupePromptList([
+    DEFAULT_KLING_NEGATIVE_PROMPT,
+    params.negativePrompt,
+    promptAnalysis.negativePrompt,
+  ]);
+
+  if (meta.supportsNegativePrompt && negativePrompt) {
+    input.negative_prompt = negativePrompt;
+  }
+
+  if (params.endImageUrl) {
+    input.end_image_url = params.endImageUrl;
+  }
+
+  if (supportsFalReferenceElements(meta)) {
+    const elements = buildFalCharacterElements(params.characterReferenceImageUrls);
+
+    if (elements.length > 0) {
+      input.elements = elements;
+    }
+  }
+
+  if (usesMultiPrompt) {
+    const shotDurations = distributeKlingMultiShotDurations(
+      params.duration,
+      multiPrompt.length,
+    );
+    input.multi_prompt = multiPrompt.map((element, index) => ({
+      ...element,
+      duration: shotDurations[index],
+    }));
+    input.shot_type = params.shotType ?? "customize";
+    return input;
+  }
+
+  input.prompt = promptAnalysis.prompt || params.prompt;
+  return input;
+}
+
 function dedupePromptList(values: Array<string | undefined>): string | undefined {
   const normalized = Array.from(
     new Set(
@@ -599,8 +876,60 @@ function stripKlingShotHeader(shotPrompt: string): string {
   return shotPrompt.replace(/^\s*Shot\s+\d+\s*[,:.\-]\s*/i, "").trim();
 }
 
-function summarizeFalApiError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function isQuotaRelatedErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("http 402") ||
+    normalized.includes("insufficient credit") ||
+    normalized.includes("insufficient quota") ||
+    normalized.includes("pre-deduction failed") ||
+    normalized.includes("quota exceeded")
+  );
+}
+
+function isFalBalanceRelatedErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("user is locked") ||
+    normalized.includes("exhausted balance") ||
+    normalized.includes("top up your balance") ||
+    normalized.includes("fal.ai/dashboard/billing")
+  );
+}
+
+export function summarizeFalApiError(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+
+  if (isFalBalanceRelatedErrorMessage(rawMessage)) {
+    return `FAL bakiyesi tukenmis veya hesap kilitlenmis. ${rawMessage}`;
+  }
+
+  if (isQuotaRelatedErrorMessage(rawMessage)) {
+    return `EvoLink kredisi yetersiz. ${rawMessage}`;
+  }
+
+  return rawMessage;
+}
+
+function isRetriableFalUploadErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("408 request timeout") ||
+    normalized.includes("\"status\":408") ||
+    normalized.includes(" request timeout") ||
+    normalized.includes(" timeout") ||
+    normalized.includes("timed out") ||
+    normalized.includes("429") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("502") ||
+    normalized.includes("503") ||
+    normalized.includes("504") ||
+    normalized.includes("connection reset") ||
+    normalized.includes("connection aborted") ||
+    normalized.includes("temporarily unavailable")
+  );
 }
 
 function createAbortError(): Error {
@@ -652,11 +981,55 @@ async function resolveFalApiKey(apiKeyOverride?: string): Promise<string> {
   return apiKey;
 }
 
-async function uploadLocalFileToFal(filePath: string, apiKey: string): Promise<string> {
-  return invokeFalCommand<string>("fal_upload_file", {
-    apiKey,
-    filePath,
-  });
+async function uploadLocalFileToFal(
+  filePath: string,
+  apiKey: string,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  const retryDelaysMs = [900, 2200];
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    if (abortSignal?.aborted) {
+      throw createAbortError();
+    }
+
+    try {
+      return await invokeFalCommand<string>("fal_upload_file", {
+        apiKey,
+        filePath,
+      });
+    } catch (error) {
+      lastError = error;
+      const summarizedError = summarizeFalApiError(error);
+
+      if (
+        !isRetriableFalUploadErrorMessage(summarizedError) ||
+        attempt === retryDelaysMs.length
+      ) {
+        throw new Error(summarizedError);
+      }
+
+      await waitForDelay(retryDelaysMs[attempt], abortSignal);
+    }
+  }
+
+  throw new Error(summarizeFalApiError(lastError));
+}
+
+async function uploadLocalFilesToFal(
+  filePaths: string[],
+  apiKey: string,
+  abortSignal?: AbortSignal,
+): Promise<string[]> {
+  const uploadedUrls: string[] = [];
+
+  // Fal CDN upload step is prone to transient 408s; keeping uploads sequential reduces burst pressure.
+  for (const filePath of filePaths) {
+    uploadedUrls.push(await uploadLocalFileToFal(filePath, apiKey, abortSignal));
+  }
+
+  return uploadedUrls;
 }
 
 async function runFalQueue(params: {
@@ -866,6 +1239,50 @@ export async function testEvoLinkConnection(
   return testEvoLinkConnectionRequest(apiKeyOverride);
 }
 
+export function buildCrystalUpscaleInput(
+  imageUrl: string,
+  scaleFactor: CrystalUpscaleFactor = 2,
+): Record<string, unknown> {
+  return {
+    image_url: imageUrl,
+    scale_factor: scaleFactor,
+  };
+}
+
+type FalImageOutput = {
+  url: string;
+  width: number;
+  height: number;
+  seed?: number;
+};
+
+export function extractFalImageOutput(data: unknown): FalImageOutput {
+  const payload = (data ?? {}) as {
+    image?: string | { url?: string; width?: number; height?: number; seed?: number };
+    images?: Array<string | { url?: string; width?: number; height?: number; seed?: number }>;
+  };
+  const candidate = payload.images?.[0] ?? payload.image;
+
+  if (typeof candidate === "string") {
+    return {
+      url: candidate,
+      width: 0,
+      height: 0,
+    };
+  }
+
+  if (candidate?.url) {
+    return {
+      url: candidate.url,
+      width: candidate.width ?? 0,
+      height: candidate.height ?? 0,
+      seed: candidate.seed,
+    };
+  }
+
+  throw new Error("fal yanitinda indirilebilir gorsel bulunamadi.");
+}
+
 export async function generateImage(
   params: GenerateImageParams,
 ): Promise<GenerateImageResult> {
@@ -887,7 +1304,7 @@ export async function generateImage(
   );
   const referenceUrls =
     mergedReferencePaths.length > 0
-      ? await Promise.all(mergedReferencePaths.map((path) => uploadLocalFileToFal(path, apiKey)))
+      ? await uploadLocalFilesToFal(mergedReferencePaths, apiKey, abortSignal)
       : [];
   let endpoint: string = model;
   let input: Record<string, unknown>;
@@ -944,32 +1361,52 @@ export async function generateImage(
     },
   });
 
-  const data = result.data as {
-    image?: {
-      url: string;
-      width?: number;
-      height?: number;
-      seed?: number;
-    };
-    images?: Array<{
-      url: string;
-      width?: number;
-      height?: number;
-      seed?: number;
-    }>;
-  };
-
-  const image = data.images?.[0] ?? data.image;
-
-  if (!image?.url) {
-    throw new Error("fal yanitinda indirilebilir gorsel bulunamadi.");
-  }
+  const image = extractFalImageOutput(result.data);
 
   return {
     url: image.url,
-    width: image.width ?? 0,
-    height: image.height ?? 0,
+    width: image.width,
+    height: image.height,
     seed: image.seed,
+    requestId: result.requestId,
+  };
+}
+
+export async function generateCrystalUpscaledImage(
+  params: GenerateCrystalUpscaledImageParams,
+): Promise<GenerateCrystalUpscaledImageResult> {
+  const apiKey = await resolveFalApiKey();
+  const scaleFactor = params.scaleFactor ?? 2;
+  const imageUrl = await uploadLocalFileToFal(params.sourcePath, apiKey, params.abortSignal);
+
+  params.onProgress?.(18);
+
+  const result = await runFalQueue({
+    apiKey,
+    endpointId: CRYSTAL_UPSCALER_MODEL,
+    input: buildCrystalUpscaleInput(imageUrl, scaleFactor),
+    abortSignal: params.abortSignal,
+    pollIntervalMs: 800,
+    onQueueUpdate(update) {
+      if (update.status === "IN_QUEUE") {
+        params.onProgress?.(12);
+      }
+
+      if (update.status === "IN_PROGRESS") {
+        params.onProgress?.(55);
+      }
+
+      if (update.status === "COMPLETED") {
+        params.onProgress?.(78);
+      }
+    },
+  });
+  const image = extractFalImageOutput(result.data);
+
+  return {
+    url: image.url,
+    width: image.width,
+    height: image.height,
     requestId: result.requestId,
   };
 }
@@ -987,58 +1424,47 @@ async function generateVideoOnFal(
     abortSignal,
     onProgress,
   } = params;
+  const meta = getVideoModelMeta(model);
 
   if (!imageStartPath) {
-    throw new Error("fal.ai image-to-video icin START gorseli gerekli.");
+    throw new Error("fal.ai video uretimi icin START gorseli gerekli.");
   }
 
   const apiKey = await resolveFalApiKey();
 
-  const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey);
+  const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey, abortSignal);
   const promptAnalysis = analyzeKlingVideoPrompt(prompt);
   const multiPrompt = promptAnalysis.multiPrompt;
   const usesMultiPrompt = Array.isArray(multiPrompt) && multiPrompt.length > 1;
   const suppressEndImageForMultiPrompt = Boolean(imageEndPath) && usesMultiPrompt;
   const tailImageUrl =
     imageEndPath && !suppressEndImageForMultiPrompt
-      ? await uploadLocalFileToFal(imageEndPath, apiKey)
+      ? await uploadLocalFileToFal(imageEndPath, apiKey, abortSignal)
       : undefined;
-  const input: Record<string, unknown> = {
-    start_image_url: imageUrl,
+  const normalizedCharacterReferencePaths = supportsFalReferenceElements(meta)
+    ? normalizeFalCharacterReferencePaths(params.characterReferenceImagePaths)
+    : [];
+  const characterReferenceImageUrls =
+    normalizedCharacterReferencePaths.length > 0
+      ? await uploadLocalFilesToFal(
+          normalizedCharacterReferencePaths,
+          apiKey,
+          abortSignal,
+        )
+      : [];
+  const input = buildFalVideoRequestInput({
+    model,
+    prompt,
+    startImageUrl: imageUrl,
+    endImageUrl: tailImageUrl,
+    characterReferenceImageUrls,
     duration,
-    aspect_ratio: params.aspectRatio,
-    cfg_scale: cfg,
-    generate_audio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
-    negative_prompt: dedupePromptList([
-      DEFAULT_KLING_NEGATIVE_PROMPT,
-      params.negativePrompt,
-      promptAnalysis.negativePrompt,
-    ]),
-  };
-
-  if (tailImageUrl) {
-    input.end_image_url = tailImageUrl;
-  }
-
-  if (usesMultiPrompt) {
-    const validationMessage = getKlingMultiPromptValidationMessage(promptAnalysis);
-
-    if (validationMessage) {
-      throw new Error(validationMessage);
-    }
-
-    const shotDurations = distributeKlingMultiShotDurations(
-      duration,
-      multiPrompt.length,
-    );
-    input.multi_prompt = multiPrompt.map((element, index) => ({
-      ...element,
-      duration: shotDurations[index],
-    }));
-    input.shot_type = params.shotType ?? "customize";
-  } else {
-    input.prompt = promptAnalysis.prompt || prompt;
-  }
+    aspectRatio: params.aspectRatio,
+    cfg,
+    generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
+    negativePrompt: params.negativePrompt,
+    shotType: params.shotType,
+  });
 
   onProgress?.(18);
 
@@ -1087,9 +1513,11 @@ async function generateVideoOnFal(
         generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
         hasEndImage: Boolean(tailImageUrl),
         endImageSuppressed: suppressEndImageForMultiPrompt,
+        characterElementCount: characterReferenceImageUrls.length > 0 ? 1 : 0,
         detectedMultiShot: promptAnalysis.detectedMultiShot,
         shotCount: promptAnalysis.shotCount,
         shotType: params.shotType,
+        inputMode: meta.inputMode,
       },
       error,
     });
@@ -1102,7 +1530,19 @@ export async function generateVideo(
   params: GenerateVideoParams,
 ): Promise<GenerateVideoResult> {
   const meta = getVideoModelMeta(params.model);
-  const promptAnalysis = analyzeKlingVideoPrompt(params.prompt);
+  const elementIds = supportsEvoLinkElementList(meta)
+    ? normalizeEvoLinkElementIds(params.elementIds)
+    : [];
+  const falCharacterReferencePaths = supportsFalReferenceElements(meta)
+    ? normalizeFalCharacterReferencePaths(params.characterReferenceImagePaths)
+    : [];
+  const providerPrompt =
+    elementIds.length > 0
+      ? injectEvoLinkElementReferences(params.prompt, elementIds.length)
+      : falCharacterReferencePaths.length > 0
+        ? injectFalElementReferences(params.prompt, 1)
+        : params.prompt;
+  const promptAnalysis = analyzeKlingVideoPrompt(providerPrompt);
 
   if (promptAnalysis.detectedMultiShot && !meta.supportsMultiShot) {
     throw new Error(
@@ -1111,20 +1551,25 @@ export async function generateVideo(
   }
 
   if (meta.provider === "fal") {
-    return generateVideoOnFal(params);
+    return generateVideoOnFal({
+      ...params,
+      prompt: providerPrompt,
+      characterReferenceImagePaths: falCharacterReferencePaths,
+    });
   }
 
   try {
     return await generateVideoOnEvoLink({
       remoteModel: meta.remoteModel,
       inputMode: meta.inputMode,
-      prompt: promptAnalysis.prompt || params.prompt,
+      prompt: promptAnalysis.prompt || providerPrompt,
       duration: params.duration,
       aspectRatio: params.aspectRatio,
       quality: meta.quality ?? "720p",
       generateAudio: meta.supportsAudio
         ? (params.generateAudio ?? promptAnalysis.hasAudioDirection)
         : false,
+      elementIds,
       negativePrompt: dedupePromptList([
         DEFAULT_KLING_NEGATIVE_PROMPT,
         params.negativePrompt,
@@ -1137,9 +1582,13 @@ export async function generateVideo(
       supportsAudio: meta.supportsAudio,
       supportsAspectRatio: meta.supportsAspectRatio,
       supportsNegativePrompt: meta.supportsNegativePrompt,
+      supportsElementList: supportsEvoLinkElementList(meta),
     });
   } catch (error) {
-    console.error("EvoLink video request failed", {
+    const summarizedError = summarizeFalApiError(error);
+    const logMethod = isQuotaRelatedErrorMessage(summarizedError) ? console.warn : console.error;
+
+    logMethod("EvoLink video request failed", {
       model: params.model,
       requestContext: {
         duration: params.duration,
@@ -1147,14 +1596,15 @@ export async function generateVideo(
         generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
         hasStartImage: Boolean(params.imageStartPath),
         hasEndImage: Boolean(params.imageEndPath),
+        elementCount: elementIds.length,
         provider: meta.provider,
         inputMode: meta.inputMode,
         quality: meta.quality,
       },
-      error,
+      error: summarizedError,
     });
 
-    throw new Error(summarizeFalApiError(error));
+    throw new Error(summarizedError);
   }
 }
 
@@ -1170,8 +1620,8 @@ export async function generateLipSyncVideoOnFal(
   } = params;
 
   const apiKey = await resolveFalApiKey();
-  const videoUrl = await uploadLocalFileToFal(videoPath, apiKey);
-  const audioUrl = await uploadLocalFileToFal(audioPath, apiKey);
+  const videoUrl = await uploadLocalFileToFal(videoPath, apiKey, abortSignal);
+  const audioUrl = await uploadLocalFileToFal(audioPath, apiKey, abortSignal);
   const endpoint = LIPSYNC_MODELS[model];
   const input: Record<string, unknown> = {
     video_url: videoUrl,

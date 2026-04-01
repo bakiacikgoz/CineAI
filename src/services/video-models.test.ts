@@ -14,10 +14,13 @@ describe("video model catalog", () => {
   it("filters storyboard-compatible models away from text-only entries", () => {
     const storyboardModels = getVideoModelEntries({ storyboardCapable: true });
 
-    expect(
-      storyboardModels.every(([, meta]) => meta.storyboardCapable && meta.inputMode === "image-to-video"),
-    ).toBe(true);
+    expect(storyboardModels.every(([, meta]) => meta.storyboardCapable)).toBe(true);
     expect(storyboardModels.some(([modelId]) => modelId === "evolink/kling-v3/std/image-to-video")).toBe(true);
+    expect(
+      storyboardModels.some(
+        ([modelId]) => modelId === "fal-ai/kling-video/o3/standard/reference-to-video",
+      ),
+    ).toBe(true);
     expect(storyboardModels.some(([modelId]) => modelId === "evolink/kling-v3/std/text-to-video")).toBe(false);
   });
 
@@ -39,19 +42,44 @@ describe("video model catalog", () => {
   });
 
   it("maps a model family to the requested quality variant when available", () => {
+    expect(getVideoQualityOptions("fal-ai/kling-video/v3/pro/image-to-video")).toEqual([
+      "720p",
+      "1080p",
+    ]);
     expect(getVideoQualityOptions("evolink/kling-v3/std/image-to-video")).toEqual([
       "720p",
       "1080p",
     ]);
     expect(
+      getVideoQualityOptions("fal-ai/kling-video/o3/standard/reference-to-video"),
+    ).toEqual(["720p", "1080p"]);
+    expect(
+      resolveVideoModelWithQuality("fal-ai/kling-video/v3/pro/image-to-video", "720p"),
+    ).toBe("fal-ai/kling-video/v3/standard/image-to-video");
+    expect(
       resolveVideoModelWithQuality("evolink/kling-v3/std/image-to-video", "1080p"),
     ).toBe("evolink/kling-v3/pro/image-to-video");
+    expect(
+      resolveVideoModelWithQuality("fal-ai/kling-video/v3/standard/image-to-video", "1080p"),
+    ).toBe("fal-ai/kling-video/v3/pro/image-to-video");
+    expect(
+      resolveVideoModelWithQuality(
+        "fal-ai/kling-video/o3/standard/reference-to-video",
+        "1080p",
+      ),
+    ).toBe("fal-ai/kling-video/o3/pro/reference-to-video");
   });
 
   it("offers storyboard quality options globally and falls back to a storyboard-safe 720p model", () => {
     expect(getStoryboardVideoQualityOptions()).toEqual(["720p", "1080p"]);
     expect(
       resolveStoryboardVideoModelForQuality("fal-ai/kling-video/v3/pro/image-to-video", "720p"),
-    ).toBe("evolink/kling-v3/std/image-to-video");
+    ).toBe("fal-ai/kling-video/v3/standard/image-to-video");
+    expect(
+      resolveStoryboardVideoModelForQuality(
+        "fal-ai/kling-video/o3/pro/reference-to-video",
+        "720p",
+      ),
+    ).toBe("fal-ai/kling-video/o3/standard/reference-to-video");
   });
 });

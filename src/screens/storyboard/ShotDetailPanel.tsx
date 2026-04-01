@@ -44,10 +44,12 @@ import {
 import { getAppSetting, getAppSettings } from "@/lib/store";
 import { downloadMediaFile } from "@/lib/media-download";
 import {
+  assignAssetToShot,
   deleteAssetsBatch,
   deleteAssetPath,
   deleteAssetRecord,
   getShotAssets,
+  importProjectAsset,
   type AssetWithTags,
 } from "@/services/asset.service";
 import {
@@ -56,12 +58,11 @@ import {
   distributeKlingMultiShotDurations,
   getVideoModelMeta,
   getVideoQuality,
-  getStoryboardVideoQualityOptions,
-  getKlingMultiPromptValidationMessage,
+  getVideoQualityOptions,
   KLING_V3_DURATION_VALUES,
   resolveImageModel,
   resolveStoryboardVideoModel,
-  resolveStoryboardVideoModelForQuality,
+  resolveVideoModelWithQuality,
   type KlingDuration,
   type KlingShotType,
   type VideoModelId,
@@ -69,6 +70,7 @@ import {
 import {
   enqueueAudioDialogueJob,
   cancelJob,
+  enqueueImageUpscaleJob,
   enqueueLipSyncJob,
   enqueueUpscaleJobs,
   enqueueStoryboardFrameJob,
@@ -77,13 +79,20 @@ import {
   resolveStoryboardVideoFrameFallbackPermission,
 } from "@/services/jobqueue.service";
 import {
+  clearAudioSpeakerVoiceBinding,
+  clearCharacterVoiceBinding,
   clearDialogueTextOverride,
   clearDialogueGenerationProfile,
   getDialogueAudioShotById,
+  listCharacterVoiceBindings,
+  listElevenLabsVoices,
   saveDialogueTextOverride,
   saveDialogueGenerationProfile,
+  setAudioSpeakerVoiceBinding,
+  setCharacterVoiceBinding,
   type DialogueAudioTake,
   type DialogueAudioShot,
+  type CharacterVoiceBindingRecord,
   type DialogueGenerationProfile,
   type DialogueOverrideLine,
 } from "@/services/audio-pipeline.service";
@@ -121,6 +130,11 @@ import {
   listPromptTemplates,
   type PromptTemplateRecord,
 } from "@/services/prompt-template.service";
+import {
+  buildVoiceOptionLabel,
+  sortVoicesForCharacterSelection,
+} from "@/lib/character-voice";
+import type { ElevenLabsVoice } from "@/services/elevenlabs.service";
 import { useProjectStore } from "@/store/project.store";
 import { useQueueStore, type Job } from "@/store/queue.store";
 
@@ -129,6 +143,20 @@ type MediaView = DetailView | "audio";
 type RightPanelTab = "genel" | "uretim" | "prompt" | "ses" | "lipsync";
 type CandidateGroups = Record<AutonomousStage, AutonomousCandidateAsset[]>;
 type VariantBurstView = DetailView;
+type SlotAssetTarget = "start" | "end" | "video" | "lipsync";
+type AssetLibraryTarget = SlotAssetTarget | "reference";
+type VoiceBindingTargetKind = "character" | "speaker";
+
+type ShotVoiceBindingControl = {
+  key: string;
+  kind: VoiceBindingTargetKind;
+  targetId: string;
+  speakerLabel: string | null;
+  label: string;
+  subtitle: string;
+  voiceId: string;
+  voiceName: string | null;
+};
 
 type StoryboardMediaVariant = {
   id: string;
@@ -189,6 +217,14 @@ function statusColor(status: string) {
 
 function normalizeStoredPath(path: string | null | undefined): string | null {
   return path ? path.replace(/\\/g, "/") : null;
+}
+
+function appendMediaVersion(url: string, version: number | string | null | undefined): string {
+  if (version === null || version === undefined || version === "") {
+    return url;
+  }
+
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(version))}`;
 }
 
 function getShotPromptForView(shot: ShotRow, view: DetailView): string | null {
@@ -269,6 +305,17 @@ function buildManualVariantOutputSuffix(
   return `manual_${mode}_${batchKey}_v${String(index + 1).padStart(2, "0")}`;
 }
 
+function getImageUpscaleJobStage(job: Job): DetailView | null {
+  const stage =
+    job.params && typeof job.params.stage === "string"
+      ? job.params.stage
+      : null;
+
+  return stage === "start" || stage === "end" || stage === "video"
+    ? stage
+    : null;
+}
+
 function describeShotQueueJob(job: Job): string {
   switch (job.type) {
     case "image_start":
@@ -281,6 +328,10 @@ function describeShotQueueJob(job: Job): string {
       return "Coverage frame";
     case "coverage_video":
       return "Coverage video";
+    case "image_upscale": {
+      const stage = getImageUpscaleJobStage(job);
+      return stage ? `${stage.toUpperCase()} Crystal upscale` : "Crystal upscale";
+    }
     case "upscale":
       return "4K upscale";
     case "audio_dialogue":
@@ -369,6 +420,7 @@ export function ShotDetailPanel({
   const [stageAction, setStageAction] = useState<AutonomousStage | null>(null);
   const [selectingAssetId, setSelectingAssetId] = useState<string | null>(null);
   const [updatingReference, setUpdatingReference] = useState(false);
+  const [uploadingSlotTarget, setUploadingSlotTarget] = useState<SlotAssetTarget | null>(null);
   const [upscaling, setUpscaling] = useState(false);
   const [templates, setTemplates] = useState<PromptTemplateRecord[]>([]);
   const [characters, setCharacters] = useState<CharacterRecord[]>([]);
@@ -391,6 +443,13 @@ export function ShotDetailPanel({
   const [dialogueAudioDetail, setDialogueAudioDetail] = useState<DialogueAudioShot | null>(null);
   const [loadingDialogueAudioDetail, setLoadingDialogueAudioDetail] = useState(false);
   const [queueingDialogueAudio, setQueueingDialogueAudio] = useState(false);
+  const [availableVoices, setAvailableVoices] = useState<ElevenLabsVoice[]>([]);
+  const [characterVoiceBindings, setCharacterVoiceBindings] = useState<
+    CharacterVoiceBindingRecord[]
+  >([]);
+  const [loadingVoiceBindingOptions, setLoadingVoiceBindingOptions] = useState(false);
+  const [voiceBindingWarning, setVoiceBindingWarning] = useState<string | null>(null);
+  const [updatingVoiceBindingKey, setUpdatingVoiceBindingKey] = useState<string | null>(null);
   const [lipsyncDetail, setLipSyncDetail] = useState<LipSyncShotDetail | null>(null);
   const [loadingLipSyncDetail, setLoadingLipSyncDetail] = useState(false);
   const [queueingLipSync, setQueueingLipSync] = useState(false);
@@ -406,8 +465,8 @@ export function ShotDetailPanel({
     end: shot.promptEnd ?? "",
     video: shot.promptVideo ?? "",
   });
-  const videoQualityOptions = getStoryboardVideoQualityOptions();
-  const effectiveStoryboardVideoModel = resolveStoryboardVideoModelForQuality(
+  const videoQualityOptions = getVideoQualityOptions(storyboardVideoModel);
+  const effectiveStoryboardVideoModel = resolveVideoModelWithQuality(
     storyboardVideoModel,
     videoQuality,
   );
@@ -506,6 +565,58 @@ export function ShotDetailPanel({
       cancelled = true;
     };
   }, [shot.id, shot.audioDirectionJson, shot.audioMasterPath, shot.audioStatus, shot.updatedAt]);
+
+  useEffect(() => {
+    if (rightPanelTab !== "ses") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadVoiceBindingOptions() {
+      setLoadingVoiceBindingOptions(true);
+
+      const [voicesResult, bindingsResult] = await Promise.allSettled([
+        listElevenLabsVoices(),
+        listCharacterVoiceBindings(),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+
+      if (voicesResult.status === "fulfilled") {
+        setAvailableVoices(sortVoicesForCharacterSelection(voicesResult.value));
+        setVoiceBindingWarning(null);
+      } else {
+        console.error("Failed to load ElevenLabs voices for shot detail", voicesResult.reason);
+        setAvailableVoices([]);
+        setVoiceBindingWarning(
+          voicesResult.reason instanceof Error
+            ? voicesResult.reason.message
+            : "ElevenLabs voice listesi yuklenemedi.",
+        );
+      }
+
+      if (bindingsResult.status === "fulfilled") {
+        setCharacterVoiceBindings(bindingsResult.value);
+      } else {
+        console.error(
+          "Failed to load character voice bindings for shot detail",
+          bindingsResult.reason,
+        );
+        setCharacterVoiceBindings([]);
+      }
+
+      setLoadingVoiceBindingOptions(false);
+    }
+
+    void loadVoiceBindingOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rightPanelTab, shot.id, shot.updatedAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -615,6 +726,57 @@ export function ShotDetailPanel({
     setShotAssets(nextAssets);
     setDialogueAudioDetail(nextDialogueAudioDetail);
     setLipSyncDetail(nextLipSyncDetail);
+  }
+
+  async function refreshCharacterVoiceBindingState() {
+    try {
+      setCharacterVoiceBindings(await listCharacterVoiceBindings());
+    } catch (error) {
+      console.error("Failed to refresh character voice bindings for shot detail", error);
+      setCharacterVoiceBindings([]);
+    }
+  }
+
+  async function handleShotVoiceBindingChange(
+    control: ShotVoiceBindingControl,
+    nextVoiceId: string,
+  ) {
+    setUpdatingVoiceBindingKey(control.key);
+
+    try {
+      if (!nextVoiceId) {
+        if (control.kind === "character") {
+          await clearCharacterVoiceBinding(control.targetId);
+        } else {
+          await clearAudioSpeakerVoiceBinding(control.targetId);
+        }
+      } else {
+        const selectedVoice = availableVoices.find((voice) => voice.voiceId === nextVoiceId);
+
+        if (!selectedVoice) {
+          throw new Error("Secilen voice bulunamadi.");
+        }
+
+        if (control.kind === "character") {
+          await setCharacterVoiceBinding(control.targetId, selectedVoice.voiceId, selectedVoice.name);
+        } else {
+          await setAudioSpeakerVoiceBinding(
+            control.speakerLabel ?? control.label,
+            selectedVoice.voiceId,
+            selectedVoice.name,
+          );
+        }
+      }
+
+      await Promise.all([refreshAll(), refreshCharacterVoiceBindingState()]);
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Voice binding guncellenemedi.",
+        { title: shot.shotNumber, kind: "error" },
+      );
+    } finally {
+      setUpdatingVoiceBindingKey(null);
+    }
   }
 
   async function handleQueueDialogueAudio() {
@@ -853,13 +1015,22 @@ export function ShotDetailPanel({
       ? mediaPathOverrides.video
       : shot.lipsyncVideoPath ?? shot.video4kPath ?? shot.videoPath;
   const startImageUrl = effectiveStartPath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveStartPath))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveStartPath)),
+        shot.updatedAt,
+      )
     : null;
   const endImageUrl = effectiveEndPath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveEndPath))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveEndPath)),
+        shot.updatedAt,
+      )
     : null;
   const videoUrl = effectiveVideoPath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveVideoPath))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveVideoPath)),
+        shot.updatedAt,
+      )
     : null;
   const activeDialogueShot = dialogueAudioDetail?.shot ?? shot;
   const activeDialogueTake =
@@ -872,10 +1043,124 @@ export function ShotDetailPanel({
   const dialogueAudioRelativePath =
     activeDialogueTake?.relativePath ?? activeDialogueShot.audioMasterPath;
   const dialogueAudioUrl = dialogueAudioRelativePath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, dialogueAudioRelativePath))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, dialogueAudioRelativePath)),
+        activeDialogueShot.updatedAt,
+      )
     : null;
+  const charactersById = useMemo(
+    () => new Map(characters.map((character) => [character.id, character] as const)),
+    [characters],
+  );
+  const characterVoiceBindingsByCharacterId = useMemo(
+    () =>
+      new Map(
+        characterVoiceBindings.map((binding) => [binding.characterId, binding] as const),
+      ),
+    [characterVoiceBindings],
+  );
+  const shotVoiceBindingControls = useMemo<ShotVoiceBindingControl[]>(() => {
+    const grouped = new Map<
+      string,
+      ShotVoiceBindingControl & { speakers: Set<string> }
+    >();
+
+    for (const line of dialogueAudioDetail?.resolvedLines ?? []) {
+      const kind: VoiceBindingTargetKind = line.characterId ? "character" : "speaker";
+      const key = kind === "character" ? `character:${line.characterId}` : `speaker:${line.speakerKey}`;
+      const existing = grouped.get(key);
+
+      if (existing) {
+        existing.speakers.add(line.speaker);
+        if (!existing.voiceId && line.voiceId) {
+          existing.voiceId = line.voiceId;
+          existing.voiceName = line.voiceName ?? existing.voiceName;
+        }
+        continue;
+      }
+
+      const characterBinding = line.characterId
+        ? characterVoiceBindingsByCharacterId.get(line.characterId)
+        : null;
+
+      grouped.set(key, {
+        key,
+        kind,
+        targetId: line.characterId ?? line.speakerKey,
+        speakerLabel: kind === "speaker" ? line.speaker : null,
+        label:
+          kind === "character"
+            ? line.characterName ?? line.resolvedTargetLabel ?? line.speaker
+            : line.speaker,
+        subtitle: "",
+        voiceId: line.voiceId ?? characterBinding?.voiceId ?? "",
+        voiceName: line.voiceName ?? characterBinding?.voiceName ?? null,
+        speakers: new Set([line.speaker]),
+      });
+    }
+
+    if (
+      grouped.size === 0 &&
+      shot.characterId &&
+      (dialogueAudioDetail?.isVoiceover || Boolean(shot.audioVoiceoverText?.trim()))
+    ) {
+      const character = charactersById.get(shot.characterId);
+      const binding = characterVoiceBindingsByCharacterId.get(shot.characterId);
+
+      grouped.set(`character:${shot.characterId}`, {
+        key: `character:${shot.characterId}`,
+        kind: "character",
+        targetId: shot.characterId,
+        speakerLabel: null,
+        label: character?.name ?? "Bagli karakter",
+        subtitle: "",
+        voiceId: binding?.voiceId ?? "",
+        voiceName: binding?.voiceName ?? null,
+        speakers: new Set(["voiceover"]),
+      });
+    }
+
+    return Array.from(grouped.values())
+      .map((control) => {
+        const speakerLabels = Array.from(control.speakers);
+        const subtitle =
+          control.kind === "character"
+            ? speakerLabels.includes("voiceover")
+              ? "Voiceover / bagli karakter sesi"
+              : `Speaker: ${speakerLabels.join(", ")}`
+            : "Speaker bazli voice binding";
+
+        return {
+          key: control.key,
+          kind: control.kind,
+          targetId: control.targetId,
+          speakerLabel: control.speakerLabel,
+          label: control.label,
+          subtitle,
+          voiceId: control.voiceId,
+          voiceName: control.voiceName,
+        };
+      })
+      .sort((left, right) => {
+        if (left.kind !== right.kind) {
+          return left.kind === "character" ? -1 : 1;
+        }
+
+        return left.label.localeCompare(right.label, "tr");
+      });
+  }, [
+    charactersById,
+    characterVoiceBindingsByCharacterId,
+    dialogueAudioDetail?.isVoiceover,
+    dialogueAudioDetail?.resolvedLines,
+    shot.audioVoiceoverText,
+    shot.characterId,
+  ]);
   const externalReferenceUrl = effectiveExternalReferencePath
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveExternalReferencePath))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, effectiveExternalReferencePath)),
+        shot.updatedAt,
+      )
     : null;
   const missingExternalReference =
     shot.requiresExternalReference &&
@@ -940,7 +1225,10 @@ export function ShotDetailPanel({
         assetId: asset.id,
         stage,
         kind: asset.type === "video" ? "video" : "image",
-        url: convertFileSrc(toAbsoluteProjectPath(projectFolderPath, asset.file_path)),
+        url: appendMediaVersion(
+          convertFileSrc(toAbsoluteProjectPath(projectFolderPath, asset.file_path)),
+          asset.created_at,
+        ),
         path,
         filename: asset.filename,
         prompt: asset.prompt,
@@ -1064,6 +1352,10 @@ export function ShotDetailPanel({
   const resolvedVideoDuration = videoDuration;
   const promptContent = promptDrafts[activePromptTab];
   const videoPromptAnalysis = analyzeKlingVideoPrompt(promptDrafts.video);
+  const videoModelSupportsMultiShot = effectiveStoryboardVideoMeta.supportsMultiShot;
+  const isFalO3ReferenceStoryboardModel =
+    effectiveStoryboardVideoMeta.provider === "fal" &&
+    effectiveStoryboardVideoMeta.inputMode === "reference-to-video";
   const selectedCharacter =
     characters.find((character) => character.id === selectedCharacterId) ?? null;
   const selectedLook =
@@ -1071,8 +1363,19 @@ export function ShotDetailPanel({
     selectedCharacter?.looks.find((look) => look.id === selectedCharacter?.defaultLookId) ??
     selectedCharacter?.looks[0] ??
     null;
-  const selectedCharacterPreview = selectedLook?.primaryImage
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, selectedLook.primaryImage))
+  const hasResolvedCharacterBinding = Boolean(
+    shot.characterId &&
+    shot.characterLookId &&
+    selectedCharacter &&
+    selectedLook,
+  );
+  const boundCharacter = hasResolvedCharacterBinding ? selectedCharacter : null;
+  const boundLook = hasResolvedCharacterBinding ? selectedLook : null;
+  const boundCharacterPreview = boundLook?.primaryImage
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, boundLook.primaryImage)),
+        shot.updatedAt,
+      )
     : null;
   const startReferenceMissing =
     missingExternalReference &&
@@ -1086,6 +1389,7 @@ export function ShotDetailPanel({
           (job.status === "queued" || job.status === "active") &&
           (job.type === "image_start" ||
             job.type === "image_end" ||
+            job.type === "image_upscale" ||
             job.type === "video" ||
             job.type === "lipsync" ||
             job.type === "coverage_image" ||
@@ -1098,10 +1402,14 @@ export function ShotDetailPanel({
   const mediaJobByView = useMemo<Record<MediaView, Job | null>>(
     () => ({
       start: selectDominantShotJob(
-        shotQueueJobs.filter((job) => job.type === "image_start"),
+        shotQueueJobs.filter(
+          (job) => job.type === "image_start" || (job.type === "image_upscale" && getImageUpscaleJobStage(job) === "start"),
+        ),
       ),
       end: selectDominantShotJob(
-        shotQueueJobs.filter((job) => job.type === "image_end"),
+        shotQueueJobs.filter(
+          (job) => job.type === "image_end" || (job.type === "image_upscale" && getImageUpscaleJobStage(job) === "end"),
+        ),
       ),
       video: selectDominantShotJob(
         shotQueueJobs.filter((job) => job.type === "video" || job.type === "lipsync" || job.type === "upscale"),
@@ -1112,6 +1420,11 @@ export function ShotDetailPanel({
     }),
     [shotQueueJobs],
   );
+  const activeImageUpscaleJob =
+    shotQueueJobs.find((job) => job.type === "image_upscale" && getImageUpscaleJobStage(job)) ?? null;
+  const activeImageUpscaleStage = activeImageUpscaleJob
+    ? getImageUpscaleJobStage(activeImageUpscaleJob)
+    : null;
   const productionNotice =
     producing === "start"
       ? "START frame kuyruga aliniyor."
@@ -1125,9 +1438,11 @@ export function ShotDetailPanel({
             ? `${variantBurstCount.end} END varyanti kuyruga aliniyor.`
             : burstProducing === "video"
               ? `${variantBurstCount.video} video varyanti kuyruga aliniyor.`
-          : upscaling
-            ? "4K upscale kuyruga aliniyor."
-            : null;
+          : activeImageUpscaleStage
+            ? `${activeImageUpscaleStage.toUpperCase()} Crystal upscale kuyrukta.`
+            : upscaling
+              ? "4K upscale kuyruga aliniyor."
+              : null;
   const hasGeneratingShotStatus =
     shot.imageStatus === "generating" ||
     shot.videoStatus === "generating" ||
@@ -1140,6 +1455,24 @@ export function ShotDetailPanel({
   const shouldShowProductionState =
     Boolean(productionNotice) ||
     shotQueueJobs.length > 0;
+
+  function hasQueuedImageUpscale(
+    stage: Exclude<DetailView, "video">,
+    assetId?: string | null,
+  ): boolean {
+    return shotQueueJobs.some((job) => {
+      if (job.type !== "image_upscale") {
+        return false;
+      }
+
+      const queuedStage = getImageUpscaleJobStage(job);
+      return (
+        (assetId && job.assetId === assetId) ||
+        queuedStage === stage
+      );
+    });
+  }
+
   const activePromptChanged =
     (activePromptTab === "start" && promptDrafts.start !== (shot.promptStart ?? "")) ||
     (activePromptTab === "end" && promptDrafts.end !== (shot.promptEnd ?? "")) ||
@@ -1276,6 +1609,11 @@ export function ShotDetailPanel({
         steps: 28,
         allowVideoFrameFallback,
       });
+      setActiveMediaView("start");
+      setVariantIndexByView((current) => ({
+        ...current,
+        start: 0,
+      }));
       await refreshAll();
     } catch (error) {
       await message(error instanceof Error ? error.message : "START frame kuyruga eklenemedi.", { title: shot.shotNumber, kind: "error" });
@@ -1458,11 +1796,6 @@ export function ShotDetailPanel({
 
       if (videoPromptAnalysis.detectedMultiShot) {
         distributeKlingMultiShotDurations(videoDuration, videoPromptAnalysis.shotCount);
-        const validationMessage = getKlingMultiPromptValidationMessage(videoPromptAnalysis);
-
-        if (validationMessage) {
-          throw new Error(validationMessage);
-        }
       }
 
       for (let index = 0; index < quantity; index += 1) {
@@ -1513,6 +1846,11 @@ export function ShotDetailPanel({
     setProducing("end");
     try {
       await enqueueStoryboardFrameJob({ shotId: shot.id, prompt: promptDrafts.end.trim(), mode: "end", model: imageModel, cfg: shot.cfg ?? 7, steps: 28 });
+      setActiveMediaView("end");
+      setVariantIndexByView((current) => ({
+        ...current,
+        end: 0,
+      }));
       await refreshAll();
     } catch (error) {
       await message(error instanceof Error ? error.message : "END frame kuyruga eklenemedi.", { title: shot.shotNumber, kind: "error" });
@@ -1529,11 +1867,6 @@ export function ShotDetailPanel({
 
       if (videoPromptAnalysis.detectedMultiShot) {
         distributeKlingMultiShotDurations(videoDuration, videoPromptAnalysis.shotCount);
-        const validationMessage = getKlingMultiPromptValidationMessage(videoPromptAnalysis);
-
-        if (validationMessage) {
-          throw new Error(validationMessage);
-        }
       }
 
       await enqueueVideoJobs({
@@ -1890,6 +2223,62 @@ export function ShotDetailPanel({
     }
   }
 
+  async function queueImageVariantUpscale(variant: StoryboardMediaVariant) {
+    if (
+      variant.kind !== "image" ||
+      variant.stage === "video" ||
+      !variant.path
+    ) {
+      return;
+    }
+
+    try {
+      const batchKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      await enqueueImageUpscaleJob({
+        shotId: shot.id,
+        assetId: variant.assetId,
+        sourceRelativePath: variant.path,
+        stage: variant.stage,
+        outputMode: "variant",
+        outputSuffix: `crystal_${variant.stage}_${batchKey}`,
+      });
+      await refreshAll();
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Crystal upscale kuyruga eklenemedi.",
+        { title: shot.shotNumber, kind: "error" },
+      );
+    }
+  }
+
+  async function queueAutonomousCandidateUpscale(
+    asset: AutonomousCandidateAsset,
+    stage: Exclude<AutonomousStage, "video">,
+  ) {
+    if (asset.type !== "image") {
+      return;
+    }
+
+    try {
+      const variantLabel = asset.variant ? `v${String(asset.variant).padStart(2, "0")}` : "candidate";
+      await enqueueImageUpscaleJob({
+        shotId: shot.id,
+        assetId: asset.id,
+        sourceRelativePath: asset.file_path,
+        stage,
+        outputMode: "autonomous_replace",
+        priority: 158,
+        outputSuffix: `auto_${stage}_${variantLabel}_crystal`,
+      });
+      await refreshAll();
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "Otonom aday Crystal upscale kuyruga eklenemedi.",
+        { title: shot.shotNumber, kind: "error" },
+      );
+    }
+  }
+
   async function handleApplyCharacterBinding() {
     if (!selectedCharacter || !selectedLook) {
       return;
@@ -1904,6 +2293,7 @@ export function ShotDetailPanel({
         includeCharacterPrompt,
       );
       await refreshAll();
+      setCharacterPickerOpen(false);
     } catch (error) {
       await message(error instanceof Error ? error.message : "Karakter baglantisi kaydedilemedi.", {
         title: shot.shotNumber,
@@ -2061,6 +2451,65 @@ export function ShotDetailPanel({
     }
   }
 
+  async function handleUploadSlot(target: SlotAssetTarget) {
+    const isVideoTarget = target === "video" || target === "lipsync";
+    const selected = await open({
+      title: `${shot.shotNumber} ${target.toUpperCase()} dosyasini sec`,
+      multiple: false,
+      filters: [
+        isVideoTarget
+          ? {
+              name: "Video",
+              extensions: ["mp4", "mov", "webm", "m4v", "avi", "mkv"],
+            }
+          : {
+              name: "Gorsel",
+              extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
+            },
+      ],
+    });
+
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    setUploadingSlotTarget(target);
+
+    try {
+      const imported = await importProjectAsset({
+        sourcePath: selected,
+        type: isVideoTarget ? "video" : "image",
+        shotId: shot.id,
+        tags:
+          target === "video"
+            ? ["stage:video", "manual-slot-upload"]
+            : target === "lipsync"
+              ? ["lipsync", "manual-slot-upload"]
+              : [`stage:${target}`, "manual-slot-upload"],
+      });
+      await assignAssetToShot(imported.assetId, shot.id, target);
+      setActiveMediaView(target === "video" || target === "lipsync" ? "video" : target);
+      setVariantIndexByView((current) => ({
+        ...current,
+        start: target === "start" ? 0 : current.start,
+        end: target === "end" ? 0 : current.end,
+        video: target === "video" || target === "lipsync" ? 0 : current.video,
+      }));
+      await refreshAll();
+      await message(`${target.toUpperCase()} slotu guncellendi.`, {
+        title: shot.shotNumber,
+        kind: "info",
+      });
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : `${target.toUpperCase()} dosyasi eklenemedi.`,
+        { title: shot.shotNumber, kind: "error" },
+      );
+    } finally {
+      setUploadingSlotTarget(null);
+    }
+  }
+
   async function handleApplyTemplate() {
     if (!selectedTemplateId) {
       return;
@@ -2136,7 +2585,7 @@ export function ShotDetailPanel({
   }
 
   function openAssetLibrary(
-    target: "start" | "end" | "video" | "lipsync" | "reference" = "start",
+    target: AssetLibraryTarget = "start",
     selectedFilePath?: string | null,
   ) {
     navigate("/asset-library", {
@@ -2335,6 +2784,19 @@ export function ShotDetailPanel({
                     {canEditActiveVariant ? (
                       <button type="button" className="btn-secondary" onClick={() => openImageEditModal(activeVariant)} disabled={submittingImageEdit} style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7 }}>
                         <Pencil size={10} />
+                      </button>
+                    ) : null}
+                    {activeVariant.kind === "image" &&
+                    activeVariant.stage !== "video" &&
+                    activeVariant.path ? (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => void queueImageVariantUpscale(activeVariant)}
+                        disabled={hasQueuedImageUpscale(activeVariant.stage, activeVariant.assetId)}
+                        style={{ padding: "4px 8px", fontSize: 10, borderRadius: 7 }}
+                      >
+                        <ArrowUpToLine size={10} />
                       </button>
                     ) : null}
                     {activeVariant.isSelected ? (
@@ -2632,20 +3094,20 @@ export function ShotDetailPanel({
                           <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>Karakter bulunamadi</div>
                           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>Karakterler ekranindan profil olusturun.</div>
                         </div>
-                      ) : selectedLook && !characterPickerOpen ? (
+                      ) : hasResolvedCharacterBinding && !characterPickerOpen ? (
                         /* Bound character card */
                         <div style={{ display: "grid", gap: 12 }}>
                           <div style={{ display: "flex", gap: 14, alignItems: "center", padding: "14px 16px", borderRadius: 14, background: "var(--surface-hover)", border: "1px solid var(--surface-hover)" }}>
-                            {selectedCharacterPreview ? (
-                              <button onClick={() => setLightboxItem({ kind: "image", src: selectedCharacterPreview, title: `${selectedCharacter?.name ?? "Karakter"} / ${selectedLook.name}`, subtitle: "Continuity onizleme", description: selectedLook.promptHint ?? selectedCharacter?.promptHint ?? "Hint hazir degil.", downloadPath: selectedLook.primaryImage || selectedLook.refImages[0] ? toAbsoluteProjectPath(projectFolderPath, selectedLook.primaryImage ?? selectedLook.refImages[0]) : null, downloadName: (selectedLook.primaryImage ?? selectedLook.refImages[0])?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
-                                <img alt={selectedLook.name} src={selectedCharacterPreview} style={{ width: 52, height: 52, borderRadius: 12, objectFit: "cover", border: "1px solid var(--surface-active)" }} />
+                            {boundCharacterPreview ? (
+                              <button onClick={() => setLightboxItem({ kind: "image", src: boundCharacterPreview, title: `${boundCharacter?.name ?? "Karakter"} / ${boundLook?.name ?? "Look"}`, subtitle: "Continuity onizleme", description: boundLook?.promptHint ?? boundCharacter?.promptHint ?? "Hint hazir degil.", downloadPath: boundLook?.primaryImage || boundLook?.refImages[0] ? toAbsoluteProjectPath(projectFolderPath, boundLook?.primaryImage ?? boundLook?.refImages[0] ?? "") : null, downloadName: (boundLook?.primaryImage ?? boundLook?.refImages[0])?.split(/[\\/]/).pop() ?? null })} style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", flexShrink: 0 }} type="button">
+                                <img alt={boundLook?.name ?? "Look"} src={boundCharacterPreview} style={{ width: 52, height: 52, borderRadius: 12, objectFit: "cover", border: "1px solid var(--surface-active)" }} />
                               </button>
                             ) : (
                               <div style={{ width: 52, height: 52, borderRadius: 12, background: "var(--surface-active)", display: "grid", placeItems: "center", flexShrink: 0 }}><Sparkles size={18} style={{ color: "var(--text-muted)" }} /></div>
                             )}
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{selectedCharacter?.name}</div>
-                              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 1 }}>{selectedLook.name}</div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{boundCharacter?.name}</div>
+                              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 1 }}>{boundLook?.name}</div>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
                                 <span style={{ fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 5, background: includeCharacterPrompt ? "rgba(34,197,94,0.08)" : "var(--surface-hover)", color: includeCharacterPrompt ? "var(--status-success)" : "var(--text-muted)" }}>
                                   Prompt hint {includeCharacterPrompt ? "aktif" : "kapali"}
@@ -2661,7 +3123,7 @@ export function ShotDetailPanel({
                       ) : (
                         /* Character picker */
                         <div style={{ display: "grid", gap: 12 }}>
-                          {selectedLook && characterPickerOpen ? (
+                          {hasResolvedCharacterBinding && characterPickerOpen ? (
                             <button type="button" onClick={() => setCharacterPickerOpen(false)} className="btn-secondary" style={{ justifySelf: "end", padding: "5px 10px", fontSize: 11, borderRadius: 7 }}><X size={12} />Kapat</button>
                           ) : null}
                           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -2684,7 +3146,7 @@ export function ShotDetailPanel({
                             <input checked={includeCharacterPrompt} onChange={(e) => setIncludeCharacterPrompt(e.target.checked)} type="checkbox" style={{ width: 16, height: 16, accentColor: "var(--accent)" }} />
                             <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 500 }}>Prompt hint ekle</span>
                           </label>
-                          <button className="btn-primary" disabled={!selectedCharacterId || !selectedLookId || bindingCharacter} onClick={() => { void handleApplyCharacterBinding(); setCharacterPickerOpen(false); }} type="button" style={{ padding: "9px 16px", fontSize: 12, fontWeight: 600, borderRadius: 10 }}>
+                          <button className="btn-primary" disabled={!selectedCharacterId || !selectedLookId || bindingCharacter} onClick={() => void handleApplyCharacterBinding()} type="button" style={{ padding: "9px 16px", fontSize: 12, fontWeight: 600, borderRadius: 10 }}>
                             <Link2 size={13} />{bindingCharacter ? "Kaydediliyor..." : "Bagla"}
                           </button>
                         </div>
@@ -2795,6 +3257,65 @@ export function ShotDetailPanel({
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Video kalitesi</div>
                           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5, wordBreak: "break-word" }}>{effectiveStoryboardVideoMeta.label}</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 5,
+                                padding: "4px 8px",
+                                borderRadius: 999,
+                                background: videoModelSupportsMultiShot
+                                  ? "color-mix(in srgb, var(--success) 12%, transparent)"
+                                  : "var(--surface-hover)",
+                                color: videoModelSupportsMultiShot ? "var(--success)" : "var(--text-muted)",
+                                fontSize: 10,
+                                fontWeight: 600,
+                                letterSpacing: "0.01em",
+                              }}
+                            >
+                              <Sparkles size={10} />
+                              {videoModelSupportsMultiShot ? "Multi-shot destekli" : "Multi-shot yok"}
+                            </span>
+                            {isFalO3ReferenceStoryboardModel ? (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  padding: "4px 8px",
+                                  borderRadius: 999,
+                                  background: "var(--surface-hover)",
+                                  color: "var(--text-secondary)",
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  letterSpacing: "0.01em",
+                                }}
+                              >
+                                O3 Reference: Std + Pro
+                              </span>
+                            ) : null}
+                            {videoPromptAnalysis.detectedMultiShot ? (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  padding: "4px 8px",
+                                  borderRadius: 999,
+                                  background:
+                                    videoModelSupportsMultiShot
+                                      ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                                      : "color-mix(in srgb, var(--danger) 10%, transparent)",
+                                  color:
+                                    videoModelSupportsMultiShot ? "var(--accent)" : "var(--danger)",
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  letterSpacing: "0.01em",
+                                }}
+                              >
+                                Prompt: {videoPromptAnalysis.shotCount} bolum
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                         <div style={{ overflowX: "auto", paddingBottom: 2 }}>
                           <div style={{ display: "inline-flex", borderRadius: 8, border: "1px solid var(--glass-border)", overflow: "hidden", minWidth: "max-content" }}>
@@ -2805,9 +3326,9 @@ export function ShotDetailPanel({
                                 onClick={() => {
                                   setVideoQuality(quality);
                                   setStoryboardVideoModel(
-                                  resolveStoryboardVideoModelForQuality(storyboardVideoModel, quality),
-                                );
-                              }}
+                                    resolveVideoModelWithQuality(storyboardVideoModel, quality),
+                                  );
+                                }}
                                 style={{
                                   padding: "6px 12px",
                                   border: "none",
@@ -2859,7 +3380,7 @@ export function ShotDetailPanel({
                       <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Varlik slotlari</h3>
                     </div>
                     <div style={{ display: "grid", gap: 0 }}>
-                      {([
+                        {([
                         { key: "start" as const, label: "START", path: effectiveStartPath, icon: ImageIcon },
                         { key: "end" as const, label: "END", path: effectiveEndPath, icon: ImageIcon },
                         { key: "video" as const, label: "VIDEO", path: shot.video4kPath ?? shot.videoPath, icon: Video },
@@ -2872,8 +3393,20 @@ export function ShotDetailPanel({
                           <span style={{ flex: 1, fontSize: 11, color: slot.path ? "var(--text-primary)" : "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: slot.path ? "monospace" : "inherit", fontWeight: slot.path ? 500 : 400 }}>
                             {slot.path ? slot.path.split("/").pop() : "Bos"}
                           </span>
+                          {slot.key !== "reference" ? (
+                            <button
+                              className="btn-secondary"
+                              type="button"
+                              disabled={uploadingSlotTarget === slot.key}
+                              onClick={() => void handleUploadSlot(slot.key)}
+                              style={{ padding: "5px 10px", fontSize: 10, fontWeight: 500, borderRadius: 7, flexShrink: 0 }}
+                            >
+                              <Upload size={11} />
+                              {uploadingSlotTarget === slot.key ? "Yukleniyor..." : "Yukle"}
+                            </button>
+                          ) : null}
                           <button className="btn-secondary" type="button" onClick={() => openAssetLibrary(slot.key, slot.key === "reference" ? effectiveExternalReferencePath : slot.key === "lipsync" ? shot.lipsyncVideoPath : slot.key === "video" ? (shot.video4kPath ?? shot.videoPath) : slot.key === "start" ? shot.imageStartPath : shot.imageEndPath)} style={{ padding: "5px 10px", fontSize: 10, fontWeight: 500, borderRadius: 7, flexShrink: 0 }}>
-                            {slot.path ? "Degistir" : "Sec"}
+                            Kutuphane
                           </button>
                         </div>
                       ))}
@@ -2915,6 +3448,18 @@ export function ShotDetailPanel({
                                         <span style={{ fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>V{String(asset.variant ?? 0).padStart(2, "0")}</span>
                                         {asset.isSelected ? <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase" }}>Aktif</span> : null}
                                       </div>
+                                      {!iv && stage !== "video" ? (
+                                        <button
+                                          className="btn-secondary"
+                                          disabled={hasQueuedImageUpscale(stage, asset.id)}
+                                          onClick={() => void queueAutonomousCandidateUpscale(asset, stage)}
+                                          type="button"
+                                          style={{ padding: "6px 8px", fontSize: 10, fontWeight: 600, borderRadius: 7, justifyContent: "center" }}
+                                        >
+                                          <ArrowUpToLine size={11} />
+                                          Crystal
+                                        </button>
+                                      ) : null}
                                       <button className={asset.isSelected ? "btn-secondary" : "btn-primary"} disabled={selectingAssetId === asset.id} onClick={() => void handleSelect(asset.id, stage)} type="button" style={{ padding: "6px 8px", fontSize: 10, fontWeight: 600, borderRadius: 7, justifyContent: "center" }}>{selectingAssetId === asset.id ? "..." : asset.isSelected ? "Secili" : "Bu varyanti sec"}</button>
                                     </div>
                                   </div>
@@ -3000,6 +3545,96 @@ export function ShotDetailPanel({
                         <PlayCircle size={15} />{queueingDialogueAudio ? "Kuyrukta..." : activeDialogueTake ? "Yeniden seslendir" : "Seslendir"}
                       </button>
                       {dialogueAudioDetail?.characterCount ? <span style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(59,130,246,0.06)", fontSize: 11, fontWeight: 500, color: "var(--status-info)" }}>{dialogueAudioDetail.characterCount} karakter</span> : null}
+                    </div>
+                  </div>
+
+                  <div style={{ borderRadius: 16, border: "1px solid var(--surface-active)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", gap: 12, padding: "14px 20px", borderBottom: "1px solid var(--surface-hover)", background: "var(--gradient-header)" }}>
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Ses atamalari</h3>
+                        <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)" }}>Bu shot icindeki karakter veya speaker seslerini buradan degistir.</p>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => navigate("/audio-pipeline")}
+                        style={{ padding: "8px 12px", fontSize: 11, fontWeight: 600, borderRadius: 8 }}
+                        type="button"
+                      >
+                        Ses sayfasi
+                      </button>
+                    </div>
+                    <div style={{ padding: "16px 20px", display: "grid", gap: 12 }}>
+                      {voiceBindingWarning ? (
+                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.16)", fontSize: 12, color: "var(--status-warning)", lineHeight: 1.6 }}>
+                          {voiceBindingWarning}
+                        </div>
+                      ) : null}
+                      {loadingVoiceBindingOptions ? (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "12px 0" }}>
+                          <LoaderCircle className="spin-slow" size={14} style={{ color: "var(--text-muted)" }} />
+                          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Voice listesi yukleniyor...</span>
+                        </div>
+                      ) : shotVoiceBindingControls.length > 0 ? (
+                        shotVoiceBindingControls.map((control) => {
+                          const selectedVoice = availableVoices.find((voice) => voice.voiceId === control.voiceId) ?? null;
+                          const isBusy = updatingVoiceBindingKey === control.key;
+
+                          return (
+                            <div key={control.key} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(220px, 320px)", gap: 12, alignItems: "center", padding: "12px 14px", borderRadius: 12, border: "1px solid var(--surface-hover)", background: "var(--surface-card)" }}>
+                              <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                  <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{control.label}</strong>
+                                  <span style={{ padding: "3px 8px", borderRadius: 999, background: control.kind === "character" ? "rgba(59,130,246,0.08)" : "rgba(148,163,184,0.14)", fontSize: 10, fontWeight: 600, color: control.kind === "character" ? "var(--status-info)" : "var(--text-secondary)" }}>
+                                    {control.kind === "character" ? "Karakter" : "Speaker"}
+                                  </span>
+                                  <span style={{ padding: "3px 8px", borderRadius: 999, background: control.voiceId ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", fontSize: 10, fontWeight: 600, color: control.voiceId ? "var(--status-success)" : "var(--status-error)" }}>
+                                    {control.voiceName ?? "ses yok"}
+                                  </span>
+                                </div>
+                                <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>{control.subtitle}</span>
+                                {selectedVoice?.previewUrl ? (
+                                  <audio controls preload="none" src={selectedVoice.previewUrl} style={{ width: "100%", maxWidth: 320, marginTop: 4 }} />
+                                ) : null}
+                              </div>
+                              <select
+                                className="studio-field"
+                                disabled={
+                                  isBusy ||
+                                  loadingDialogueAudioDetail ||
+                                  (availableVoices.length === 0 && !control.voiceId)
+                                }
+                                onChange={(event) =>
+                                  void handleShotVoiceBindingChange(control, event.target.value)
+                                }
+                                style={{ ...panelInputStyle, padding: "10px 12px" }}
+                                value={control.voiceId}
+                              >
+                                <option value="">
+                                  {availableVoices.length === 0
+                                    ? control.voiceId
+                                      ? "Sesi kaldir"
+                                      : "ElevenLabs sesi yok"
+                                    : "Ses sec..."}
+                                </option>
+                                {!selectedVoice && control.voiceId ? (
+                                  <option value={control.voiceId}>
+                                    {control.voiceName ?? "Mevcut ses"}
+                                  </option>
+                                ) : null}
+                                {availableVoices.map((voice) => (
+                                  <option key={voice.voiceId} value={voice.voiceId}>
+                                    {buildVoiceOptionLabel(voice)}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--surface-hover)", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                          Bu shot icin degistirilebilir bir karakter veya speaker voice binding'i bulunmuyor.
+                        </div>
+                      )}
                     </div>
                   </div>
 

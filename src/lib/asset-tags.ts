@@ -1,7 +1,15 @@
 export const ASSET_GROUP_TAG_PREFIX = "group:";
 
 const SYSTEM_TAG_PREFIXES = ["stage:", "variant:", "character:", "look:", ASSET_GROUP_TAG_PREFIX];
-const SYSTEM_TAGS = new Set(["autonomous", "candidate", "selected", "upscale", "4k"]);
+const SYSTEM_TAGS = new Set([
+  "autonomous",
+  "candidate",
+  "selected",
+  "upscale",
+  "4k",
+  "upscaled",
+  "clarity-upscale",
+]);
 
 export function isSystemAssetTag(tag: string): boolean {
   return SYSTEM_TAGS.has(tag) || SYSTEM_TAG_PREFIXES.some((prefix) => tag.startsWith(prefix));

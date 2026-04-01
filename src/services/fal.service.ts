@@ -1510,11 +1510,8 @@ async function generateVideoOnFal(
 
   const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey, abortSignal);
   const promptAnalysis = analyzeKlingVideoPrompt(prompt);
-  const multiPrompt = promptAnalysis.multiPrompt;
-  const usesMultiPrompt = Array.isArray(multiPrompt) && multiPrompt.length > 1;
-  const suppressEndImageForMultiPrompt = Boolean(imageEndPath) && usesMultiPrompt;
   const tailImageUrl =
-    imageEndPath && !suppressEndImageForMultiPrompt
+    imageEndPath
       ? await uploadLocalFileToFal(imageEndPath, apiKey, abortSignal)
       : undefined;
   const normalizedCharacterReferencePaths = supportsFalReferenceElements(meta)
@@ -1588,7 +1585,6 @@ async function generateVideoOnFal(
         aspectRatio: params.aspectRatio,
         generateAudio: params.generateAudio ?? promptAnalysis.hasAudioDirection,
         hasEndImage: Boolean(tailImageUrl),
-        endImageSuppressed: suppressEndImageForMultiPrompt,
         characterElementCount: characterReferenceImageUrls.length > 0 ? 1 : 0,
         detectedMultiShot: promptAnalysis.detectedMultiShot,
         shotCount: promptAnalysis.shotCount,

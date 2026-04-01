@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFalCharacterElements,
   buildFalVideoRequestInput,
+  getFalMultiShotEndImageValidationMessage,
   injectEvoLinkElementReferences,
   injectFalElementReferences,
   summarizeFalApiError,
@@ -215,5 +216,66 @@ describe("summarizeFalApiError", () => {
 
     expect(summary).toContain("Fal Kling multi-shot limiti asildi.");
     expect(summary).toContain("512 karakter");
+  });
+
+  it("surfaces fal multi-shot plus end image failures with a friendlier summary", () => {
+    const summary = summarizeFalApiError(
+      new Error(
+        'Fal queue sonuc istegi basarisiz oldu (422 Unprocessable Entity): {"detail":[{"type":"value_error","loc":["body"],"msg":"Value error, End Image Url is not supported with Multi Prompt"}]}',
+      ),
+    );
+
+    expect(summary).toContain("END gorseli");
+    expect(summary).toContain("multi-shot");
+  });
+});
+
+describe("getFalMultiShotEndImageValidationMessage", () => {
+  it("blocks fal multi-shot requests that also include an END image", () => {
+    const message = getFalMultiShotEndImageValidationMessage({
+      model: "fal-ai/kling-video/v3/pro/image-to-video",
+      promptAnalysis: {
+        detectedMultiShot: true,
+        shotCount: 2,
+        hasAudioDirection: false,
+        prompt: "Shot 1: Wide\nShot 2: Close",
+        multiPrompt: [
+          { prompt: "Wide", duration: "4" },
+          { prompt: "Close", duration: "4" },
+        ],
+      },
+      hasEndImage: true,
+    });
+
+    expect(message).toContain("END gorseli");
+    expect(message).toContain("multi-shot");
+  });
+
+  it("allows non-fal providers or requests without END images", () => {
+    const promptAnalysis = {
+      detectedMultiShot: true,
+      shotCount: 2,
+      hasAudioDirection: false,
+      prompt: "Shot 1: Wide\nShot 2: Close",
+      multiPrompt: [
+        { prompt: "Wide", duration: "4" as const },
+        { prompt: "Close", duration: "4" as const },
+      ],
+    };
+
+    expect(
+      getFalMultiShotEndImageValidationMessage({
+        model: "evolink/kling-v3/std/image-to-video",
+        promptAnalysis,
+        hasEndImage: true,
+      }),
+    ).toBeNull();
+    expect(
+      getFalMultiShotEndImageValidationMessage({
+        model: "fal-ai/kling-video/v3/pro/image-to-video",
+        promptAnalysis,
+        hasEndImage: false,
+      }),
+    ).toBeNull();
   });
 });

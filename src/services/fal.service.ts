@@ -975,6 +975,10 @@ export function summarizeFalApiError(error: unknown): string {
     return `Fal Kling multi-shot limiti asildi. Her shot promptu en fazla 512 karakter olabilir. Ortak ortam aciklamasini ve shot bloklarini kisaltin. ${rawMessage}`;
   }
 
+  if (rawMessage.includes("End Image Url is not supported with Multi Prompt")) {
+    return `Fal Kling su anda END gorseli ile multi-shot kombinasyonunu kabul etmiyor. Tek shot kullanin veya END gorselini kaldirin. ${rawMessage}`;
+  }
+
   return rawMessage;
 }
 
@@ -1295,6 +1299,24 @@ export function getKlingMultiPromptValidationMessage(
   return null;
 }
 
+export function getFalMultiShotEndImageValidationMessage(params: {
+  model: string | null | undefined;
+  promptAnalysis: KlingPromptAnalysis;
+  hasEndImage: boolean;
+}): string | null {
+  if (!params.hasEndImage || !params.promptAnalysis.detectedMultiShot) {
+    return null;
+  }
+
+  const modelMeta = getVideoModelMeta(params.model);
+
+  if (modelMeta.provider !== "fal") {
+    return null;
+  }
+
+  return `${modelMeta.label} icin fal backend su anda END gorseli + multi-shot kombinasyonunu kabul etmiyor. Tek shot prompt kullanin veya END gorselini kaldirin.`;
+}
+
 export async function initFal(): Promise<boolean> {
   return Boolean((await getApiKey("FAL_API_KEY"))?.trim());
 }
@@ -1506,10 +1528,19 @@ async function generateVideoOnFal(
     throw new Error("fal.ai video uretimi icin START gorseli gerekli.");
   }
 
-  const apiKey = await resolveFalApiKey();
-
-  const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey, abortSignal);
   const promptAnalysis = analyzeKlingVideoPrompt(prompt);
+  const endImageValidationMessage = getFalMultiShotEndImageValidationMessage({
+    model,
+    promptAnalysis,
+    hasEndImage: Boolean(imageEndPath),
+  });
+
+  if (endImageValidationMessage) {
+    throw new Error(endImageValidationMessage);
+  }
+
+  const apiKey = await resolveFalApiKey();
+  const imageUrl = await uploadLocalFileToFal(imageStartPath, apiKey, abortSignal);
   const tailImageUrl =
     imageEndPath
       ? await uploadLocalFileToFal(imageEndPath, apiKey, abortSignal)

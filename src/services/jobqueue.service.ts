@@ -28,6 +28,7 @@ import {
   generateCrystalUpscaledImage,
   generateImage,
   generateVideo,
+  getFalMultiShotEndImageValidationMessage,
   getVideoModelMeta,
   resolveImageModel,
   resolveVideoModel,
@@ -1494,6 +1495,16 @@ export async function enqueueVideoJobs(
       throw new Error(
         `${modelMeta.label} icin multi-shot gonderimi henuz desteklenmiyor. Tek shot prompt kullan veya fal.ai Kling modeline gec.`,
       );
+    }
+
+    const endImageValidationMessage = getFalMultiShotEndImageValidationMessage({
+      model,
+      promptAnalysis,
+      hasEndImage: Boolean(params.imageEndPath),
+    });
+
+    if (endImageValidationMessage) {
+      throw new Error(endImageValidationMessage);
     }
 
     const costPerVideo = calcVideoCost(model, duration, resolvedGenerateAudio);

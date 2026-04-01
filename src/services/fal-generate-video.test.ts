@@ -28,7 +28,7 @@ describe("generateVideo on fal", () => {
     invokeMock.mockReset();
   });
 
-  it("submits multi-shot requests with end_image_url when an END frame is provided", async () => {
+  it("fails early when fal multi-shot is combined with an END frame", async () => {
     const submittedInputs: Array<Record<string, unknown>> = [];
 
     invokeMock.mockImplementation(async (command: string, payload: Record<string, unknown>) => {
@@ -56,34 +56,31 @@ describe("generateVideo on fal", () => {
       throw new Error(`Unexpected command: ${command}`);
     });
 
-    const result = await generateVideo({
-      jobId: "job-1",
-      model: "fal-ai/kling-video/v3/pro/image-to-video",
-      prompt: [
-        "Photorealistic traditional Turkish kahvehane, summer night. Stable background and consistent lighting.",
-        "Shot 1: Wide master on the room as the camera slowly glides inward.",
-        "Shot 2: Gentle push toward the older man as he lifts the tea glass and looks toward the television.",
-      ].join("\n\n"),
-      imageStartPath: "C:/shots/start.png",
-      imageEndPath: "C:/shots/end.png",
-      duration: 8,
-      aspectRatio: "16:9",
-      cfg: 0.45,
-      generateAudio: true,
-      shotType: "customize",
-    });
+    await expect(
+      generateVideo({
+        jobId: "job-1",
+        model: "fal-ai/kling-video/v3/pro/image-to-video",
+        prompt: [
+          "Photorealistic traditional Turkish kahvehane, summer night. Stable background and consistent lighting.",
+          "Shot 1: Wide master on the room as the camera slowly glides inward.",
+          "Shot 2: Gentle push toward the older man as he lifts the tea glass and looks toward the television.",
+        ].join("\n\n"),
+        imageStartPath: "C:/shots/start.png",
+        imageEndPath: "C:/shots/end.png",
+        duration: 8,
+        aspectRatio: "16:9",
+        cfg: 0.45,
+        generateAudio: true,
+        shotType: "customize",
+      }),
+    ).rejects.toThrow(
+      "fal backend su anda END gorseli + multi-shot kombinasyonunu kabul etmiyor",
+    );
 
-    expect(result.url).toBe("https://cdn.example.com/out.mp4");
-    expect(invokeMock).toHaveBeenCalledWith(
+    expect(invokeMock).not.toHaveBeenCalledWith(
       "fal_upload_file",
       expect.objectContaining({ filePath: "C:/shots/end.png" }),
     );
-    expect(submittedInputs).toHaveLength(1);
-    expect(submittedInputs[0]).toMatchObject({
-      start_image_url: "https://cdn.example.com/start.png",
-      end_image_url: "https://cdn.example.com/end.png",
-      shot_type: "customize",
-    });
-    expect(Array.isArray(submittedInputs[0]?.multi_prompt)).toBe(true);
+    expect(submittedInputs).toHaveLength(0);
   });
 });

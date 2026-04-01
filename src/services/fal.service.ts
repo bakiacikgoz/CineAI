@@ -846,30 +846,25 @@ function normalizeAvoidBlock(value: string): string | undefined {
   return flattened || undefined;
 }
 
+function normalizeKlingPromptSegment(value: string): string {
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function buildKlingMultiPromptPrompt(
   sharedPrefix: string,
   shotPrompt: string,
   sharedSuffix: string,
 ): string {
-  let prompt = shotPrompt.trim();
-
-  if (sharedPrefix) {
-    const withPrefix = [sharedPrefix, prompt].filter(Boolean).join("\n\n").trim();
-
-    if (withPrefix.length <= 512) {
-      prompt = withPrefix;
-    }
-  }
-
-  if (sharedSuffix) {
-    const withSuffix = [prompt, sharedSuffix].filter(Boolean).join("\n\n").trim();
-
-    if (withSuffix.length <= 512) {
-      prompt = withSuffix;
-    }
-  }
-
-  return prompt;
+  return normalizeKlingPromptSegment(
+    [sharedPrefix, shotPrompt, sharedSuffix].filter(Boolean).join("\n\n"),
+  );
 }
 
 function stripKlingShotHeader(shotPrompt: string): string {
@@ -1209,11 +1204,12 @@ export function getKlingMultiPromptValidationMessage(
     return null;
   }
 
-  const tooLongIndex = promptAnalysis.multiPrompt.findIndex((element) => element.prompt.length > 512);
+  const emptyIndex = promptAnalysis.multiPrompt.findIndex(
+    (element) => normalizeKlingPromptSegment(element.prompt).length === 0,
+  );
 
-  if (tooLongIndex >= 0) {
-    const length = promptAnalysis.multiPrompt[tooLongIndex]?.prompt.length ?? 0;
-    return `Shot ${tooLongIndex + 1} promptu ${length} karakter. Kling multi-shot modda her shot en fazla 512 karakter olabilir. Shot bloklarini kisalt veya tek shot kullan.`;
+  if (emptyIndex >= 0) {
+    return `Shot ${emptyIndex + 1} promptu bos. Kling multi-shot icin her shot acik bir prompt icermeli.`;
   }
 
   return null;

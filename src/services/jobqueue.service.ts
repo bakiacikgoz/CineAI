@@ -6,6 +6,11 @@ import { getCoveragePrompt, resolveBulkScope } from "@/lib/bulk-production";
 import { composeShotCharacterPrompt } from "@/lib/character-studio";
 import { getBulkVideoJobType } from "@/lib/job-queue-types";
 import {
+  composeStoryboardReferencePaths,
+  resolveStoryboardReferenceStrategy,
+  type StoryboardReferenceStrategy,
+} from "@/lib/storyboard-reference-strategy";
+import {
   deleteAssetRecord,
   getAssetById,
   saveAsset,
@@ -376,6 +381,7 @@ export interface EnqueueStoryboardFrameJobParams {
   persistToShotPath?: boolean;
   completeStatus?: string;
   referenceImagePaths?: string[];
+  referenceStrategy?: StoryboardReferenceStrategy;
   allowVideoFrameFallback?: boolean;
 }
 
@@ -953,7 +959,7 @@ export async function ensureShotEndFrameFromVideo(
   return hydratePreviousShotEndFrameFromVideo(previousShot, null, options);
 }
 
-async function resolveDirectReferenceForShot(
+async function resolveSupportingReferencePathsForShot(
   shot: ShotRow,
   mode: "end" | "coverage",
   allowMissingReference = false,
@@ -972,12 +978,124 @@ async function resolveDirectReferenceForShot(
       characterLookId: shot.characterLookId,
     }))?.referencePaths ?? [];
 
-  return Array.from(
-    new Set(
-      [externalReferencePath, ...characterReferencePaths].filter(
-        (value): value is string => Boolean(value),
-      ),
-    ),
+  return composeStoryboardReferencePaths({
+    strategy: "augment",
+    implicitReferenceImagePaths: [externalReferencePath, ...characterReferencePaths],
+  });
+}
+
+async function resolveParentStartDominantReferenceForShot(
+  shot: ShotRow,
+  jobId: string,
+  priority: number,
+  explicitReferenceImagePaths: string[],
+): Promise<string[]> {
+  if (!shot.parentShotId) {
+    throw new Error(`${shot.shotNumber} icin parent shot tanimi yok.`);
+  }
+
+  const activeProject = useProjectStore.getState().activeProject;
+
+  if (!activeProject) {
+    throw new Error("Aktif proje yok.");
+  }
+
+  const queue = useQueueStore.getState();
+  let parentShot = await getShotById(shot.parentShotId);
+
+  if (!parentShot) {
+    throw new Error(`${shot.shotNumber} icin parent shot bulunamadi.`);
+  }
+
+  const resolveExistingParentStartPath = async (): Promise<string | null> => {
+    if (!parentShot?.imageStartPath) {
+      return null;
+    }
+
+    const absolutePath = await resolveProjectFilePath(
+      activeProject.folderPath,
+      parentShot.imageStartPath,
+    );
+
+    return (await exists(absolutePath)) ? absolutePath : null;
+  };
+
+  let parentStartPath = await resolveExistingParentStartPath();
+
+  if (!parentStartPath) {
+    const pendingParentStartJob = findQueuedJob(parentShot.id, "image_start");
+
+    if (pendingParentStartJob) {
+      queue.updateJob(jobId, {
+        errorMsg: `${parentShot.shotNumber} START bekleniyor`,
+        progress: 6,
+      });
+      await waitForJob(pendingParentStartJob.id);
+    } else {
+      const parentPrompt = parentShot.promptStart?.trim();
+
+      if (!parentPrompt) {
+        throw new Error(
+          `${shot.shotNumber} icin ${parentShot.shotNumber} START referansi gerekli ama parent START promptu yok.`,
+        );
+      }
+
+      const parentStartJobId = await ensureStoryboardFrameJobQueued({
+        shotId: parentShot.id,
+        prompt: parentPrompt,
+        mode: "start",
+        model: resolveImageModel(parentShot.model),
+        aspectRatio: DEFAULT_ASPECT_RATIO,
+        cfg: parentShot.cfg ?? 7,
+        steps: DEFAULT_IMAGE_STEPS,
+        priority: priority + 1,
+      });
+
+      queue.updateJob(jobId, {
+        errorMsg: `${parentShot.shotNumber} START uretiliyor`,
+        progress: 6,
+      });
+      await waitForJob(parentStartJobId);
+    }
+
+    parentShot = await getShotById(shot.parentShotId);
+
+    if (!parentShot) {
+      throw new Error(`${shot.shotNumber} icin parent shot bulunamadi.`);
+    }
+
+    parentStartPath = await resolveExistingParentStartPath();
+  }
+
+  if (!parentStartPath) {
+    throw new Error(
+      `${shot.shotNumber} icin ${parentShot.shotNumber} START referansi hazirlanamadi.`,
+    );
+  }
+
+  const supportingReferencePaths = await resolveSupportingReferencePathsForShot(
+    shot,
+    "coverage",
+    explicitReferenceImagePaths.length > 0,
+  );
+
+  return composeStoryboardReferencePaths({
+    strategy: "parent-start-dominant",
+    dominantReferenceImagePath: parentStartPath,
+    explicitReferenceImagePaths,
+    implicitReferenceImagePaths: supportingReferencePaths,
+  });
+}
+
+async function resolveDirectReferenceForShot(
+  shot: ShotRow,
+  mode: "end" | "coverage",
+  allowMissingReference = false,
+): Promise<string[]> {
+  return resolveSupportingReferencePathsForShot(
+    shot,
+    mode,
+    allowMissingReference,
   );
 }
 
@@ -1240,6 +1358,11 @@ export async function enqueueStoryboardFrameJob(
   const explicitReferenceImagePaths = Array.from(
     new Set((params.referenceImagePaths ?? []).filter((value): value is string => Boolean(value))),
   );
+  const referenceStrategy = resolveStoryboardReferenceStrategy({
+    mode: params.mode,
+    hasParentShot: Boolean(shot.parentShotId),
+    strategy: params.referenceStrategy,
+  });
   const missingReferenceMessage =
     explicitReferenceImagePaths.length === 0
       ? await getShotMissingExternalReferenceMessage(shot, params.mode)
@@ -1256,7 +1379,10 @@ export async function enqueueStoryboardFrameJob(
     shot,
     mode,
     explicitReferenceImagePaths,
-    allowVideoFrameFallback: params.allowVideoFrameFallback,
+    allowVideoFrameFallback:
+      referenceStrategy === "parent-start-dominant"
+        ? false
+        : params.allowVideoFrameFallback,
   });
   const model = resolveImageModel(params.model ?? shot.model);
   const aspectRatio = params.aspectRatio ?? DEFAULT_ASPECT_RATIO;
@@ -1292,6 +1418,7 @@ export async function enqueueStoryboardFrameJob(
       mode,
       outputSuffix: params.outputSuffix,
       referenceImagePaths: explicitReferenceImagePaths,
+      referenceStrategy,
       assetTags: params.assetTags,
       persistToShotPath,
       completeStatus,
@@ -1315,16 +1442,30 @@ export async function enqueueStoryboardFrameJob(
 
       let referenceImagePaths = explicitReferenceImagePaths;
 
-      if (mode === "start") {
+      if (referenceStrategy === "explicit-only") {
+        referenceImagePaths = composeStoryboardReferencePaths({
+          strategy: referenceStrategy,
+          explicitReferenceImagePaths,
+        });
+      } else if (referenceStrategy === "parent-start-dominant") {
+        referenceImagePaths = await resolveParentStartDominantReferenceForShot(
+          shot,
+          jobId,
+          params.priority ?? 120,
+          explicitReferenceImagePaths,
+        );
+      } else if (mode === "start") {
         const resolvedReferenceImagePaths = await resolveStartReferenceForShot(
           shot,
           jobId,
           params.priority ?? 120,
           allowVideoFrameFallback,
         );
-        referenceImagePaths = Array.from(
-          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
-        );
+        referenceImagePaths = composeStoryboardReferencePaths({
+          strategy: referenceStrategy,
+          explicitReferenceImagePaths,
+          implicitReferenceImagePaths: resolvedReferenceImagePaths,
+        });
       } else if (mode === "end") {
         const resolvedReferenceImagePaths = await resolveEndReferenceForShot(
           shot,
@@ -1332,18 +1473,22 @@ export async function enqueueStoryboardFrameJob(
           params.priority ?? 120,
           explicitReferenceImagePaths.length > 0,
         );
-        referenceImagePaths = Array.from(
-          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
-        );
+        referenceImagePaths = composeStoryboardReferencePaths({
+          strategy: referenceStrategy,
+          explicitReferenceImagePaths,
+          implicitReferenceImagePaths: resolvedReferenceImagePaths,
+        });
       } else {
         const resolvedReferenceImagePaths = await resolveDirectReferenceForShot(
           shot,
           mode,
           explicitReferenceImagePaths.length > 0,
         );
-        referenceImagePaths = Array.from(
-          new Set([...explicitReferenceImagePaths, ...resolvedReferenceImagePaths]),
-        );
+        referenceImagePaths = composeStoryboardReferencePaths({
+          strategy: referenceStrategy,
+          explicitReferenceImagePaths,
+          implicitReferenceImagePaths: resolvedReferenceImagePaths,
+        });
       }
 
       updateProgress(10);

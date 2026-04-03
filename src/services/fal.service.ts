@@ -14,6 +14,11 @@ export const IMAGE_MODELS = {
     costPerImage: 0.08,
     supportsImg2Img: true,
   },
+  "fal-ai/nano-banana-pro": {
+    label: "Nano Banana Pro",
+    costPerImage: 0.15,
+    supportsImg2Img: true,
+  },
   "fal-ai/flux-pro/v1.1": {
     label: "FLUX 1.1 Pro",
     costPerImage: 0.04,
@@ -1407,8 +1412,8 @@ export async function generateImage(
   let endpoint: string = model;
   let input: Record<string, unknown>;
 
-  if (model === "fal-ai/nano-banana-2") {
-    endpoint = referenceUrls.length > 0 ? "fal-ai/nano-banana-2/edit" : "fal-ai/nano-banana-2";
+  if (model === "fal-ai/nano-banana-2" || model === "fal-ai/nano-banana-pro") {
+    endpoint = referenceUrls.length > 0 ? `${model}/edit` : model;
     input = {
       prompt,
       num_images: 1,

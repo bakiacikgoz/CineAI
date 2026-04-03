@@ -256,6 +256,7 @@ export async function generateVideoOnEvoLink(params: {
   aspectRatio?: string;
   quality: "720p" | "1080p";
   generateAudio?: boolean;
+  elementIds?: string[];
   negativePrompt?: string;
   imageStartPath?: string;
   imageEndPath?: string;
@@ -264,6 +265,7 @@ export async function generateVideoOnEvoLink(params: {
   supportsAudio?: boolean;
   supportsAspectRatio?: boolean;
   supportsNegativePrompt?: boolean;
+  supportsElementList?: boolean;
 }): Promise<{ url: string; requestId?: string; durationS?: number }> {
   const apiKey = await resolveEvoLinkApiKey();
   const input: Record<string, unknown> = {
@@ -272,6 +274,7 @@ export async function generateVideoOnEvoLink(params: {
     duration: params.duration,
     quality: params.quality,
   };
+  const modelParams: Record<string, unknown> = {};
 
   if (params.inputMode === "image-to-video") {
     if (!params.imageStartPath) {
@@ -295,6 +298,28 @@ export async function generateVideoOnEvoLink(params: {
 
   if (params.supportsNegativePrompt && params.negativePrompt?.trim()) {
     input.negative_prompt = params.negativePrompt.trim();
+  }
+
+  if (params.supportsElementList) {
+    const elementList = Array.from(
+      new Set(
+        (params.elementIds ?? [])
+          .map((elementId) => elementId.trim())
+          .filter(Boolean),
+      ),
+    )
+      .slice(0, 3)
+      .map((elementId) => ({
+        element_id: elementId,
+      }));
+
+    if (elementList.length > 0) {
+      modelParams.element_list = elementList;
+    }
+  }
+
+  if (Object.keys(modelParams).length > 0) {
+    input.model_params = modelParams;
   }
 
   params.onProgress?.(18);

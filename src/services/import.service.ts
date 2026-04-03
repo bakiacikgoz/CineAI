@@ -360,6 +360,60 @@ function parseStoredAudioGenerationProfile(
   }
 }
 
+function normalizeStoredPath(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  return trimmed ? trimmed.replace(/\\/g, "/") : null;
+}
+
+function isAbsoluteStoredPath(path: string): boolean {
+  return /^(?:[a-zA-Z]:\/|\/|\/\/)/.test(path);
+}
+
+function isProjectScopedAbsolutePath(projectFolderPath: string, absolutePath: string): boolean {
+  const normalizedProjectPath = normalizeStoredPath(projectFolderPath)?.replace(/\/+$/, "");
+
+  if (!normalizedProjectPath) {
+    return false;
+  }
+
+  return absolutePath === normalizedProjectPath || absolutePath.startsWith(`${normalizedProjectPath}/`);
+}
+
+async function resolveProjectScopedPath(
+  projectFolderPath: string,
+  storedPath: string | null | undefined,
+): Promise<string | null> {
+  const normalizedPath = normalizeStoredPath(storedPath);
+
+  if (!normalizedPath) {
+    return null;
+  }
+
+  if (isAbsoluteStoredPath(normalizedPath)) {
+    return isProjectScopedAbsolutePath(projectFolderPath, normalizedPath) ? normalizedPath : null;
+  }
+
+  return join(projectFolderPath, ...normalizedPath.split(/[\\/]+/).filter(Boolean));
+}
+
+function isMissingFileError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : JSON.stringify(error);
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("not found") ||
+    normalized.includes("does not exist") ||
+    normalized.includes("file not found") ||
+    normalized.includes("path not found") ||
+    normalized.includes("cannot find the path")
+  );
+}
+
 async function tryRemoveProjectRelativeFile(
   projectFolderPath: string,
   relativePath: string | null | undefined,
@@ -369,15 +423,20 @@ async function tryRemoveProjectRelativeFile(
   }
 
   try {
-    const absolutePath = await join(
-      projectFolderPath,
-      ...relativePath.split(/[\\/]+/).filter(Boolean),
-    );
+    const absolutePath = await resolveProjectScopedPath(projectFolderPath, relativePath);
+
+    if (!absolutePath) {
+      return;
+    }
 
     if (await exists(absolutePath)) {
       await remove(absolutePath);
     }
   } catch (error) {
+    if (isMissingFileError(error)) {
+      return;
+    }
+
     console.warn("Failed to remove stale project-relative file.", {
       projectFolderPath,
       relativePath,
@@ -453,12 +512,12 @@ async function buildImportedAudioState(
     Boolean(existingShot.audioMasterPath);
 
   if (canPreserveExistingMaster && existingShot?.audioMasterPath) {
-    const absoluteMasterPath = await join(
+    const absoluteMasterPath = await resolveProjectScopedPath(
       projectFolderPath,
-      ...existingShot.audioMasterPath.split(/[\\/]+/).filter(Boolean),
+      existingShot.audioMasterPath,
     );
 
-    if (await exists(absoluteMasterPath)) {
+    if (absoluteMasterPath && await exists(absoluteMasterPath)) {
       return {
         audioDirectionJson,
         audioDialoguePreview,

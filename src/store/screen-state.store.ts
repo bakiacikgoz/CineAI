@@ -30,6 +30,10 @@ export type ImageGeneratorScreenState = {
   galleryGroupDraft: string;
   gallerySelectedGroupTarget: string;
   galleryPage: number;
+  galleryViewMode: "grid" | "list";
+  gallerySortBy: "date-desc" | "date-asc" | "model" | "size";
+  gallerySearchQuery: string;
+  submitOnEnter: boolean;
 };
 
 export type VideoGeneratorScreenState = {

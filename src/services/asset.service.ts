@@ -420,6 +420,17 @@ export async function assignAssetToShot(
     throw new Error("Shot bulunamadi.");
   }
 
+  const expectsImage = target === "start" || target === "end" || target === "reference";
+  const expectsVideo = target === "video" || target === "lipsync";
+
+  if (expectsImage && asset.type !== "image") {
+    throw new Error(`${target.toUpperCase()} slotu icin gorsel dosyasi gerekli.`);
+  }
+
+  if (expectsVideo && asset.type !== "video") {
+    throw new Error(`${target.toUpperCase()} slotu icin video dosyasi gerekli.`);
+  }
+
   await setAssetShotId(assetId, shotId);
 
   if (target === "reference") {

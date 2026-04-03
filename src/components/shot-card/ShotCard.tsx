@@ -63,6 +63,14 @@ function toAbsoluteProjectPath(projectFolderPath: string, relativePath: string):
   return `${normalizedBase}/${normalizedRelative}`;
 }
 
+function appendMediaVersion(url: string, version: number | string | null | undefined): string {
+  if (version === null || version === undefined || version === "") {
+    return url;
+  }
+
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(version))}`;
+}
+
 function resolveThumbnailPath(shot: ShotRow): { path: string | null; source: "start" | "end" | null } {
   if (shot.imageStartPath) {
     return { path: shot.imageStartPath, source: "start" };
@@ -149,7 +157,10 @@ export function ShotCard({
   const tensionLabel = shot.tensionLevel ? `T${shot.tensionLevel}` : "T--";
   const summaryCopy = shot.summaryTr ?? "Prompt ve continuity detaylari detay modalinda gorunur.";
   const thumbUrl = thumbnail.path
-    ? convertFileSrc(toAbsoluteProjectPath(projectFolderPath, thumbnail.path))
+    ? appendMediaVersion(
+        convertFileSrc(toAbsoluteProjectPath(projectFolderPath, thumbnail.path)),
+        shot.updatedAt,
+      )
     : null;
   const resolvedThumbUrl = thumbUrl && !thumbnailFailed ? thumbUrl : null;
   const showToolbar = hovered || selected;

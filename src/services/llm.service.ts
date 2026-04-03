@@ -93,6 +93,19 @@ export type PromptAssistMode =
   | "translate-tr"
   | "translate-en";
 
+export type SurgicalPromptEditKind = "start" | "end" | "video";
+
+export interface SurgicalPromptEditParams {
+  originalPrompt: string;
+  editInstruction: string;
+  promptKind: SurgicalPromptEditKind;
+  shotNumber?: string | null;
+  shotType?: string | null;
+  cameraAngle?: string | null;
+  summaryTr?: string | null;
+  model?: string | null;
+}
+
 export interface DialogueOptimizationInputLine {
   speaker: string;
   text: string;
@@ -1009,6 +1022,71 @@ function buildInstruction(mode: PromptAssistMode): string {
   return "Translate the prompt to English. Preserve structure, tone, and all cinematic details. Return only the translated prompt.";
 }
 
+function normalizePromptTextOutput(content: string): string {
+  const trimmed = content.trim();
+  const fencedMatch = trimmed.match(/^```(?:text|md|markdown)?\s*([\s\S]*?)\s*```$/i);
+  return (fencedMatch?.[1] ?? trimmed).trim();
+}
+
+function normalizePromptForComparison(content: string): string {
+  return normalizePromptTextOutput(content)
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[`"'“”‘’.,;:!?()[\]{}<>\\/|*_+=-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasMaterialPromptChange(originalPrompt: string, candidatePrompt: string): boolean {
+  return normalizePromptForComparison(originalPrompt) !== normalizePromptForComparison(candidatePrompt);
+}
+
+function buildSurgicalPromptEditInstruction(forceMaterialChange = false): string {
+  const baseInstruction = [
+    "You are a senior cinematic prompt editor.",
+    "Your task is to surgically revise an existing generation prompt.",
+    "Preserve the original prompt's structure, intent, visual continuity, camera logic, tone, and constraints unless the user instruction explicitly asks to change them.",
+    "Apply only the requested changes.",
+    "Do not widen scope.",
+    "Do not add new characters, props, actions, camera moves, locations, or stylistic flourishes unless explicitly requested.",
+    "Do not rewrite the whole prompt just to make it different.",
+    "Keep wording as close to the original as possible while making the requested fix cleanly.",
+    "If the requested change conflicts with the original prompt, resolve only that conflict and preserve everything else.",
+    "Return only the revised prompt text.",
+    "Do not include explanations, bullets, labels, markdown fences, or surrounding quotes.",
+  ];
+
+  if (forceMaterialChange) {
+    baseInstruction.push(
+      "Your previous draft was rejected because it did not materially change the prompt.",
+      "A no-op rewrite is not acceptable.",
+      "Make the requested change explicit in the returned prompt while preserving everything else.",
+    );
+  }
+
+  return baseInstruction.join(" ");
+}
+
+function buildSurgicalPromptEditUserPrompt(
+  params: SurgicalPromptEditParams,
+): string {
+  return JSON.stringify(
+    {
+      shot_number: params.shotNumber?.trim() || null,
+      prompt_kind: params.promptKind,
+      shot_context: {
+        shot_type: params.shotType?.trim() || null,
+        camera_angle: params.cameraAngle?.trim() || null,
+        summary_tr: params.summaryTr?.trim() || null,
+      },
+      original_prompt: params.originalPrompt.trim(),
+      requested_change: params.editInstruction.trim(),
+    },
+    null,
+    2,
+  );
+}
+
 export async function runPromptAssist(
   mode: PromptAssistMode,
   content: string,
@@ -1064,7 +1142,46 @@ export async function runPromptAssist(
     throw new Error("OpenRouter yanitinda icerik bulunamadi.");
   }
 
-  return output;
+  return normalizePromptTextOutput(output);
+}
+
+export async function runSurgicalPromptEdit(
+  params: SurgicalPromptEditParams,
+): Promise<string> {
+  if (!params.originalPrompt.trim()) {
+    throw new Error("Duzenlenecek prompt bos olamaz.");
+  }
+
+  if (!params.editInstruction.trim()) {
+    throw new Error("Prompt duzeltme talimati bos olamaz.");
+  }
+
+  const normalizedOriginalPrompt = normalizePromptTextOutput(params.originalPrompt);
+  let lastOutput = "";
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await runScenarioLLM({
+      systemPrompt: buildSurgicalPromptEditInstruction(attempt > 0),
+      userPrompt: buildSurgicalPromptEditUserPrompt(params),
+      model: params.model ?? undefined,
+      temperature: attempt > 0 ? 0.2 : 0.1,
+    });
+    const output = normalizePromptTextOutput(result.content);
+
+    if (!output) {
+      throw new Error("OpenRouter prompt duzeltme yanitinda icerik bulunamadi.");
+    }
+
+    lastOutput = output;
+
+    if (hasMaterialPromptChange(normalizedOriginalPrompt, output)) {
+      return output;
+    }
+  }
+
+  throw new Error(
+    `AI duzeltme talimati promptta olculebilir bir degisiklik uretemedi. Talimati daha net yaz ve tekrar dene.${lastOutput ? " Son yanit mevcut promptla neredeyse ayniydi." : ""}`,
+  );
 }
 
 export async function optimizeDialogueForSpeech(params: {

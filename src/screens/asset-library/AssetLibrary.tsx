@@ -265,6 +265,38 @@ export function AssetLibrary() {
 
   /* ---- handlers ---- */
 
+  async function refreshLibraryData(preferredAssetId?: string | null) {
+    if (!activeProject) {
+      return;
+    }
+
+    const [assetRows, shotRows] = await Promise.all([
+      getAssets(activeProject.id),
+      getShots(activeProject.id, { includeArchived: true }),
+    ]);
+    const resolvedAssets = await Promise.all(
+      assetRows.map(async (asset) => {
+        const absolutePath = await join(
+          activeProject.folderPath,
+          ...asset.file_path.split(/[\\/]+/).filter(Boolean),
+        );
+        return {
+          ...asset,
+          absolutePath,
+          assetUrl: convertFileSrc(absolutePath),
+        };
+      }),
+    );
+
+    setAssets(resolvedAssets);
+    setShots(shotRows);
+    setSelectedAssetId(
+      preferredAssetId && resolvedAssets.some((asset) => asset.id === preferredAssetId)
+        ? preferredAssetId
+        : (resolvedAssets[0]?.id ?? null),
+    );
+  }
+
   async function handleAssign() {
     if (!selectedAsset || !shotTargetId) {
       return;
@@ -272,11 +304,11 @@ export function AssetLibrary() {
 
     try {
       await assignAssetToShot(selectedAsset.id, shotTargetId, assignmentTarget);
+      await refreshLibraryData(selectedAsset.id);
       await message("Asset shot'a baglandi.", {
         title: "Asset Library",
         kind: "info",
       });
-      setSelectedAssetId(selectedAsset.id);
     } catch (error) {
       await message(
         error instanceof Error ? error.message : "Asset shot'a atanamadi.",
@@ -322,28 +354,33 @@ export function AssetLibrary() {
   }
 
   async function handleImportAssets() {
+    const expectsVideo = assignmentTarget === "video" || assignmentTarget === "lipsync";
     const selected = await open({
       multiple: true,
       directory: false,
       title: "Asset Library icin medya dosyalari sec",
       filters: [
         {
-          name: "Media",
-          extensions: [
-            "png",
-            "jpg",
-            "jpeg",
-            "webp",
-            "gif",
-            "bmp",
-            "avif",
-            "mp4",
-            "mov",
-            "webm",
-            "m4v",
-            "avi",
-            "mkv",
-          ],
+          name: shotTargetId ? (expectsVideo ? "Video" : "Gorsel") : "Media",
+          extensions: shotTargetId
+            ? expectsVideo
+              ? ["mp4", "mov", "webm", "m4v", "avi", "mkv"]
+              : ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"]
+            : [
+                "png",
+                "jpg",
+                "jpeg",
+                "webp",
+                "gif",
+                "bmp",
+                "avif",
+                "mp4",
+                "mov",
+                "webm",
+                "m4v",
+                "avi",
+                "mkv",
+              ],
         },
       ],
     });
@@ -367,14 +404,26 @@ export function AssetLibrary() {
         importedAssets.push(await importProjectAsset({ sourcePath: selectedPath }));
       }
 
-      if (importedAssets[0]) {
-        setSelectedAssetId(importedAssets[0].assetId);
-      }
+      const firstImportedAsset = importedAssets[0] ?? null;
 
-      await message(`${importedAssets.length} asset kutuphaneye eklendi.`, {
-        title: "Asset Library",
-        kind: "info",
-      });
+      if (
+        firstImportedAsset &&
+        shotTargetId &&
+        importedAssets.length === 1
+      ) {
+        await assignAssetToShot(firstImportedAsset.assetId, shotTargetId, assignmentTarget);
+        await refreshLibraryData(firstImportedAsset.assetId);
+        await message("Asset kutuphaneye eklendi ve secili shot slotuna baglandi.", {
+          title: "Asset Library",
+          kind: "info",
+        });
+      } else {
+        await refreshLibraryData(firstImportedAsset?.assetId ?? null);
+        await message(`${importedAssets.length} asset kutuphaneye eklendi.`, {
+          title: "Asset Library",
+          kind: "info",
+        });
+      }
     } catch (error) {
       await message(
         error instanceof Error ? error.message : "Asset ice aktarilamadi.",

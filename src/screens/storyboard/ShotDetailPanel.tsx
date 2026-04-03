@@ -130,6 +130,7 @@ import {
   listPromptTemplates,
   type PromptTemplateRecord,
 } from "@/services/prompt-template.service";
+import { runSurgicalPromptEdit } from "@/services/llm.service";
 import {
   buildVoiceOptionLabel,
   sortVoicesForCharacterSelection,
@@ -237,6 +238,10 @@ function getShotPromptForView(shot: ShotRow, view: DetailView): string | null {
   }
 
   return shot.promptVideo;
+}
+
+function getDetailViewLabel(view: DetailView): string {
+  return view === "start" ? "START" : view === "end" ? "END" : "VIDEO";
 }
 
 function inferStoryboardVariantStage(
@@ -465,6 +470,12 @@ export function ShotDetailPanel({
     end: shot.promptEnd ?? "",
     video: shot.promptVideo ?? "",
   });
+  const [promptEditInstructions, setPromptEditInstructions] = useState<Record<DetailView, string>>({
+    start: "",
+    end: "",
+    video: "",
+  });
+  const [assistingPromptView, setAssistingPromptView] = useState<DetailView | null>(null);
   const videoQualityOptions = getVideoQualityOptions(storyboardVideoModel);
   const effectiveStoryboardVideoModel = resolveVideoModelWithQuality(
     storyboardVideoModel,
@@ -483,6 +494,11 @@ export function ShotDetailPanel({
       start: shot.promptStart ?? "",
       end: shot.promptEnd ?? "",
       video: shot.promptVideo ?? "",
+    });
+    setPromptEditInstructions({
+      start: "",
+      end: "",
+      video: "",
     });
     setSelectedCharacterId(shot.characterId ?? "");
     setSelectedLookId(shot.characterLookId ?? "");
@@ -1351,6 +1367,7 @@ export function ShotDetailPanel({
   const imageModel = resolveImageModel(shot.model);
   const resolvedVideoDuration = videoDuration;
   const promptContent = promptDrafts[activePromptTab];
+  const promptEditInstruction = promptEditInstructions[activePromptTab];
   const videoPromptAnalysis = analyzeKlingVideoPrompt(promptDrafts.video);
   const videoModelSupportsMultiShot = effectiveStoryboardVideoMeta.supportsMultiShot;
   const isFalO3ReferenceStoryboardModel =
@@ -1556,6 +1573,7 @@ export function ShotDetailPanel({
         persistToShotPath: false,
         completeStatus: existingStagePath ? "done" : "review",
         referenceImagePaths: payload.referenceImagePaths,
+        referenceStrategy: "explicit-only",
       });
       setActiveMediaView(stage);
       setVariantIndexByView((current) => ({ ...current, [stage]: 0 }));
@@ -2561,6 +2579,68 @@ export function ShotDetailPanel({
     }
   }
 
+  async function handleSurgicalPromptEdit() {
+    const promptView = activePromptTab;
+    const currentPrompt = promptDrafts[promptView].trim();
+    const currentInstruction = promptEditInstructions[promptView].trim();
+
+    if (!currentPrompt) {
+      await message("AI duzeltme icin once bir prompt olmali.", {
+        title: shot.shotNumber,
+        kind: "warning",
+      });
+      return;
+    }
+
+    if (!currentInstruction) {
+      await message("Promptta neyin degisecegini kisaca yaz.", {
+        title: shot.shotNumber,
+        kind: "warning",
+      });
+      return;
+    }
+
+    setAssistingPromptView(promptView);
+
+    try {
+      const preferredLlmModel =
+        (await getAppSetting<string>("SCENARIO_STUDIO_LLM_MODEL"))?.trim() ||
+        "openrouter/auto";
+      const nextPrompt = await runSurgicalPromptEdit({
+        originalPrompt: currentPrompt,
+        editInstruction: currentInstruction,
+        promptKind: promptView,
+        shotNumber: shot.shotNumber,
+        shotType: shot.shotType,
+        cameraAngle: shot.cameraAngle,
+        summaryTr: shot.summaryTr,
+        model: preferredLlmModel,
+      });
+
+      setPromptDrafts((current) => ({
+        ...current,
+        [promptView]: nextPrompt,
+      }));
+      await message(
+        `${getDetailViewLabel(promptView)} promptu AI ile duzenlendi. Inceleyip kaydedebilirsin.`,
+        {
+          title: shot.shotNumber,
+          kind: "info",
+        },
+      );
+    } catch (error) {
+      await message(
+        error instanceof Error ? error.message : "AI prompt duzeltmesi basarisiz oldu.",
+        {
+          title: shot.shotNumber,
+          kind: "error",
+        },
+      );
+    } finally {
+      setAssistingPromptView(null);
+    }
+  }
+
   async function handleUnifiedProduce() {
     const targets = prodTargets;
     const isMulti = prodMode === "multi";
@@ -3495,7 +3575,100 @@ export function ShotDetailPanel({
                     <button className="btn-secondary" type="button" onClick={openPromptLibrary} style={{ padding: "8px 12px", fontSize: 11, fontWeight: 500, borderRadius: 8 }}>Kutuphane</button>
                     <button className="btn-primary" type="button" disabled={!selectedTemplateId || applyingTemplate} onClick={() => void handleApplyTemplate()} style={{ padding: "8px 14px", fontSize: 11, fontWeight: 600, borderRadius: 8 }}>{applyingTemplate ? "..." : "Uygula"}</button>
                   </div>
-                  <div style={{ padding: "16px 16px 12px" }}>
+                  <div style={{ padding: "16px 16px 12px", display: "grid", gap: 12 }}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 8,
+                        padding: "12px 14px",
+                        borderRadius: 12,
+                        border: "1px solid rgba(59,130,246,0.16)",
+                        background:
+                          "linear-gradient(135deg, rgba(59,130,246,0.06) 0%, rgba(59,130,246,0.02) 100%)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 12,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ display: "grid", gap: 2 }}>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "var(--text-primary)",
+                              letterSpacing: "0.02em",
+                            }}
+                          >
+                            AI Cerrahi Prompt Duzeltme
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: "var(--text-muted)",
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            Sadece istedigin degisikligi yaz. OpenRouter geri kalan yapıyı koruyarak
+                            {` ${getDetailViewLabel(activePromptTab)} promptunu`} duzeltir.
+                          </span>
+                        </div>
+                        <button
+                          className="btn-secondary"
+                          type="button"
+                          disabled={
+                            assistingPromptView !== null ||
+                            !promptContent.trim() ||
+                            !promptEditInstruction.trim()
+                          }
+                          onClick={() => void handleSurgicalPromptEdit()}
+                          style={{
+                            padding: "8px 12px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            borderRadius: 8,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          <Sparkles size={13} />
+                          {assistingPromptView === activePromptTab
+                            ? "AI duzeltiyor..."
+                            : "AI ile duzelt"}
+                        </button>
+                      </div>
+                      <textarea
+                        value={promptEditInstruction}
+                        onChange={(e) =>
+                          setPromptEditInstructions((current) => ({
+                            ...current,
+                            [activePromptTab]: e.target.value,
+                          }))}
+                        placeholder={`Ornek: ${getDetailViewLabel(activePromptTab)} promptunda sadece kamera acisini omuz hizasina cek, karakteri ve mekani koru.`}
+                        style={{
+                          width: "100%",
+                          minHeight: 84,
+                          resize: "vertical",
+                          padding: "12px 14px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(59,130,246,0.18)",
+                          background: "var(--bg-base)",
+                          color: "var(--text-primary)",
+                          fontSize: 12,
+                          lineHeight: 1.7,
+                          fontFamily: '"IBM Plex Mono", "SF Mono", "Menlo", monospace',
+                          outline: "none",
+                        }}
+                      />
+                      <span style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        Sonuc taslaga yazilir. Uretime gondermeden once inceleyip normal kaydet ile
+                        kaydetmen gerekir.
+                      </span>
+                    </div>
                     <textarea value={promptContent} onChange={(e) => setPromptDrafts((c) => ({ ...c, [activePromptTab]: e.target.value }))} placeholder={`${activePromptTab.toUpperCase()} promptunu burada duzenle...`} style={{ width: "100%", minHeight: 300, resize: "vertical", padding: "14px 16px", borderRadius: 12, border: "1px solid var(--glass-border)", background: "var(--bg-base)", color: "var(--text-primary)", fontSize: 13, lineHeight: 1.8, fontFamily: '"IBM Plex Mono", "SF Mono", "Menlo", monospace', outline: "none" }} />
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px 14px", borderTop: "1px solid var(--surface-hover)" }}>

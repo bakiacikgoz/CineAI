@@ -18,6 +18,7 @@ import {
   enqueueUpscaleJobs,
   enqueueVideoJobs,
   registerPersistedJobRetryReviver,
+  type EnqueueStoryboardFrameJobParams,
 } from "@/services/jobqueue.service";
 import {
   getShots,
@@ -622,6 +623,12 @@ async function requeuePersistedJob(job: Job): Promise<void> {
       referenceImagePaths: Array.isArray(params.referenceImagePaths)
         ? (params.referenceImagePaths as string[])
         : undefined,
+      referenceStrategy:
+        params.referenceStrategy === "augment" ||
+        params.referenceStrategy === "explicit-only" ||
+        params.referenceStrategy === "parent-start-dominant"
+          ? (params.referenceStrategy as EnqueueStoryboardFrameJobParams["referenceStrategy"])
+          : undefined,
       allowVideoFrameFallback:
         typeof params.allowVideoFrameFallback === "boolean"
           ? params.allowVideoFrameFallback

@@ -85,6 +85,17 @@
   --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 32px 80px rgba(0, 0, 0, 0.18);
   --shadow-modal: 0 32px 80px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.06);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05);
+  --shadow-card-selected: 0 0 0 2px var(--accent), 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --focus-ring: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent);
   --toggle-knob: #ffffff;
   --toggle-off: rgba(0, 0, 0, 0.12);
   --canvas-bg: #f0f0f0;
@@ -164,6 +175,10 @@
   --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 32px 80px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0 32px 80px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-card: 0 1px 6px rgba(0, 0, 0, 0.18);
+  --shadow-card-hover: 0 12px 28px rgba(0, 0, 0, 0.28), 0 2px 10px rgba(0, 0, 0, 0.18);
+  --shadow-card-selected: 0 0 0 2px var(--accent), 0 12px 30px rgba(0, 0, 0, 0.34);
+  --shadow-float: 0 18px 46px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08);
   --toggle-knob: #ffffff;
   --toggle-off: rgba(255, 255, 255, 0.15);
   --canvas-bg: #0a0a0b;
@@ -289,10 +304,10 @@ select {
   color: var(--text-secondary);
   cursor: pointer;
   transition:
-    color 150ms ease,
-    border-color 150ms ease,
-    background 150ms ease,
-    transform 150ms ease;
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .icon-button:hover {
@@ -368,9 +383,9 @@ select {
   color: var(--text-muted);
   cursor: pointer;
   transition:
-    background 150ms ease,
-    color 150ms ease,
-    transform 150ms ease;
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .topbar-project-close:hover {
@@ -390,9 +405,9 @@ select {
   font-size: 12px;
   color: var(--text-secondary);
   transition:
-    background 150ms ease,
-    border-color 150ms ease,
-    color 150ms ease;
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .queue-badge.is-active {
@@ -443,8 +458,8 @@ select {
   text-align: left;
   cursor: pointer;
   transition:
-    color 150ms ease,
-    background 150ms ease;
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
 }
 
 .sidebar-link::after {
@@ -453,7 +468,7 @@ select {
   inset: 0;
   border: 1px solid transparent;
   border-radius: 12px;
-  transition: border-color 150ms ease;
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
 
 .sidebar-link:hover {
@@ -682,10 +697,10 @@ select {
   white-space: nowrap;
   cursor: pointer;
   transition:
-    background 150ms ease,
-    border-color 150ms ease,
-    opacity 150ms ease,
-    transform 150ms ease;
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .btn-primary {
@@ -818,7 +833,7 @@ select {
   border-radius: 14px;
   background: var(--surface-card);
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 150ms ease;
+  transition: box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .dashboard-metric-card:hover {
@@ -872,9 +887,9 @@ select {
   cursor: pointer;
   box-shadow: var(--shadow-sm);
   transition:
-    border-color 150ms ease,
-    transform 150ms ease,
-    box-shadow 150ms ease;
+    border-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .project-card:hover {
@@ -924,8 +939,8 @@ select {
   cursor: pointer;
   opacity: 0;
   transition:
-    opacity 150ms ease,
-    background 150ms ease;
+    opacity var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
 }
 
 .project-card:hover .card-remove-btn {
@@ -1122,7 +1137,7 @@ select {
 
 .project-input:focus {
   border-color: var(--text-primary);
-  box-shadow: 0 0 0 3px var(--surface-active);
+  box-shadow: var(--focus-ring);
 }
 
 .project-picker {
@@ -1327,8 +1342,8 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select {
   transition:
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .studio-field:focus,
@@ -1336,7 +1351,7 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
 textarea:focus,
 select:focus {
   border-color: var(--text-primary);
-  box-shadow: 0 0 0 3px var(--surface-active);
+  box-shadow: var(--focus-ring);
 }
 
 input[type="range"] {
@@ -1354,9 +1369,9 @@ input[type="checkbox"] {
 
 .hover-lift {
   transition:
-    transform 150ms ease,
-    box-shadow 150ms ease,
-    border-color 150ms ease;
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
 }
 
 .hover-lift:hover:not(:disabled) {
@@ -1370,9 +1385,9 @@ input[type="checkbox"] {
 
 .hover-glow {
   transition:
-    border-color 150ms ease,
-    background 150ms ease,
-    color 150ms ease;
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .hover-glow:hover:not(:disabled) {
@@ -1388,7 +1403,7 @@ input[type="checkbox"] {
 /* ── Page transition ─────────────────────────────────────── */
 
 .page-enter {
-  animation: pageEnter 0.3s ease-out both;
+  animation: pageEnter var(--duration-normal) var(--ease-out) both;
 }
 
 @keyframes pageEnter {
@@ -1409,4 +1424,57 @@ textarea:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   pointer-events: auto;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.shimmer-skeleton {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--surface-hover) 30%,
+      var(--bg-elevated) 50%,
+      var(--surface-hover) 70%,
+      transparent 100%
+    ),
+    var(--bg-elevated);
+  background-size: 200% 100%;
+  animation: shimmer 1.9s linear infinite;
+}
+
+.floating-glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.success-flash {
+  animation: successFlash 600ms var(--ease-out);
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes successFlash {
+  0%,
+  100% {
+    box-shadow: var(--shadow-card);
+  }
+  40% {
+    box-shadow: 0 0 0 2px var(--status-success), var(--shadow-card-hover);
+  }
 }

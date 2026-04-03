@@ -19,8 +19,13 @@ import {
   type ImportPreview,
   type ShotRow,
 } from "@/services/import.service";
+import {
+  exportStoryboardShotsBundle,
+  type StoryboardExportOptions,
+} from "@/services/storyboard-export.service";
 import { BulkProductionModal } from "@/screens/storyboard/BulkProductionModal";
 import { ImportPreviewModal } from "@/screens/storyboard/ImportPreviewModal";
+import { StoryboardExportModal } from "@/screens/storyboard/StoryboardExportModal";
 import { ShotDetailPanel } from "@/screens/storyboard/ShotDetailPanel";
 import { Portal } from "@/components/Portal";
 import { useProjectStore } from "@/store/project.store";
@@ -65,12 +70,14 @@ export function Storyboard() {
   const [shots, setShots] = useState<ShotRow[]>([]);
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
   const [showBulkModal, setShowBulkModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importPreviewData, setImportPreviewData] = useState<ImportPreview | null>(null);
   const [importFolder, setImportFolder] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exportingBundle, setExportingBundle] = useState(false);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [spacePressed, setSpacePressed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -289,6 +296,60 @@ export function Storyboard() {
       );
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function handleExportStoryboardBundle(options: StoryboardExportOptions) {
+    if (visibleShots.length === 0) {
+      return;
+    }
+
+    try {
+      const destinationDirectory = await open({
+        directory: true,
+        multiple: false,
+        title: "Storyboard export klasoru sec",
+      });
+
+      if (!destinationDirectory || Array.isArray(destinationDirectory)) {
+        return;
+      }
+
+      setExportingBundle(true);
+
+      const result = await exportStoryboardShotsBundle({
+        destinationDirectory,
+        shots: visibleShots,
+        referenceLookupShots: shots,
+        options,
+      });
+
+      const summaryLines = [
+        `${result.shotCount} shot export edildi.`,
+        `${result.copiedFileCount} dosya kopyalandi.`,
+        result.skippedFileCount > 0 ? `${result.skippedFileCount} dosya bulunamadigi icin atlandi.` : null,
+        `Klasor: ${result.rootPath}`,
+      ].filter(Boolean);
+
+      await message(
+        summaryLines.join("\n"),
+        {
+          title: "Storyboard Export",
+          kind: "info",
+        },
+      );
+      setShowExportModal(false);
+    } catch (error) {
+      console.error("Failed to export storyboard bundle", error);
+      await message(
+        error instanceof Error ? error.message : "Storyboard export tamamlanamadi.",
+        {
+          title: "Storyboard Export",
+          kind: "error",
+        },
+      );
+    } finally {
+      setExportingBundle(false);
     }
   }
 
@@ -725,6 +786,14 @@ export function Storyboard() {
                 {hasImportedShots ? "Film-kit Guncelle" : "Film-kit Ice Aktar"}
               </SurfaceActionButton>
               <SurfaceActionButton
+                disabled={visibleShots.length === 0 || exportingBundle}
+                onClick={() => setShowExportModal(true)}
+                type="secondary"
+              >
+                <Download size={15} />
+                {exportingBundle ? "Export..." : "Klasore Disa Aktar"}
+              </SurfaceActionButton>
+              <SurfaceActionButton
                 disabled={mainShots.length === 0}
                 onClick={() => setShowBulkModal(true)}
                 type="primary"
@@ -1068,6 +1137,18 @@ export function Storyboard() {
             selectedShotId={selectedShotId}
             onClose={() => setShowBulkModal(false)}
             onDone={() => void loadShots()}
+          />
+        </Portal>
+      ) : null}
+
+      {showExportModal ? (
+        <Portal>
+          <StoryboardExportModal
+            shots={visibleShots}
+            exporting={exportingBundle}
+            showArchived={showArchived}
+            onClose={() => setShowExportModal(false)}
+            onConfirm={(options) => void handleExportStoryboardBundle(options)}
           />
         </Portal>
       ) : null}

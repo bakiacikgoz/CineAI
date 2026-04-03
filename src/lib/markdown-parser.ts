@@ -34,9 +34,17 @@ export interface ParsedShot {
   sourceFile: string;
 }
 
-const START_PROMPT_HEADINGS = ["ILK FRAME", "İLK FRAME", "START FRAME"];
+const START_PROMPT_HEADINGS = ["ILK FRAME", "\u0130LK FRAME", "Ä°LK FRAME", "START FRAME"];
 const END_PROMPT_HEADINGS = ["SON FRAME", "END FRAME"];
-const VIDEO_PROMPT_HEADINGS = ["VIDEO", "VİDEO"];
+const VIDEO_PROMPT_HEADINGS = ["VIDEO", "V\u0130DEO", "VÄ°DEO"];
+const SUMMARY_HEADINGS = [
+  "TR Summary",
+  "Turkce Ozet",
+  "Turkce Özet",
+  "T\u00fcrk\u00e7e Ozet",
+  "T\u00fcrk\u00e7e \u00d6zet",
+  "TÃ¼rkÃ§e Ozet",
+];
 
 export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
   const md = normalizeMarkdown(markdown);
@@ -80,7 +88,7 @@ export function parseShot(markdown: string, sourceFile: string): ParsedShot[] {
       parentShotNum,
       act,
       scene,
-      shotType: inferShotType(`${typeContext}\n${md}`, parentShotNum ? "wide" : "main"),
+      shotType: inferShotType(typeContext, parentShotNum ? "wide" : "main"),
       cameraAngle,
       durationS,
       tensionLevel,
@@ -197,7 +205,7 @@ function extractSingleLineValue(
   groupIndex = 1,
 ): string | null {
   const match = markdown.match(pattern);
-  return match?.[groupIndex]?.trim() ?? null;
+  return match?.[groupIndex] ? normalizeInlineMarkdownValue(match[groupIndex]) : null;
 }
 
 function extractNumericValue(markdown: string, pattern: RegExp): number | null {
@@ -293,25 +301,82 @@ function extractExternalReferenceRequirement(markdown: string): {
 }
 
 function extractSummary(markdown: string): string | null {
-  const headingMatch = markdown.match(
-    /^#{1,4}\s*(?:🇹🇷\s*)?(?:Turkce|Türkçe)\s+Ozet\s*$(?:\n+)([\s\S]*?)(?=^#{1,4}\s+|\Z)/im,
-  );
+  const lines = markdown.split("\n");
 
-  if (headingMatch) {
-    const firstLine = headingMatch[1]
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+
+    if (!/^#{1,4}\s+/.test(line)) {
+      continue;
+    }
+
+    if (!isSummaryHeadingLine(line)) {
+      continue;
+    }
+
+    const summaryBlockLines: string[] = [];
+
+    for (let contentIndex = index + 1; contentIndex < lines.length; contentIndex += 1) {
+      const contentLine = lines[contentIndex] ?? "";
+
+      if (/^#{1,4}\s+/.test(contentLine.trim())) {
+        break;
+      }
+
+      summaryBlockLines.push(contentLine);
+    }
+
+    const firstLine = summaryBlockLines
+      .map((entry) => entry.trim())
+      .find((entry) => entry.length > 0);
 
     if (firstLine) {
       return firstLine;
     }
   }
 
+  const inlineSummary = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) =>
+      /^(?:TR(?:\s+Summary)?|Turkce\s+Ozet|T\u00fcrk\u00e7e\s+Ozet|TÃ¼rkÃ§e\s+Ozet)\s*:/i.test(line),
+    );
+
+  if (inlineSummary) {
+    return (
+      inlineSummary.replace(
+        /^(?:TR(?:\s+Summary)?|Turkce\s+Ozet|T\u00fcrk\u00e7e\s+Ozet|TÃ¼rkÃ§e\s+Ozet)\s*:\s*/i,
+        "",
+      ).trim() || null
+    );
+  }
+
+  const emojiSummaryLine = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^🇹🇷\s*/u.test(line));
+
+  if (emojiSummaryLine) {
+    const normalizedLine = emojiSummaryLine.replace(/^🇹🇷\s*/u, "").trim();
+    const colonIndex = normalizedLine.indexOf(":");
+
+    if (colonIndex >= 0) {
+      const afterColon = normalizedLine.slice(colonIndex + 1).trim();
+
+      if (afterColon) {
+        return afterColon;
+      }
+    }
+
+    if (normalizedLine) {
+      return normalizedLine;
+    }
+  }
+
   const blockQuoteLine = markdown
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line.startsWith(">"));
+    .find((line) => line.startsWith(">") && !/^>\s*START IMAGE\s*:/i.test(line));
 
   return blockQuoteLine ? blockQuoteLine.replace(/^>\s*/, "").trim() || null : null;
 }
@@ -376,6 +441,35 @@ function extractCodeBlocks(markdown: string): string[] {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeInlineMarkdownValue(value: string): string {
+  return value
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .replace(/^`+/, "")
+    .replace(/`+$/, "")
+    .trim();
+}
+
+function normalizeSummaryHeadingLabel(value: string): string {
+  return value
+    .replace(/^[^A-Za-z0-9ÇĞİÖŞÜçğıöşü]+/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isSummaryHeadingLine(value: string): boolean {
+  const normalizedLine = value
+    .replace(/^#{1,4}\s+/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  return SUMMARY_HEADINGS.some((heading) =>
+    normalizedLine.includes(normalizeSummaryHeadingLabel(heading)),
+  );
 }
 
 function normalizeMarkdown(markdown: string): string {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { ImagePlus, Layers3, SlidersHorizontal, Sparkles, WandSparkles, X } from "lucide-react";
+import { ImagePlus, Layers3, LoaderCircle, SlidersHorizontal, Sparkles, WandSparkles, X } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -60,6 +60,10 @@ const DEFAULT_IMAGE_GENERATOR_STATE: ImageGeneratorScreenState = {
   galleryGroupDraft: "",
   gallerySelectedGroupTarget: "__ungrouped__",
   galleryPage: 1,
+  galleryViewMode: "grid",
+  gallerySortBy: "date-desc",
+  gallerySearchQuery: "",
+  submitOnEnter: false,
 };
 
 const ASPECT_RATIO_VALUES: Record<(typeof ASPECT_RATIOS)[number], number> = {
@@ -165,6 +169,8 @@ export function ImageGenerator() {
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 1440 : window.innerWidth,
   );
+  const [submitOnEnter, setSubmitOnEnter] = useState(false);
+  const [generateFlash, setGenerateFlash] = useState(false);
 
   const imageQueueJobs = useMemo(
     () =>
@@ -183,6 +189,8 @@ export function ImageGenerator() {
     [activeProjectId, queueJobs],
   );
   const selectedShot = shots.find((shot) => shot.id === selectedShotId) ?? null;
+  const promptLength = prompt.length;
+  const tokenEstimate = Math.max(1, Math.round(promptLength / 4));
 
   useEffect(() => {
     if (mode !== "shot-linked" || !selectedShot) {
@@ -232,6 +240,7 @@ export function ImageGenerator() {
     setSteps(nextState.steps);
     setQuantity(nextState.quantity);
     setRefImage(nextState.refImage);
+    setSubmitOnEnter(nextState.submitOnEnter);
   }
 
   useEffect(() => {
@@ -441,6 +450,7 @@ export function ImageGenerator() {
       steps,
       quantity,
       refImage,
+      submitOnEnter,
     });
   }, [
     activeProjectId,
@@ -455,6 +465,7 @@ export function ImageGenerator() {
     setImageGeneratorState,
     shotStage,
     steps,
+    submitOnEnter,
   ]);
 
   const estimatedCost = calcImageCost(model, quantity);
@@ -563,7 +574,10 @@ export function ImageGenerator() {
 
     try {
       await enqueueImageJobs({
-        model: "fal-ai/nano-banana-2",
+        model:
+          payload.model && payload.model in IMAGE_MODELS
+            ? (payload.model as ImageModelId)
+            : model,
         prompt: payload.prompt,
         aspectRatio: payload.aspectRatio,
         cfg,
@@ -576,7 +590,7 @@ export function ImageGenerator() {
 
       setImageEditDraft(null);
       setInboundNotice(
-        `${draft.label} icin isaretlemeli duzenleme Nano Banana 2 ile kuyruga alindi.`,
+        `${draft.label} icin isaretlemeli duzenleme kuyruga alindi.`,
       );
       await message(`${draft.label} icin duzenleme isi kuyruga eklendi.`, {
         title: "Image Generator",
@@ -677,6 +691,8 @@ export function ImageGenerator() {
           kind: "info",
         });
       }
+      setGenerateFlash(true);
+      window.setTimeout(() => setGenerateFlash(false), 600);
     } catch (error) {
       console.error("Failed to enqueue image jobs", error);
       await message(
@@ -817,21 +833,24 @@ export function ImageGenerator() {
                 [ImageModelId, (typeof IMAGE_MODELS)[ImageModelId]]
               >).map(([modelId, info]) => {
                 const active = modelId === model;
+                const logo = info.label.toLowerCase().includes("banana") ? "Bn" : "Fx";
 
                 return (
                   <button
+                    aria-label={`${info.label} modelini sec`}
                     className="hover-glow"
                     key={modelId}
                     onClick={() => setModel(modelId)}
                     style={{
                       display: "grid",
-                      gap: 6,
+                      gap: 10,
                       padding: 12,
-                      borderRadius: 14,
+                      borderRadius: 16,
                       border: `1px solid ${
-                        active ? "rgba(0, 0, 0, 0.2)" : "var(--border-subtle)"
+                        active ? "var(--accent)" : "var(--border-subtle)"
                       }`,
                       background: active ? "var(--surface-hover)" : "var(--bg-elevated)",
+                      boxShadow: active ? "var(--shadow-card-selected)" : "var(--shadow-card)",
                       color: "inherit",
                       cursor: "pointer",
                       textAlign: "left",
@@ -841,7 +860,32 @@ export function ImageGenerator() {
                     <div
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
                     >
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{info.label}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 34,
+                            height: 34,
+                            borderRadius: 11,
+                            background: active ? "var(--accent)" : "var(--bg-base)",
+                            color: active ? "var(--on-accent)" : "var(--text-primary)",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            letterSpacing: "0.06em",
+                            boxShadow: active ? "var(--shadow-card-hover)" : "none",
+                          }}
+                        >
+                          {logo}
+                        </span>
+                        <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600 }}>{info.label}</span>
+                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            {info.supportsImg2Img ? "text2img + img2img" : "text2img"}
+                          </span>
+                        </div>
+                      </div>
                       <span
                         style={{
                           fontSize: 11,
@@ -851,11 +895,10 @@ export function ImageGenerator() {
                         {info.costPerImage > 0 ? `$${info.costPerImage.toFixed(2)}` : "Ozel"}
                       </span>
                     </div>
-                    <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                      {info.supportsImg2Img
-                        ? "Prompt + referans kare ile calisir"
-                        : "Yalnizca text to image"}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={modelBadgeStyle}>${info.costPerImage.toFixed(2)} / kare</span>
+                      <span style={modelBadgeStyle}>{info.supportsImg2Img ? "img2img" : "text2img"}</span>
+                    </div>
                   </button>
                 );
               })}
@@ -863,51 +906,119 @@ export function ImageGenerator() {
           </FieldGroup>
 
           <FieldGroup label="Prompt" icon={<WandSparkles size={14} />}>
-            <textarea
-              className="studio-field"
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={
-                mode === "shot-linked"
-                  ? "Secili shot promptu burada yuklenir; istersen duzenleyebilirsin..."
-                  : "Sahneyi, lens dilini, isik ve atmosferi tarif et..."
-              }
-              rows={7}
-              style={textareaStyle}
-              value={prompt}
-            />
+            <div style={{ display: "grid", gap: 10 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={modelBadgeStyle}>{promptLength} karakter</span>
+                  <span style={modelBadgeStyle}>~{tokenEstimate} token</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}>
+                    <input
+                      aria-label="Enter ile uretim tetikleme"
+                      checked={submitOnEnter}
+                      onChange={(event) => setSubmitOnEnter(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Enter ile uret
+                  </label>
+                  <button
+                    aria-label="Promptu temizle"
+                    className="btn-secondary"
+                    onClick={() => setPrompt("")}
+                    style={{ padding: "8px 10px", fontSize: 11 }}
+                    type="button"
+                  >
+                    <X size={12} />
+                    Temizle
+                  </button>
+                </div>
+              </div>
+
+              <textarea
+                aria-label="Gorsel uretim promptu"
+                className="studio-field"
+                onChange={(event) => setPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && submitOnEnter && canGenerate) {
+                    event.preventDefault();
+                    void handleGenerate();
+                  }
+                }}
+                placeholder={
+                  mode === "shot-linked"
+                    ? "Secili shot promptu burada yuklenir; istersen duzenleyebilirsin..."
+                    : "Sahneyi, lens dilini, isik ve atmosferi tarif et..."
+                }
+                rows={7}
+                style={textareaStyle}
+                value={prompt}
+              />
+            </div>
           </FieldGroup>
 
           <FieldGroup label="Adet">
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                borderRadius: 14,
-                border: "1px solid var(--border-subtle)",
-                background: "var(--bg-elevated)",
-                padding: 8,
-              }}
-            >
-              <button
-                className="hover-glow"
-                onClick={() => setQuantity((current) => Math.max(1, current - 1))}
-                style={stepperButtonStyle}
-                type="button"
+            <div style={{ display: "grid", gap: 10 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  borderRadius: 16,
+                  border: "1px solid var(--border-subtle)",
+                  background: "var(--bg-elevated)",
+                  padding: 10,
+                }}
               >
-                -
-              </button>
-              <span style={{ fontSize: 18, fontWeight: 600, letterSpacing: "0.04em" }}>
-                {quantity}
-              </span>
-              <button
-                className="hover-glow"
-                onClick={() => setQuantity((current) => Math.min(50, current + 1))}
-                style={stepperButtonStyle}
-                type="button"
-              >
-                +
-              </button>
+                <button
+                  aria-label="Adedi azalt"
+                  className="hover-glow"
+                  onClick={() => setQuantity((current) => Math.max(1, current - 1))}
+                  style={stepperButtonStyle}
+                  type="button"
+                >
+                  -
+                </button>
+                <div style={{ display: "grid", gap: 2, justifyItems: "center" }}>
+                  <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: "0.04em" }}>
+                    {quantity}
+                  </span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                    {quantity} × ${IMAGE_MODELS[model].costPerImage.toFixed(2)}
+                  </span>
+                </div>
+                <button
+                  aria-label="Adedi artir"
+                  className="hover-glow"
+                  onClick={() => setQuantity((current) => Math.min(50, current + 1))}
+                  style={stepperButtonStyle}
+                  type="button"
+                >
+                  +
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[1, 2, 4, 8].map((preset) => (
+                  <button
+                    aria-label={`${preset} adet sec`}
+                    className={quantity === preset ? "btn-primary" : "btn-secondary"}
+                    key={preset}
+                    onClick={() => setQuantity(preset)}
+                    style={{ minWidth: 42, padding: "7px 10px", fontSize: 11 }}
+                    type="button"
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
             </div>
           </FieldGroup>
 
@@ -1054,53 +1165,69 @@ export function ImageGenerator() {
           <div
             style={{
               display: "grid",
-              gap: 10,
+              gap: 12,
               marginTop: 8,
               paddingTop: 16,
               borderTop: "1px solid var(--border-subtle)",
             }}
           >
+            {/* Cost + project info */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                fontSize: 12,
-                color: "var(--text-secondary)",
+                padding: "10px 12px",
+                borderRadius: 14,
+                background: "rgba(0,0,0,0.02)",
+                border: "1px solid var(--border-subtle)",
               }}
             >
-              <span>Proje klasoru</span>
-              <span
-                style={{
-                  maxWidth: 180,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  color: "var(--text-primary)",
-                }}
-              >
-                {activeProject.name}
-              </span>
+              <div style={{ display: "grid", gap: 2 }}>
+                <span style={{ fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 600 }}>Maliyet</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: "var(--accent)", letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>${estimatedCost.toFixed(3)}</span>
+              </div>
+              <div style={{ display: "grid", gap: 2, textAlign: "right" }}>
+                <span style={{ fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 600 }}>Proje</span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    maxWidth: 140,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {activeProject.name}
+                </span>
+              </div>
             </div>
 
             <button
-              className="btn-primary"
+              className={`btn-primary${generateFlash ? " success-flash" : ""}`}
               disabled={!canGenerate}
               onClick={() => void handleGenerate()}
-              style={{ width: "100%", padding: "14px 16px", fontSize: 14, fontWeight: 600 }}
+              style={{
+                width: "100%", padding: "14px 16px", fontSize: 14, fontWeight: 700,
+                borderRadius: 14, letterSpacing: "-0.01em",
+                boxShadow: canGenerate ? "var(--shadow-card-hover)" : "none",
+                transition: "transform var(--duration-fast) var(--ease-spring), box-shadow var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out)",
+                transform: generating ? "scale(0.99)" : "scale(1)",
+                border: generateFlash ? "1px solid var(--status-success)" : "1px solid transparent",
+              }}
               type="button"
             >
-              {generateButtonLabel}
+              {generating ? (
+                <span style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
+                  <LoaderCircle className="spin-slow" size={16} />
+                  Kuyruga aliniyor...
+                </span>
+              ) : (
+                generateButtonLabel
+              )}
             </button>
-            <div
-              style={{
-                textAlign: "center",
-                fontSize: 11,
-                color: "var(--text-muted)",
-              }}
-            >
-              Tahmini maliyet: <strong style={{ color: "var(--accent)" }}>${estimatedCost.toFixed(3)}</strong>
-            </div>
           </div>
         </aside>
 
@@ -1112,6 +1239,12 @@ export function ImageGenerator() {
         />
       </section>
       <ImageEditModal
+        availableModels={(Object.entries(IMAGE_MODELS) as Array<
+          [ImageModelId, (typeof IMAGE_MODELS)[ImageModelId]]
+        >)
+          .filter(([, info]) => info.supportsImg2Img)
+          .map(([modelId, info]) => ({ id: modelId, label: info.label }))}
+        defaultModel={model}
         dialogTitle="Image Generator"
         draft={imageEditDraft}
         guideFilePrefix="guide_still"
@@ -1293,6 +1426,18 @@ const textareaStyle: CSSProperties = {
   outline: "none",
   font: "inherit",
   lineHeight: 1.7,
+};
+
+const modelBadgeStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "4px 8px",
+  borderRadius: 999,
+  background: "var(--surface-hover)",
+  color: "var(--text-secondary)",
+  fontSize: 10,
+  fontWeight: 700,
 };
 
 const selectStyle: CSSProperties = {

@@ -1,8 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Expand, Image as ImageIcon, LoaderCircle, Video as VideoIcon, X } from "lucide-react";
-import { Portal } from "@/components/Portal";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Expand,
+  Image as ImageIcon,
+  LoaderCircle,
+  Video as VideoIcon,
+  X,
+} from "lucide-react";
 import { message } from "@tauri-apps/plugin-dialog";
+import { Portal } from "@/components/Portal";
 import { downloadMediaFile } from "@/lib/media-download";
 
 export type MediaLightboxItem = {
@@ -15,19 +24,55 @@ export type MediaLightboxItem = {
   downloadName?: string | null;
 };
 
-export function MediaLightbox({
-  item,
-  onClose,
-  zIndex = 140,
-}: {
+type MediaLightboxProps = {
   item: MediaLightboxItem | null;
+  items?: MediaLightboxItem[];
+  activeIndex?: number;
+  onNavigate?: (nextIndex: number) => void;
   onClose: () => void;
   zIndex?: number;
-}) {
+};
+
+export function MediaLightbox({
+  item,
+  items,
+  activeIndex,
+  onNavigate,
+  onClose,
+  zIndex = 140,
+}: MediaLightboxProps) {
   const [downloading, setDownloading] = useState(false);
 
-  useEffect(() => {
+  const navigationItems = useMemo(
+    () => (Array.isArray(items) && items.length > 0 ? items : item ? [item] : []),
+    [item, items],
+  );
+  const resolvedIndex = useMemo(() => {
     if (!item) {
+      return -1;
+    }
+
+    if (typeof activeIndex === "number" && activeIndex >= 0 && activeIndex < navigationItems.length) {
+      return activeIndex;
+    }
+
+    return navigationItems.findIndex((entry) => entry.src === item.src && entry.title === item.title);
+  }, [activeIndex, item, navigationItems]);
+  const activeItem =
+    item ?? (resolvedIndex >= 0 && resolvedIndex < navigationItems.length ? navigationItems[resolvedIndex] : null);
+  const canNavigate = navigationItems.length > 1 && resolvedIndex >= 0;
+
+  function navigateBy(delta: number) {
+    if (!canNavigate || !onNavigate) {
+      return;
+    }
+
+    const nextIndex = (resolvedIndex + delta + navigationItems.length) % navigationItems.length;
+    onNavigate(nextIndex);
+  }
+
+  useEffect(() => {
+    if (!activeItem) {
       return;
     }
 
@@ -35,6 +80,16 @@ export function MediaLightbox({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         onClose();
+        return;
+      }
+
+      if (event.key === "ArrowLeft") {
+        navigateBy(-1);
+        return;
+      }
+
+      if (event.key === "ArrowRight") {
+        navigateBy(1);
       }
     };
 
@@ -45,10 +100,10 @@ export function MediaLightbox({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [item, onClose]);
+  }, [activeItem, onClose, canNavigate, navigationItems.length, resolvedIndex]);
 
   async function handleDownload() {
-    if (!item?.downloadPath || downloading) {
+    if (!activeItem?.downloadPath || downloading) {
       return;
     }
 
@@ -56,13 +111,13 @@ export function MediaLightbox({
 
     try {
       await downloadMediaFile({
-        sourcePath: item.downloadPath,
-        suggestedName: item.downloadName ?? item.title,
-        dialogTitle: item.title,
+        sourcePath: activeItem.downloadPath,
+        suggestedName: activeItem.downloadName ?? activeItem.title,
+        dialogTitle: activeItem.title,
       });
     } catch (error) {
       await message(error instanceof Error ? error.message : "Medya indirilemedi.", {
-        title: item.title,
+        title: activeItem.title,
         kind: "error",
       });
     } finally {
@@ -71,8 +126,8 @@ export function MediaLightbox({
   }
 
   return (
-    <AnimatePresence>
-      {item ? (
+    <AnimatePresence mode="wait">
+      {activeItem ? (
         <Portal>
           <motion.div
             animate={{ opacity: 1 }}
@@ -133,7 +188,7 @@ export function MediaLightbox({
                       textTransform: "uppercase",
                     }}
                   >
-                    {item.kind === "image" ? <ImageIcon size={13} /> : <VideoIcon size={13} />}
+                    {activeItem.kind === "image" ? <ImageIcon size={13} /> : <VideoIcon size={13} />}
                     Inceleme Modu
                   </span>
                   <div
@@ -146,31 +201,37 @@ export function MediaLightbox({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {item.title}
+                    {activeItem.title}
                   </div>
-                  {item.subtitle ? (
-                    <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                      {item.subtitle}
-                    </div>
-                  ) : null}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    {activeItem.subtitle ? (
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                        {activeItem.subtitle}
+                      </div>
+                    ) : null}
+                    {canNavigate ? (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: "var(--text-muted)",
+                          borderRadius: 999,
+                          border: "1px solid var(--border-subtle)",
+                          background: "var(--bg-surface)",
+                          padding: "4px 8px",
+                        }}
+                      >
+                        {resolvedIndex + 1} / {navigationItems.length}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                  {item.downloadPath ? (
+                  {activeItem.downloadPath ? (
                     <button
+                      aria-label="Medyayi indir"
                       onClick={() => void handleDownload()}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        borderRadius: 999,
-                        border: "1px solid var(--border-subtle)",
-                        background: "var(--surface-hover)",
-                        padding: "8px 12px",
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
-                        cursor: downloading ? "progress" : "pointer",
-                      }}
+                      style={chipButtonStyle}
                       type="button"
                       disabled={downloading}
                     >
@@ -178,35 +239,19 @@ export function MediaLightbox({
                       {downloading ? "Indiriliyor..." : "Indir"}
                     </button>
                   ) : null}
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      borderRadius: 999,
-                      border: "1px solid var(--border-subtle)",
-                      background: "var(--surface-hover)",
-                      padding: "8px 12px",
-                      fontSize: 12,
-                      color: "var(--text-secondary)",
-                    }}
-                  >
+                  <span style={chipButtonStyle}>
                     <Expand size={14} />
                     Esc ile kapa
                   </span>
                   <button
+                    aria-label="Lightboxi kapat"
                     onClick={onClose}
                     style={{
-                      display: "inline-flex",
+                      ...chipButtonStyle,
                       width: 34,
                       height: 34,
-                      alignItems: "center",
+                      padding: 0,
                       justifyContent: "center",
-                      borderRadius: 999,
-                      border: "1px solid var(--border-subtle)",
-                      background: "var(--surface-hover)",
-                      color: "var(--text-muted)",
-                      cursor: "pointer",
                     }}
                     type="button"
                   >
@@ -217,12 +262,39 @@ export function MediaLightbox({
 
               <div
                 style={{
+                  position: "relative",
                   display: "grid",
                   gap: 12,
                   minHeight: 0,
                 }}
               >
-                <div
+                {canNavigate ? (
+                  <>
+                    <button
+                      aria-label="Onceki gorsele gec"
+                      onClick={() => navigateBy(-1)}
+                      style={{ ...navButtonStyle, left: 18 }}
+                      type="button"
+                    >
+                      <ChevronLeft size={20} />
+                    </button>
+                    <button
+                      aria-label="Sonraki gorsele gec"
+                      onClick={() => navigateBy(1)}
+                      style={{ ...navButtonStyle, right: 18 }}
+                      type="button"
+                    >
+                      <ChevronRight size={20} />
+                    </button>
+                  </>
+                ) : null}
+
+                <motion.div
+                  key={`${activeItem.kind}:${activeItem.src}`}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 16 }}
+                  initial={{ opacity: 0, x: -16 }}
+                  transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                   style={{
                     display: "grid",
                     placeItems: "center",
@@ -233,10 +305,10 @@ export function MediaLightbox({
                     overflow: "hidden",
                   }}
                 >
-                  {item.kind === "image" ? (
+                  {activeItem.kind === "image" ? (
                     <img
-                      alt={item.title}
-                      src={item.src}
+                      alt={activeItem.title}
+                      src={activeItem.src}
                       style={{
                         width: "100%",
                         height: "100%",
@@ -250,7 +322,7 @@ export function MediaLightbox({
                       autoPlay
                       controls
                       preload="metadata"
-                      src={item.src}
+                      src={activeItem.src}
                       style={{
                         width: "100%",
                         height: "100%",
@@ -261,9 +333,9 @@ export function MediaLightbox({
                       }}
                     />
                   )}
-                </div>
+                </motion.div>
 
-                {item.description ? (
+                {activeItem.description ? (
                   <div
                     style={{
                       fontSize: 13,
@@ -272,7 +344,7 @@ export function MediaLightbox({
                       padding: "0 4px",
                     }}
                   >
-                    {item.description}
+                    {activeItem.description}
                   </div>
                 ) : null}
               </div>
@@ -283,3 +355,34 @@ export function MediaLightbox({
     </AnimatePresence>
   );
 }
+
+const chipButtonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  borderRadius: 999,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--surface-hover)",
+  padding: "8px 12px",
+  fontSize: 12,
+  color: "var(--text-secondary)",
+  cursor: "pointer",
+};
+
+const navButtonStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "50%",
+  zIndex: 2,
+  display: "inline-flex",
+  width: 42,
+  height: 42,
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid var(--glass-border)",
+  borderRadius: 999,
+  background: "var(--glass-bg)",
+  color: "var(--text-primary)",
+  boxShadow: "var(--shadow-float)",
+  transform: "translateY(-50%)",
+  cursor: "pointer",
+};
